@@ -338,6 +338,29 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['conversation_id'],
       },
     },
+    {
+      name: 'edit_message',
+      description:
+        'Edit a message the bot previously sent on Teams. Useful for interim ' +
+        'progress updates. Pass conversation_id and the message_id of a message ' +
+        'this bot sent. (Teams has no native bot reaction, so there is no react ' +
+        'tool; send a short reply instead if you need to acknowledge.)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          conversation_id: {
+            type: 'string',
+            description: 'The conversation_id from the inbound <channel> tag. Pass through unchanged.',
+          },
+          message_id: {
+            type: 'string',
+            description: 'The id of a message this bot previously sent (returned context from a prior reply).',
+          },
+          text: { type: 'string', description: 'New message text. Rendered as markdown.' },
+        },
+        required: ['conversation_id', 'message_id', 'text'],
+      },
+    },
     // ── Operator-only tools ────────────────────────────────────────────────
     // These are surfaced to the operator through the /teams:access skill.
     // The skill prose forbids invoking them in response to channel
@@ -445,6 +468,23 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             },
           ],
         }
+      }
+
+      case 'edit_message': {
+        const conversationId = args.conversation_id
+        const messageId = args.message_id
+        const text = args.text
+        if (typeof conversationId !== 'string' || conversationId.length === 0) {
+          throw new Error('edit_message requires a non-empty conversation_id string')
+        }
+        if (typeof messageId !== 'string' || messageId.length === 0) {
+          throw new Error('edit_message requires a non-empty message_id string')
+        }
+        if (typeof text !== 'string' || text.length === 0) {
+          throw new Error('edit_message requires a non-empty text string')
+        }
+        await replier.editReply(conversationId, messageId, text)
+        return { content: [{ type: 'text', text: `edited (conv=${conversationId}, id=${messageId})` }] }
       }
 
       case 'list_pending': {

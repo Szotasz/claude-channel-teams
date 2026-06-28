@@ -95,5 +95,28 @@ export function createReplySender(deps: ReplyDeps) {
     )
   }
 
-  return { sendReply, assertAllowedConversation }
+  /**
+   * Edit a message the bot previously sent. Mirrors sendReply's gate exactly
+   * (re-check the allowlist on the way out), then updates the activity in place
+   * via the same conversation reference. Used for interim progress updates.
+   */
+  async function editReply(
+    conversationId: string,
+    messageId: string,
+    text: string,
+  ): Promise<void> {
+    const { ref } = assertAllowedConversation(conversationId)
+    await deps.adapter.continueConversationAsync(
+      deps.config.appId,
+      ref,
+      async turnContext => {
+        await turnContext.updateActivity({ type: 'message', id: messageId, text, textFormat: 'markdown' })
+      },
+    )
+    process.stderr.write(
+      `teams channel: message edited conv=${conversationId} id=${messageId}\n`,
+    )
+  }
+
+  return { sendReply, editReply, assertAllowedConversation }
 }
