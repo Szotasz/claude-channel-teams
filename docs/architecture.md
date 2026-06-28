@@ -193,7 +193,7 @@ behaviour is identical in all three — only TLS termination differs.
 ### Shape A — VPS with reverse proxy (recommended for steady use)
 
 ```
-Internet ─→ <bot-public-hostname> ─→ Caddy/nginx ─→ 127.0.0.1:3978 ─→ plugin
+Internet ─→ <bot-public-hostname> ─→ Caddy/nginx ─→ 127.0.0.1:3979 ─→ plugin
 ```
 
 Pros: stable, simple to reason about, no third party in the trust chain.
@@ -203,7 +203,7 @@ ACME).
 ### Shape B — Cloudflare Tunnel
 
 ```
-Internet ─→ <bot-public-hostname> ─→ Cloudflare edge ─→ cloudflared (local) ─→ 127.0.0.1:3978 ─→ plugin
+Internet ─→ <bot-public-hostname> ─→ Cloudflare edge ─→ cloudflared (local) ─→ 127.0.0.1:3979 ─→ plugin
 ```
 
 Pros: no public ingress on the host, Cloudflare handles TLS.
@@ -212,7 +212,7 @@ Cons: third party in the trust chain. Acceptable for personal use.
 ### Shape C — ngrok / dev tunnel (development only)
 
 ```
-Internet ─→ <random>.ngrok.io ─→ ngrok edge ─→ ngrok agent ─→ 127.0.0.1:3978 ─→ plugin
+Internet ─→ <random>.ngrok.io ─→ ngrok edge ─→ ngrok agent ─→ 127.0.0.1:3979 ─→ plugin
 ```
 
 Useful for first-bring-up. Don't leave a dev tunnel running long-term.

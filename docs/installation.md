@@ -50,17 +50,17 @@ Minimal Caddyfile:
 
 ```caddyfile
 <bot-public-hostname> {
-  reverse_proxy 127.0.0.1:3978
+  reverse_proxy 127.0.0.1:3979
 }
 ```
 
-The plugin listens on `127.0.0.1:3978` by default
-(`TEAMS_BOT_LISTEN_HOST` / `TEAMS_BOT_LISTEN_PORT`). Run Caddy / nginx as a
+The plugin listens on `127.0.0.1:3979` by default
+(`TEAMS_PLUGIN_BIND_HOST` / `TEAMS_PLUGIN_PORT`). Run Caddy / nginx as a
 system service. See [`examples/systemd/`](../examples/systemd/) for a
 template unit covering the plugin (the proxy is your platform's standard
 config).
 
-For dev work, `cloudflared tunnel run` or `ngrok http 3978` are quicker.
+For dev work, `cloudflared tunnel run` or `ngrok http 3979` are quicker.
 
 ### 4. Install the plugin
 
@@ -99,7 +99,7 @@ claude --channels plugin:teams@<your-marketplace>
 You should see a startup line on stderr:
 
 ```
-teams channel: listening on 127.0.0.1:3978
+teams channel: listening on 127.0.0.1:3979
 teams channel: tenant pinned to <tenant-id> (SingleTenant)
 ```
 

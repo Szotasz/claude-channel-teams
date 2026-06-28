@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # setup-tunnel.sh - stand up a STABLE public HTTPS endpoint in front of the local
-# Teams listener (default :3978), so Azure Bot Service can POST inbound Activities.
+# Teams listener (default :3979, the plugin's TEAMS_PLUGIN_PORT), so Azure Bot
+# Service can POST inbound Activities.
 #
 # Teams has no outbound-only receive path, so a public endpoint is unavoidable.
 # We prefer the NO-DOMAIN option so a non-technical owner needs no domain or DNS:
@@ -14,12 +15,14 @@
 # messaging endpoint (confirmed in teams-channel-research.md, sections 2 and 6).
 #
 # Usage:
-#   setup-tunnel.sh [--port 3978] [--mode funnel|cloudflared] [--hostname teams-bot.<domain>]
+#   setup-tunnel.sh [--port 3979] [--mode funnel|cloudflared] [--hostname teams-bot.<domain>]
 #
 # Prints the public messaging-endpoint URL (……/api/messages) on success.
 set -euo pipefail
 
-PORT=3978
+# Default to the plugin's canonical listener port (config.ts: TEAMS_PLUGIN_PORT,
+# default 3979). Reading the env var keeps the tunnel in lockstep with the plugin.
+PORT="${TEAMS_PLUGIN_PORT:-3979}"
 MODE="funnel"
 HOSTNAME_ARG=""
 

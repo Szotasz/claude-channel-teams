@@ -78,7 +78,7 @@
   for the deployment shapes we document.
 - Recommendation: a small persistent reverse proxy (Caddy is the simplest
   config) that terminates TLS using the operator's hostname and forwards to
-  `127.0.0.1:3978`. For dev work, a tunnel (Cloudflare Tunnel, ngrok) is
+  `127.0.0.1:3979`. For dev work, a tunnel (Cloudflare Tunnel, ngrok) is
   documented as an alternative.
 - Why no built-in TLS listener: TLS termination drags in certificate
   lifecycle (ACME, renewal, file permissions on the private key). Out of
@@ -107,8 +107,8 @@ environment winning. `.env` is chmod-0600 on every load.
 | `TEAMS_BOT_APP_PASSWORD` | Yes | — | Client secret. Treat as a high-value credential. |
 | `TEAMS_BOT_APP_TYPE` | Yes | `SingleTenant` | One of `SingleTenant`, `MultiTenant`, `UserAssignedMSI`. |
 | `TEAMS_BOT_TENANT_ID` | When SingleTenant | — | Tenant GUID. |
-| `TEAMS_BOT_LISTEN_HOST` | No | `127.0.0.1` | Loopback by default. |
-| `TEAMS_BOT_LISTEN_PORT` | No | `3978` | Standard Bot Framework default. |
+| `TEAMS_PLUGIN_BIND_HOST` | No | `127.0.0.1` | Loopback by default. |
+| `TEAMS_PLUGIN_PORT` | No | `3979` | Standard Bot Framework default. |
 | `TEAMS_BOT_ENDPOINT_URL` | No (recommended) | — | Public HTTPS URL on the Azure Bot resource. Diagnostics + status output. |
 | `TEAMS_STATE_DIR` | No | `~/.claude/channels/teams` | For multi-instance setups. |
 | `TEAMS_ACCESS_MODE` | No | — | `static` pins access at boot, disables pairing. |
@@ -289,7 +289,7 @@ We point at Microsoft's documentation for these in
 
 1. Teams client sends activity to Microsoft.
 2. Bot Connector signs and POSTs to `<TEAMS_BOT_ENDPOINT_URL>/api/messages`.
-3. Operator's reverse proxy forwards to `127.0.0.1:<TEAMS_BOT_LISTEN_PORT>`.
+3. Operator's reverse proxy forwards to `127.0.0.1:<TEAMS_PLUGIN_PORT>`.
 4. CloudAdapter handles JWT validation. Failure → 401 / drop.
 5. Plugin's turn handler reads `{ from.aadObjectId, conversation.id,
    conversation.tenantId, text, attachments, id, timestamp }`.
