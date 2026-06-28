@@ -1,6 +1,6 @@
 # Installation
 
-End-to-end install guide. Placeholders in angle brackets — substitute your
+End-to-end install guide. Placeholders in angle brackets, substitute your
 own values.
 
 ## Prerequisites
@@ -24,9 +24,9 @@ own values.
 Follow [`docs/azure-setup.md`](azure-setup.md) for the portal and `az` CLI
 recipe. By the end you should have:
 
-- `<app-id>` — the application (client) ID GUID.
-- `<app-secret>` — a client secret value (you only see this once; save it).
-- `<tenant-id>` — your Entra ID tenant GUID.
+- `<app-id>`: the application (client) ID GUID.
+- `<app-secret>`: a client secret value (you only see this once; save it).
+- `<tenant-id>`: your Entra ID tenant GUID.
 - Azure Bot resource with the **Microsoft Teams** channel enabled.
 - Messaging endpoint set to `https://<bot-public-hostname>/api/messages`.
 
@@ -107,7 +107,7 @@ teams channel: tenant pinned to <tenant-id> (SingleTenant)
 
 DM the bot from Teams. The bot replies:
 
-> Pairing required — run in Claude Code: `/teams:access pair <code>`
+> Pairing required, run in Claude Code: `/teams:access pair <code>`
 
 Back in your terminal:
 
@@ -126,7 +126,7 @@ Once everyone who should be able to reach you is paired, flip the policy:
 /teams:access policy allowlist
 ```
 
-After this, unknown senders are dropped silently — no pairing-code replies
+After this, unknown senders are dropped silently, no pairing-code replies
 go out. This is the steady state. Pairing mode is for capturing IDs, not
 for staying on.
 

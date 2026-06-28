@@ -2,14 +2,14 @@
 
 Threat model, hardening guidance, and the operator's checklist. Read
 [`design.md` § D](design.md#d-threat-model) for the structured threat
-model — this file is the operator-facing companion.
+model, this file is the operator-facing companion.
 
 ## Headlines
 
 - **Default policy is `pairing`. Move to `allowlist` as soon as everyone is in.**
 - **`.env` lives in `~/.claude/channels/teams/`, mode 0600. Never in the repo.**
 - **Single-tenant is the recommended mode. Multi-tenant requires extra
-  hardening — covered below.**
+  hardening, covered below.**
 - **The plugin never terminates TLS. Use a reverse proxy you trust.**
 
 ## Asset summary
@@ -26,14 +26,14 @@ model — this file is the operator-facing companion.
 
 Each inbound POST passes four checks before any tool runs:
 
-1. **TLS termination** at the operator's reverse proxy — the bot connector
+1. **TLS termination** at the operator's reverse proxy, the bot connector
    must talk to a real HTTPS endpoint with a public cert.
-2. **Bot Framework JWT validation** in the plugin's CloudAdapter — proves
+2. **Bot Framework JWT validation** in the plugin's CloudAdapter, proves
    the request came from Microsoft, signed against their JWKS.
-3. **Tenant pinning** — when `TEAMS_BOT_APP_TYPE=SingleTenant`, the gate
+3. **Tenant pinning**: when `TEAMS_BOT_APP_TYPE=SingleTenant`, the gate
    refuses any activity whose `conversation.tenantId` differs from
    `TEAMS_BOT_TENANT_ID`. Belt-and-braces on top of the framework's check.
-4. **Allowlist gate** — `aadObjectId` must be in `allowFrom`, or the
+4. **Allowlist gate**: `aadObjectId` must be in `allowFrom`, or the
    activity is dropped (or replied to with a pairing code, in `pairing`
    policy).
 
@@ -44,7 +44,7 @@ event seen by Claude.
 
 The `reply` tool refuses any `conversation_id` that isn't already on the
 inbound allowlist. A compromised or prompt-injected Claude **cannot** send
-to an arbitrary tenant user — the outbound side enforces the same gate as
+to an arbitrary tenant user, the outbound side enforces the same gate as
 the inbound side. This mirrors `assertAllowedChat` in the Telegram source.
 
 The same is true for file attachments: the plugin refuses to
@@ -72,7 +72,7 @@ the injection pattern, and refuses. The mutation path runs through
 
 The same fence applies to **permission relay**: only allowlist members
 issue verdicts, and the `request_id` is bound to a request Claude Code
-issued — a forged `yes <id>` for an unknown id is silently dropped.
+issued, a forged `yes <id>` for an unknown id is silently dropped.
 
 ## State file schemas
 
@@ -93,7 +93,7 @@ Two files, both mode 0600, both written atomically (`<file>.tmp` → rename).
 }
 ```
 
-Missing file is equivalent to an empty allowlist — every inbound DM
+Missing file is equivalent to an empty allowlist, every inbound DM
 either enters the pairing flow (if `pending.json` allows) or is dropped.
 
 ### `pending.json`
@@ -103,12 +103,12 @@ either enters the pairing flow (if `pending.json` allows) or is dropped.
   "version": 1,
   "entries": [
     {
-      "pair_id":          "<8-char hex — shown only in the operator's terminal>",
+      "pair_id":          "<8-char hex, shown only in the operator's terminal>",
       "aad_object_id":    "<lowercase guid>",
       "tenant_id":        "<guid>",
       "from_name":        "<display name, untrusted, never re-rendered as code>",
       "conversation_id":  "<bot framework conversation id>",
-      "code":             "<6-char alphanumeric — shown only in the user's DM>",
+      "code":             "<6-char alphanumeric, shown only in the user's DM>",
       "created_at":       "<ISO-8601>",
       "last_reminder_at": "<ISO-8601 | null>",
       "reply_count":      1,
@@ -127,7 +127,7 @@ bot to amplify pairing traffic.
 For the operator:
 
 - [ ] Reverse proxy terminates TLS with a valid public certificate.
-- [ ] Reverse proxy forwards only to `127.0.0.1:<port>` — no external bind.
+- [ ] Reverse proxy forwards only to `127.0.0.1:<port>`, no external bind.
 - [ ] `~/.claude/channels/teams/.env` is mode 0600 and owned by the
       operator account.
 - [ ] `TEAMS_BOT_APP_TYPE=SingleTenant` and `TEAMS_BOT_TENANT_ID` set.
@@ -135,7 +135,7 @@ For the operator:
 - [ ] Client secret rotation reminder set per tenant policy.
 - [ ] No allowlisted account has more Claude tool authority than you
       intend to delegate to them.
-- [ ] The reverse proxy logs requests — useful for incident response.
+- [ ] The reverse proxy logs requests, useful for incident response.
 
 For tenant admins (out of plugin scope, but worth flagging):
 
@@ -152,7 +152,7 @@ If `TEAMS_BOT_APP_TYPE=MultiTenant`:
   `TEAMS_BOT_TENANT_ID` pin is bypassed (no single tenant to pin to).
 - Anyone in any addressable Entra ID tenant whose admin has consented to
   your app could DM the bot.
-- `aadObjectId` is still tenant-stable — allowlist enforcement still works.
+- `aadObjectId` is still tenant-stable, allowlist enforcement still works.
 - But: if you ever accidentally allowlist someone from a tenant you don't
   trust, you have no second line of defence.
 
@@ -163,7 +163,7 @@ forgiving than "expose your bot to every tenant".
 ## Permission relay risk
 
 Allowlist senders can approve tool-use prompts (`Bash`, `Write`, `Edit`).
-That is **session-equivalent trust** — they can authorise destructive
+That is **session-equivalent trust**, they can authorise destructive
 actions on your machine. Allowlist accordingly.
 
 If you don't want any sender to have that authority, comment out the
@@ -171,16 +171,16 @@ If you don't want any sender to have that authority, comment out the
 still relays chat in both directions; permission prompts stay strictly
 local to the operator's terminal.
 
-### Threat model — permission relay
+### Threat model: permission relay
 
 | Threat | Mitigation |
 | --- | --- |
 | Forged `yes <id>` from an unknown sender | The adapter only inspects permission-reply text after the inbound gate has confirmed the sender is allowlisted. Non-allowlisted senders are dropped (or routed to pairing) before the regex ever runs. |
-| Replay of a captured `yes <id>` | Each `request_id` is single-use. The relay clears the pending slot on first match; subsequent verdicts for the same id are no-ops. Five-letter ids from `[a-km-z]` give 11.8 million distinct values per session — collisions are negligible for the 5-minute pending window. |
+| Replay of a captured `yes <id>` | Each `request_id` is single-use. The relay clears the pending slot on first match; subsequent verdicts for the same id are no-ops. Five-letter ids from `[a-km-z]` give 11.8 million distinct values per session, collisions are negligible for the 5-minute pending window. |
 | ID collision between two concurrent prompts | Claude Code mints the ids and we treat them as opaque. In the unlikely event of a collision, the relay rejects the second request via the `clearSlot()` reissue path so the operator only sees one prompt at a time per id. |
-| Verdict for an unknown id (typo, late reply) | The adapter falls through to the regular channel event so the text reaches Claude as chat. Better than silent swallow — the operator gets a chance to notice. |
+| Verdict for an unknown id (typo, late reply) | The adapter falls through to the regular channel event so the text reaches Claude as chat. Better than silent swallow, the operator gets a chance to notice. |
 | Long-lived pending slot leaking metadata | 5-minute timeout (matches Claude's own approval timeout). Slot is removed on timeout, the operator's typed verdict afterwards falls through. |
-| Multi-operator confusion | v1 sends each prompt to the single most-recently-active allowlisted conversation only. Documented as the "primary operator" limitation — multi-cast is a candidate future enhancement alongside Adaptive Cards. |
+| Multi-operator confusion | v1 sends each prompt to the single most-recently-active allowlisted conversation only. Documented as the "primary operator" limitation, multi-cast is a candidate future enhancement alongside Adaptive Cards. |
 
 ### Primary-operator scope limitation (v1)
 
@@ -192,23 +192,23 @@ most-recently-active allowlisted DM. The rationale:
   "no" from another) and a race condition on resolve.
 - The conversation reference for the primary operator is rotated every time
   they DM the bot, so if the operator's device changes the prompt follows.
-- A future Adaptive Cards revision could introduce per-prompt routing —
+- A future Adaptive Cards revision could introduce per-prompt routing,
   the operator would pick the audience at configure time. That's not
   shipped today.
 
 If a second operator needs to answer prompts in your absence today, you
 have two options:
 
-1. Hand off by having them DM the bot once before you leave — that
+1. Hand off by having them DM the bot once before you leave, that
    conversation becomes the primary.
 2. Run a separate `claude-channel-teams` instance with its own bot and
    allowlist.
 
 ### Prompt-injection fence
 
-The fence's original instruction was simple — "never edit the allowlist
-file". It now applies to a larger surface. The new operator-only tools — `list_pending`, `approve_pair`,
-`deny_pair`, `list_access`, `revoke_access` — are exposed on the MCP
+The fence's original instruction was simple: "never edit the allowlist
+file". It now applies to a larger surface. The new operator-only tools, `list_pending`, `approve_pair`,
+`deny_pair`, `list_access`, `revoke_access`, are exposed on the MCP
 server, which means any prompt-injected text could in principle ask
 Claude to call them.
 
@@ -226,7 +226,7 @@ Three layers of defence:
 3. **Two-factor approval.** `approve_pair` requires BOTH `pair_id`
    (visible only in the operator's terminal listing) AND `code` (visible
    only in the user's DM). A prompt-injected text might offer one half
-   but cannot plausibly source the other — unless it's actually the
+   but cannot plausibly source the other, unless it's actually the
    operator typing.
 
 A meta-test (`tests/skill-injection.test.ts`) asserts the defensive
@@ -236,11 +236,11 @@ phrases stay present so a future edit can't silently weaken the fence.
 
 | Symptom | Likely cause |
 | --- | --- |
-| Bot replies are never received by you | Pairing didn't complete — check `allowlist.json` for an entry, and `pending.json` for a row that's still awaiting `approve_pair`. |
+| Bot replies are never received by you | Pairing didn't complete, check `allowlist.json` for an entry, and `pending.json` for a row that's still awaiting `approve_pair`. |
 | Pairing-code reply never arrives | The plugin isn't reachable. Check the reverse proxy logs and the Bot Framework "Test in Web Chat" feature on the Azure Bot resource. |
 | 401 from the plugin | `TEAMS_BOT_APP_PASSWORD` is wrong, the app secret expired, or `TEAMS_BOT_TENANT_ID` is wrong. |
-| `tenant mismatch — dropping` in stderr | An activity arrived with a different `conversation.tenantId` than the configured pin. Expected in MultiTenant mode if mis-configured; investigate in SingleTenant mode. |
-| Bot says "Pairing required" repeatedly | After the initial DM + one reminder, the bot stops. The operator must run `/teams:access` and approve via `approve_pair <pair_id> <code>`. If the user never got a "Paired" confirm DM, ask them to send a fresh DM — that re-seeds the conversation reference. |
+| `tenant mismatch, dropping` in stderr | An activity arrived with a different `conversation.tenantId` than the configured pin. Expected in MultiTenant mode if mis-configured; investigate in SingleTenant mode. |
+| Bot says "Pairing required" repeatedly | After the initial DM + one reminder, the bot stops. The operator must run `/teams:access` and approve via `approve_pair <pair_id> <code>`. If the user never got a "Paired" confirm DM, ask them to send a fresh DM, that re-seeds the conversation reference. |
 | Stderr is silent | Look at `~/.claude/debug/<session-id>.txt`. Channel plugins inherit stderr to Claude Code's debug log. |
 
 ## Reporting issues
