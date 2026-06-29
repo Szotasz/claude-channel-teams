@@ -281,7 +281,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
         : false
       if (!mentioned) {
         process.stderr.write(
-          `teams channel: ignore — ${conversationType} message without bot @mention (convId=${conversationId.slice(0, 20)})\n`,
+          `teams channel: ignore -- ${conversationType} message without bot @mention (convId=${conversationId.slice(0, 20)})\n`,
         )
         return
       }
