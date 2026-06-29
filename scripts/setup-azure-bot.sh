@@ -105,6 +105,23 @@ else
   [ -n "$APP_ID" ] || _fail "app creation did not return an appId."
 fi
 
+# ── 1b) service principal for the app (REQUIRED for outbound bot auth) ─────────
+# `az ad app create` registers the application object but does NOT create the
+# service principal (the app's identity instance IN this tenant). Without the SP
+# the bot's OUTBOUND token request fails with:
+#   AADSTS7000229: The client application '<appId>' is missing service principal
+#   in the tenant.
+# Symptom is subtle and outbound-only: INBOUND (Teams -> bot) works and pairing
+# starts, but the bot can never REPLY (the pairing-code DM never arrives). Create
+# the SP idempotently -- skip if it already exists.
+if [ "$DRY_RUN" = 1 ]; then
+  echo "+ az ad sp show --id $APP_ID  ||  az ad sp create --id $APP_ID"
+else
+  az ad sp show --id "$APP_ID" >/dev/null 2>&1 \
+    || az ad sp create --id "$APP_ID" --only-show-errors >/dev/null \
+    || _fail "could not create the service principal for $APP_ID (needed for outbound bot auth)."
+fi
+
 # ── 2) client secret (always fresh; the value is only shown once) ─────────────
 echo "Generating a client secret (max 24-month lifetime; calendar the rotation)..."
 if [ "$DRY_RUN" = 1 ]; then
