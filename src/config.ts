@@ -44,9 +44,8 @@ export interface Config {
   port: number
   /**
    * Where downloaded Teams attachments are saved. Configurable via the
-   * `RECEIVED_FILES_DIR` env var. Defaults to
-   * `/home/ccuser/workspace/received-files` — deliberately OUTSIDE the
-   * plugin repo so a `git clean -fdx` can't wipe received work.
+   * `RECEIVED_FILES_DIR` env var. Defaults to `<stateDir>/files/received-files`
+   * (under the sendable root so received attachments can be re-sent).
    */
   receivedFilesDir: string
   /**
@@ -61,7 +60,8 @@ export interface Config {
    * Root directory under which `send_file` is allowed to source files from.
    * A path argument outside this root is refused — defence against a
    * prompt-injected Claude being talked into exfiltrating system files.
-   * Configurable via `SENDABLE_FILES_ROOT`. Default `/home/ccuser/workspace/`.
+   * Configurable via `SENDABLE_FILES_ROOT`. Default `<stateDir>/files` (a SUBDIR,
+   * so the state-dir secrets .env/access.json stay outside the send boundary).
    */
   sendableFilesRoot: string
 }
@@ -155,13 +155,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`teams channel: TEAMS_PLUGIN_PORT must be 1..65535 (got ${portStr})`)
   }
 
-  const receivedFilesDir =
-    env.RECEIVED_FILES_DIR?.trim() || '/home/ccuser/workspace/received-files'
-
+  // File dirs default UNDER the state dir, not the upstream
+  // '/home/ccuser/workspace/...' hardcode (the cand1 author's path) -- that
+  // crashes (ENOTSUP mkdir /home/ccuser) on every host where the user is not
+  // 'ccuser' (i.e. all of them). The sendable root is a SUBDIR ('files'), so the
+  // secrets in the state-dir root (.env, access.json, pending.json) stay OUTSIDE
+  // the send boundary and cannot be exfiltrated; received + outbox live under it
+  // so they remain re-sendable.
+  const filesRoot = join(stateDir, 'files')
   const sendableFilesRoot =
-    env.SENDABLE_FILES_ROOT?.trim() || '/home/ccuser/workspace/'
+    env.SENDABLE_FILES_ROOT?.trim() || filesRoot
+  const receivedFilesDir =
+    env.RECEIVED_FILES_DIR?.trim() || join(filesRoot, 'received-files')
   const outboxDir =
-    env.OUTBOX_DIR?.trim() || '/home/ccuser/workspace/outbox'
+    env.OUTBOX_DIR?.trim() || join(filesRoot, 'outbox')
 
   const outboxTtlStr = env.OUTBOX_TTL_SECONDS?.trim() || '1800'
   const outboxTtlSeconds = Number.parseInt(outboxTtlStr, 10)
