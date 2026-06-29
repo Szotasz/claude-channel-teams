@@ -274,11 +274,15 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // equal to 'channel', so the old single-signal check fell through to the
     // personal path: surfaced verbatim, no @mention gate, no mention strip). So
     // we OR in two reliable signals: `conversation.isGroup` (true for any shared
-    // conversation, false/undefined for 1:1) and the `@thread.tacv2` (team
-    // channel) / `@thread` (group) conversation-id shape.
+    // conversation, false/undefined for a 1:1) and the `@thread.tacv2` team-channel
+    // conversation-id shape. 1:1-SAFE by construction: a personal chat has
+    // conversationType='personal' (not in the set), isGroup falsey, and a conv-id
+    // that is NOT `@thread.tacv2` (that suffix is channel-specific). We deliberately
+    // do NOT pattern-match `@thread.v2`/`@thread.skype` -- those are not needed
+    // (group chats set isGroup) and matching them risks a false-positive on a 1:1.
     const conversationType = a.conversation?.conversationType
     const isGroupConv = (a.conversation as { isGroup?: boolean } | undefined)?.isGroup === true
-    const threadConv = /@thread\.(tacv2|v2|skype)/.test(conversationId)
+    const threadConv = /@thread\.tacv2/.test(conversationId)
     const isGroupContext =
       conversationType === 'channel' ||
       conversationType === 'groupChat' ||
