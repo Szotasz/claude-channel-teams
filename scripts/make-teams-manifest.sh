@@ -15,7 +15,10 @@
 set -euo pipefail
 
 APP_ID=""
-APP_NAME="Marveen"
+# Resolved below: explicit --name > TEAMS_BOT_DISPLAY_NAME in the .env > generic
+# fallback. NOT hardcoded to any one owner/agent -- the bot name shown in Teams
+# must match THIS install's agent (distribution rule: no hardcoded owner names).
+APP_NAME=""
 ENV_FILE="${HOME}/.claude/channels/teams/.env"
 OUT="./teams-app.zip"
 
@@ -36,6 +39,14 @@ if [ -z "$APP_ID" ] && [ -f "$ENV_FILE" ]; then
   APP_ID="$(grep -E '^TEAMS_BOT_APP_ID=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
 fi
 [ -n "$APP_ID" ] || _fail "no App ID (pass --app-id or set TEAMS_BOT_APP_ID in $ENV_FILE). Run setup-azure-bot.sh first."
+
+# Name-sync: if --name was not given, take TEAMS_BOT_DISPLAY_NAME from the .env
+# (the launcher writes the agent's displayName there) so the bot name in Teams
+# matches the agent. Generic fallback only if nothing is configured.
+if [ -z "$APP_NAME" ] && [ -f "$ENV_FILE" ]; then
+  APP_NAME="$(grep -E '^TEAMS_BOT_DISPLAY_NAME=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+fi
+[ -n "$APP_NAME" ] || APP_NAME="Assistant"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
