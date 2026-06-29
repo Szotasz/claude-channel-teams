@@ -69,8 +69,8 @@ not move past a hard-missing prerequisite.
    IT admin must.
 3. **Azure CLI.** Probe `command -v az`. Missing means `brew install azure-cli`,
    then `az login` (opens a browser, sign in with the work/school account). The
-   Azure script also needs the `botservice` extension, which it installs on its
-   own.
+   `az bot` commands are native now, so no extra CLI extension is needed; the
+   script handles any legacy fallback automatically.
 4. **Tailscale + Funnel** (for the default domain-free tunnel). Probe
    `command -v tailscale` and `tailscale status`. Missing means
    `brew install tailscale` then `tailscale up`. Funnel must be enabled for the
