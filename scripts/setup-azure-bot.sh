@@ -69,10 +69,16 @@ command -v az >/dev/null 2>&1 || _prereq_fail "Azure CLI (az) not installed. mac
 if command -v az >/dev/null 2>&1 && ! az account show >/dev/null 2>&1; then
   _prereq_fail "Not logged in to Azure. Run 'az login' (opens a browser, sign in with your work/school M365 account), then re-run this."
 fi
-# The bot commands live in the 'botservice' extension.
-if command -v az >/dev/null 2>&1 && ! az extension show --name botservice >/dev/null 2>&1; then
-  echo "Installing the 'botservice' az extension..."
-  run az extension add --name botservice --only-show-errors
+# The `az bot` command group is NATIVE in modern az CLI (verified on 2.87.0):
+# `az bot create` / `az bot msteams create` / `az bot update` need no extension.
+# The old 'botservice' extension no longer exists by that name ("No extension
+# found with name botservice"), so a plain `az extension add --name botservice`
+# FAILS -- and under `set -euo pipefail` that would abort the whole script before
+# the bot is even created. Only fall back to the legacy extension if the bot
+# group is genuinely missing, and never let it be fatal.
+if command -v az >/dev/null 2>&1 && ! az bot --help >/dev/null 2>&1; then
+  echo "az bot group not found; trying the legacy botservice extension (best-effort)..."
+  az extension add --name botservice --only-show-errors >/dev/null 2>&1 || true
 fi
 
 if [ "$DRY_RUN" = 1 ]; then
