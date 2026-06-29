@@ -72,7 +72,7 @@ cat > "$WORK/manifest.json" <<JSON
   "bots": [
     {
       "botId": "${APP_ID}",
-      "scopes": ["personal"],
+      "scopes": ["personal", "team", "groupChat"],
       "supportsFiles": true,
       "isNotificationOnly": false
     }

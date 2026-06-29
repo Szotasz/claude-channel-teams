@@ -190,3 +190,82 @@ describe('adapter: attachment wiring', () => {
     rmSync(dir, { recursive: true })
   })
 })
+
+// Channel / group-chat scope (manifest scopes 'team' + 'groupChat'). In a shared
+// conversation the bot acts ONLY when @mentioned; the mention is stripped from
+// the text. 1:1 'personal' is unaffected (no mention required, verbatim text).
+describe('adapter: channel/group @mention gating', () => {
+  let dir: string
+  let allowlistFile: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cct-adapter-chan-'))
+    allowlistFile = join(dir, 'allowlist.json')
+  })
+
+  function turnWith(events: any[], allowlist: any) {
+    return makeTurnHandler({
+      config: makeConfig() as any,
+      adapter: {} as any,
+      allowlist,
+      refs: createConversationRefStore(),
+      onEvent: (e: any) => events.push(e),
+    })
+  }
+
+  test('channel message WITHOUT a bot @mention is ignored (no event)', async () => {
+    const allowlist = createAllowlist(allowlistFile)
+    allowlist.addEntry(FIXTURE_ID) // sender IS allowlisted -> proves the gate is the mention, not the allowlist
+    const events: any[] = []
+    const ctx = new TurnContext(new NoopAdapter() as any, makeActivity({
+      text: 'just chatting in the channel',
+      conversation: { id: 'conv-chan', tenantId: TENANT_ID, conversationType: 'channel' } as any,
+    }))
+    await turnWith(events, allowlist)(ctx)
+    expect(events.length).toBe(0)
+    rmSync(dir, { recursive: true })
+  })
+
+  test('channel message WITH a bot @mention is processed and the mention is stripped', async () => {
+    const allowlist = createAllowlist(allowlistFile)
+    allowlist.addEntry(FIXTURE_ID)
+    const events: any[] = []
+    const ctx = new TurnContext(new NoopAdapter() as any, makeActivity({
+      text: '<at>Bot</at> summarize this',
+      conversation: { id: 'conv-chan', tenantId: TENANT_ID, conversationType: 'channel' } as any,
+      entities: [{ type: 'mention', text: '<at>Bot</at>', mentioned: { id: 'bot-1', name: 'Bot' } }] as any,
+    }))
+    await turnWith(events, allowlist)(ctx)
+    expect(events.length).toBe(1)
+    expect(events[0].text).toBe('summarize this')
+    rmSync(dir, { recursive: true })
+  })
+
+  test('channel @mention from a NON-allowlisted sender does not bypass the allowlist (no event)', async () => {
+    const allowlist = createAllowlist(allowlistFile) // UNKNOWN_ID not seeded
+    const events: any[] = []
+    const ctx = new TurnContext(new NoopAdapter() as any, makeActivity({
+      from: { id: 'user-2', name: 'Stranger', aadObjectId: UNKNOWN_ID } as any,
+      text: '<at>Bot</at> do something',
+      conversation: { id: 'conv-chan', tenantId: TENANT_ID, conversationType: 'channel' } as any,
+      entities: [{ type: 'mention', text: '<at>Bot</at>', mentioned: { id: 'bot-1', name: 'Bot' } }] as any,
+    }))
+    await turnWith(events, allowlist)(ctx)
+    expect(events.length).toBe(0)
+    rmSync(dir, { recursive: true })
+  })
+
+  test('personal (1:1) message still processed verbatim with no mention (no regression)', async () => {
+    const allowlist = createAllowlist(allowlistFile)
+    allowlist.addEntry(FIXTURE_ID)
+    const events: any[] = []
+    const ctx = new TurnContext(new NoopAdapter() as any, makeActivity({
+      text: 'hello directly',
+      conversation: { id: 'conv-dm', tenantId: TENANT_ID, conversationType: 'personal' } as any,
+    }))
+    await turnWith(events, allowlist)(ctx)
+    expect(events.length).toBe(1)
+    expect(events[0].text).toBe('hello directly')
+    rmSync(dir, { recursive: true })
+  })
+})

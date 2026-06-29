@@ -258,6 +258,35 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     }
     const fromName = a.from?.name ?? ''
 
+    // Channel / group-chat scope (manifest scopes 'team' + 'groupChat'). In a
+    // SHARED conversation the bot must act ONLY when explicitly @mentioned --
+    // otherwise it would react to every message (noise) and widen interaction
+    // beyond intent. 1:1 ('personal') conversations are unaffected: no mention
+    // is required and the text is used verbatim below, so the existing DM path
+    // cannot regress. NOTE: this gates WHICH messages are considered; WHO may
+    // interact is still the per-user aadObjectId allowlist below (unchanged) --
+    // a channel member is not implicitly allowed just because the bot is in the
+    // channel; each sender still pairs individually.
+    const conversationType = a.conversation?.conversationType
+    const isGroupContext =
+      conversationType === 'channel' || conversationType === 'groupChat'
+    if (isGroupContext) {
+      const botId = a.recipient?.id
+      const mentioned = botId
+        ? (a.entities ?? []).some(
+            (e) =>
+              (e as { type?: string }).type === 'mention' &&
+              (e as { mentioned?: { id?: string } }).mentioned?.id === botId,
+          )
+        : false
+      if (!mentioned) {
+        process.stderr.write(
+          `teams channel: ignore — ${conversationType} message without bot @mention (convId=${conversationId.slice(0, 20)})\n`,
+        )
+        return
+      }
+    }
+
     // Allowlist gate — the single most important application-level check.
     // A non-allowlisted sender enters the pairing path (Phase 3) if a
     // pending store is wired; otherwise it's dropped silently.
@@ -317,7 +346,12 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // The reply tool stops it when the response lands.
     deps.typingPump?.start(conversationId, ref)
 
-    const rawText = typeof a.text === 'string' ? a.text : ''
+    // In a channel/group, strip the bot's own <at>…</at> mention so Claude sees
+    // the actual instruction ("@Bot summarize this" -> "summarize this"). For
+    // personal chats there is no recipient mention, so use the text verbatim.
+    const rawText = isGroupContext
+      ? (TurnContext.removeRecipientMention(a) ?? '').trim()
+      : (typeof a.text === 'string' ? a.text : '')
     const messageId = a.id
     const ts = a.timestamp ? new Date(a.timestamp).toISOString() : undefined
 
