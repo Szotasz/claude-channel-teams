@@ -47,10 +47,10 @@ Arguments passed: `$ARGUMENTS`
 
 ## The setup wizard (steps 0 to 4, run in order)
 
-Tell the operator up front what to expect: about 15 minutes, four steps; you
-(the assistant) run the scripts and report each result; the only things they do
-by hand are enabling a couple of prerequisites, uploading one file to Teams, and
-sending one message.
+Tell the operator up front what to expect: about 15 minutes; you (the assistant)
+run the scripts and report each result; the only things they do by hand are
+enabling a couple of prerequisites, running one `sudo` command (the plugin
+allowlist, below), uploading one file to Teams, and sending one message.
 
 ### Step 0: prerequisites (check before anything else)
 
@@ -67,9 +67,11 @@ not move past a hard-missing prerequisite.
    custom-app upload (Teams admin center, Setup policies, turn on "Upload custom
    apps"). If the operator is the tenant admin they can flip it; otherwise their
    IT admin must.
-3. **Azure CLI.** Probe `command -v az`. Missing means `brew install azure-cli`,
-   then `az login` (opens a browser, sign in with the work/school account). The
-   `az bot` commands are native now, so no extra CLI extension is needed; the
+3. **Azure CLI + subscription.** Probe `command -v az`. Missing means
+   `brew install azure-cli`, then `az login` (opens a browser, sign in with the
+   work/school account). The operator also needs an **Azure subscription** on
+   that account (the free tier is fine; the bot uses the **F0 SKU at $0/month**).
+   The `az bot` commands are native now, so no extra CLI extension is needed; the
    script handles any legacy fallback automatically.
 4. **Tailscale + Funnel** (for the default domain-free tunnel). Probe
    `command -v tailscale` and `tailscale status`. Missing means
@@ -144,6 +146,54 @@ Teams by hand, which is the one thing `az` cannot do:
 Walk them through it click by click. This needs the work/school tenant with
 custom-app upload allowed (step 0, item 2). The placeholder icons are fine for
 now; swap in real ones before any wider publish.
+
+### ⚠️ Allow the plugin first (managed-settings gate, one-time sudo)
+
+Do this **before** Step 4. Claude Code only delivers channel inbound for plugins
+on its **managed allowlist**. Until the `teams` plugin is on it, the bot looks
+online but **silently drops every inbound message** (it never replies, even
+though the logs may say "delivered"). This is the number-one "bot is online but
+never answers" cause (see PR #478). The wizard cannot do this step itself: the
+file is root-owned, so the operator runs one `sudo` command.
+
+The file (macOS; on Linux it is `/etc/claude-code/managed-settings.json`):
+
+`/Library/Application Support/ClaudeCode/managed-settings.json`
+
+The entry to add to `allowedChannelPlugins`:
+
+```json
+{ "plugin": "teams", "marketplace": "marveen-marketplace" }
+```
+
+`marveen-marketplace` is the marketplace the Teams plugin was installed from; use
+whatever marketplace name the install used. **Merge** this entry into any
+existing `allowedChannelPlugins` array; do not overwrite, or you drop the other
+channels (telegram, slack) already allowed.
+
+Ready-to-run (idempotent: creates the file or merges the entry, preserving
+anything already there; prompts for the operator's sudo password):
+
+```bash
+sudo python3 - <<'PY'
+import json, os
+p = "/Library/Application Support/ClaudeCode/managed-settings.json"
+os.makedirs(os.path.dirname(p), exist_ok=True)
+try:
+    d = json.load(open(p))
+except FileNotFoundError:
+    d = {}
+d.setdefault("channelsEnabled", True)
+lst = d.setdefault("allowedChannelPlugins", [])
+entry = {"plugin": "teams", "marketplace": "marveen-marketplace"}
+if entry not in lst:
+    lst.append(entry)
+json.dump(d, open(p, "w"), indent=2)
+print("allowedChannelPlugins now:", lst)
+PY
+```
+
+Then restart the channel session so the gate takes effect.
 
 ### Step 4: pair and lock down
 
