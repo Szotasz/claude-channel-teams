@@ -258,6 +258,61 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     }
     const fromName = a.from?.name ?? ''
 
+    // Channel / group-chat scope (manifest scopes 'team' + 'groupChat'). In a
+    // SHARED conversation the bot must act ONLY when explicitly @mentioned --
+    // otherwise it would react to every message (noise) and widen interaction
+    // beyond intent. 1:1 ('personal') conversations are unaffected: no mention
+    // is required and the text is used verbatim below, so the existing DM path
+    // cannot regress. NOTE: this gates WHICH messages are considered; WHO may
+    // interact is still the per-user aadObjectId allowlist below (unchanged) --
+    // a channel member is not implicitly allowed just because the bot is in the
+    // channel; each sender still pairs individually.
+    // Robust shared-conversation detection. `conversationType` ('channel' /
+    // 'groupChat') is the documented signal, but Teams does not always populate
+    // it the way we expect (observed live 2026-06-29: a real channel message --
+    // conversation id `19:...@thread.tacv2` -- arrived with conversationType not
+    // equal to 'channel', so the old single-signal check fell through to the
+    // personal path: surfaced verbatim, no @mention gate, no mention strip). So
+    // we OR in two reliable signals: `conversation.isGroup` (true for any shared
+    // conversation, false/undefined for a 1:1) and the `@thread.tacv2` team-channel
+    // conversation-id shape. 1:1-SAFE by construction: a personal chat has
+    // conversationType='personal' (not in the set), isGroup falsey, and a conv-id
+    // that is NOT `@thread.tacv2` (that suffix is channel-specific). We deliberately
+    // do NOT pattern-match `@thread.v2`/`@thread.skype` -- those are not needed
+    // (group chats set isGroup) and matching them risks a false-positive on a 1:1.
+    const conversationType = a.conversation?.conversationType
+    const isGroupConv = (a.conversation as { isGroup?: boolean } | undefined)?.isGroup === true
+    const threadConv = /@thread\.tacv2/.test(conversationId)
+    const isGroupContext =
+      conversationType === 'channel' ||
+      conversationType === 'groupChat' ||
+      isGroupConv ||
+      threadConv
+    // Diagnostic: the context signals on every inbound -- cheap, and the only way
+    // to tell a mis-detected channel from a 1:1 after the fact (no other log has it).
+    const mentionIds = (a.entities ?? [])
+      .filter((e) => (e as { type?: string }).type === 'mention')
+      .map((e) => (e as { mentioned?: { id?: string } }).mentioned?.id)
+    process.stderr.write(
+      `teams channel: ctx convType=${conversationType ?? '<none>'} isGroup=${isGroupConv} thread=${threadConv} -> group=${isGroupContext} recipient=${a.recipient?.id ?? '<none>'} mentions=${JSON.stringify(mentionIds)} convId=${conversationId.slice(0, 32)}\n`,
+    )
+    if (isGroupContext) {
+      const botId = a.recipient?.id
+      const mentioned = botId
+        ? (a.entities ?? []).some(
+            (e) =>
+              (e as { type?: string }).type === 'mention' &&
+              (e as { mentioned?: { id?: string } }).mentioned?.id === botId,
+          )
+        : false
+      if (!mentioned) {
+        process.stderr.write(
+          `teams channel: ignore: ${conversationType} message without bot @mention (convId=${conversationId.slice(0, 20)})\n`,
+        )
+        return
+      }
+    }
+
     // Allowlist gate — the single most important application-level check.
     // A non-allowlisted sender enters the pairing path (Phase 3) if a
     // pending store is wired; otherwise it's dropped silently.
@@ -317,7 +372,12 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // The reply tool stops it when the response lands.
     deps.typingPump?.start(conversationId, ref)
 
-    const rawText = typeof a.text === 'string' ? a.text : ''
+    // In a channel/group, strip the bot's own <at>…</at> mention so Claude sees
+    // the actual instruction ("@Bot summarize this" -> "summarize this"). For
+    // personal chats there is no recipient mention, so use the text verbatim.
+    const rawText = isGroupContext
+      ? (TurnContext.removeRecipientMention(a) ?? '').trim()
+      : (typeof a.text === 'string' ? a.text : '')
     const messageId = a.id
     const ts = a.timestamp ? new Date(a.timestamp).toISOString() : undefined
 
