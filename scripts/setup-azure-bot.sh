@@ -116,6 +116,17 @@ fi
 [ -n "$APP_SECRET" ] || _fail "secret generation did not return a value."
 
 # ── 3) resource group + Azure Bot (F0 free) ───────────────────────────────────
+# Brand-new subscriptions (a customer's first Azure sign-up) do NOT have the
+# resource providers registered, so `az bot create` fails with
+# "MissingSubscriptionRegistration ... namespace 'Microsoft.BotService'". Register
+# them first. `az provider register` is idempotent and a no-op once registered;
+# --wait blocks until the registration is live so the bot create below succeeds
+# on the very first run. Non-fatal so an already-registered/permission-limited
+# tenant still proceeds.
+for ns in Microsoft.BotService Microsoft.Web; do
+  run az provider register --namespace "$ns" --wait --only-show-errors >/dev/null 2>&1 || true
+done
+
 run az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --only-show-errors >/dev/null
 
 echo "Creating Azure Bot '$BOT_NAME' (F0 free tier, $APP_TYPE)..."
