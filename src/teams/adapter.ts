@@ -267,9 +267,31 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // interact is still the per-user aadObjectId allowlist below (unchanged) --
     // a channel member is not implicitly allowed just because the bot is in the
     // channel; each sender still pairs individually.
+    // Robust shared-conversation detection. `conversationType` ('channel' /
+    // 'groupChat') is the documented signal, but Teams does not always populate
+    // it the way we expect (observed live 2026-06-29: a real channel message --
+    // conversation id `19:...@thread.tacv2` -- arrived with conversationType not
+    // equal to 'channel', so the old single-signal check fell through to the
+    // personal path: surfaced verbatim, no @mention gate, no mention strip). So
+    // we OR in two reliable signals: `conversation.isGroup` (true for any shared
+    // conversation, false/undefined for 1:1) and the `@thread.tacv2` (team
+    // channel) / `@thread` (group) conversation-id shape.
     const conversationType = a.conversation?.conversationType
+    const isGroupConv = (a.conversation as { isGroup?: boolean } | undefined)?.isGroup === true
+    const threadConv = /@thread\.(tacv2|v2|skype)/.test(conversationId)
     const isGroupContext =
-      conversationType === 'channel' || conversationType === 'groupChat'
+      conversationType === 'channel' ||
+      conversationType === 'groupChat' ||
+      isGroupConv ||
+      threadConv
+    // Diagnostic: the context signals on every inbound -- cheap, and the only way
+    // to tell a mis-detected channel from a 1:1 after the fact (no other log has it).
+    const mentionIds = (a.entities ?? [])
+      .filter((e) => (e as { type?: string }).type === 'mention')
+      .map((e) => (e as { mentioned?: { id?: string } }).mentioned?.id)
+    process.stderr.write(
+      `teams channel: ctx convType=${conversationType ?? '<none>'} isGroup=${isGroupConv} thread=${threadConv} -> group=${isGroupContext} recipient=${a.recipient?.id ?? '<none>'} mentions=${JSON.stringify(mentionIds)} convId=${conversationId.slice(0, 32)}\n`,
+    )
     if (isGroupContext) {
       const botId = a.recipient?.id
       const mentioned = botId

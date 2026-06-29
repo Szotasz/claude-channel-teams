@@ -268,4 +268,36 @@ describe('adapter: channel/group @mention gating', () => {
     expect(events[0].text).toBe('hello directly')
     rmSync(dir, { recursive: true })
   })
+
+  // Live-failure regression (2026-06-29): a real Teams channel message arrived
+  // with conversationType NOT set to 'channel', so the single-signal check fell
+  // through to the personal path (verbatim, no gate, no strip). These lock in the
+  // isGroup / @thread.tacv2 fallback signals.
+  test('channel detected via conversation.isGroup (conversationType absent): @mention processed + stripped', async () => {
+    const allowlist = createAllowlist(allowlistFile)
+    allowlist.addEntry(FIXTURE_ID)
+    const events: any[] = []
+    const ctx = new TurnContext(new NoopAdapter() as any, makeActivity({
+      text: '<at>Teamer</at> hello, itt vagy?',
+      conversation: { id: 'conv-x', tenantId: TENANT_ID, isGroup: true } as any, // no conversationType
+      entities: [{ type: 'mention', text: '<at>Teamer</at>', mentioned: { id: 'bot-1', name: 'Teamer' } }] as any,
+    }))
+    await turnWith(events, allowlist)(ctx)
+    expect(events.length).toBe(1)
+    expect(events[0].text).toBe('hello, itt vagy?')
+    rmSync(dir, { recursive: true })
+  })
+
+  test('channel detected via @thread.tacv2 conversation id (conversationType absent): no-mention ignored', async () => {
+    const allowlist = createAllowlist(allowlistFile)
+    allowlist.addEntry(FIXTURE_ID)
+    const events: any[] = []
+    const ctx = new TurnContext(new NoopAdapter() as any, makeActivity({
+      text: 'just chatting in the channel',
+      conversation: { id: '19:8a878bc3@thread.tacv2;messageid=1', tenantId: TENANT_ID } as any, // no conversationType, no isGroup
+    }))
+    await turnWith(events, allowlist)(ctx)
+    expect(events.length).toBe(0)
+    rmSync(dir, { recursive: true })
+  })
 })
