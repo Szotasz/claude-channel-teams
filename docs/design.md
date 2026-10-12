@@ -109,7 +109,8 @@ environment winning. `.env` is chmod-0600 on every load.
 | `TEAMS_BOT_TENANT_ID` | When SingleTenant | — | Tenant GUID. |
 | `TEAMS_PLUGIN_BIND_HOST` | No | `127.0.0.1` | Loopback by default. |
 | `TEAMS_PLUGIN_PORT` | No | `3979` | Standard Bot Framework default. |
-| `TEAMS_BOT_ENDPOINT_URL` | No (recommended) | — | Public HTTPS URL on the Azure Bot resource. Diagnostics + status output. |
+| `TEAMS_BOT_ENDPOINT_URL` | No (recommended) | none | Public HTTPS URL on the Azure Bot resource. Diagnostics + status output, and the base of `send_file` download links (origin + `/files`); without it `send_file` is disabled. |
+| `TEAMS_FILES_BASE_URL` | No | origin of `TEAMS_BOT_ENDPOINT_URL` + `/files` | Override for the `send_file` download-link base. https only. |
 | `TEAMS_STATE_DIR` | No | `~/.claude/channels/teams` | For multi-instance setups. |
 | `TEAMS_ACCESS_MODE` | No | — | `static` pins access at boot, disables pairing. |
 
