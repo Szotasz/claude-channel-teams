@@ -198,7 +198,7 @@ const sendFile = createFileSender({
   allowlist,
   refs,
   outbox,
-  downloadBaseUrl: 'https://hermes.vcshosted.uk/files',
+  downloadBaseUrl: config.filesBaseUrl,
 })
 
 /**
