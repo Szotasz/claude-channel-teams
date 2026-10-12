@@ -64,6 +64,18 @@ export interface Config {
    * so the state-dir secrets .env/access.json stay outside the send boundary).
    */
   sendableFilesRoot: string
+  /**
+   * Public base URL the `send_file` download links are built on, e.g.
+   * `https://<host>.<tailnet>.ts.net/files`. The token gets appended.
+   *
+   * Derived from THIS install's own public endpoint so the link reaches the
+   * plugin's `/files/<token>` route through the same tunnel Azure already
+   * uses: `TEAMS_FILES_BASE_URL` when set, else the origin of
+   * `TEAMS_BOT_ENDPOINT_URL` (which setup-azure-bot.sh writes) + `/files`.
+   * `null` when neither yields an https URL; `send_file` then refuses
+   * instead of minting a token behind a link that cannot work.
+   */
+  filesBaseUrl: string | null
 }
 
 /**
@@ -115,6 +127,47 @@ function loadEnvFile(envFile: string): void {
     if (key && value !== undefined && process.env[key] === undefined) {
       process.env[key] = value
     }
+  }
+}
+
+/**
+ * Resolve the public base URL for outbound file downloads (see
+ * `Config.filesBaseUrl`). Never falls back to a fixed host: a link to any
+ * host other than this install's own would send the download token (and,
+ * through Microsoft's link prefetch, the request itself) to a third party.
+ * Returns `null` and writes one stderr line when nothing usable is set.
+ */
+export function resolveFilesBaseUrl(env: NodeJS.ProcessEnv): string | null {
+  const explicit = env.TEAMS_FILES_BASE_URL?.trim()
+  if (explicit) {
+    const url = parseHttpsUrl(explicit)
+    if (url) return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+    process.stderr.write(
+      `teams channel: TEAMS_FILES_BASE_URL is not an https URL (got ${explicit}); send_file disabled\n`,
+    )
+    return null
+  }
+  const endpoint = env.TEAMS_BOT_ENDPOINT_URL?.trim()
+  if (endpoint) {
+    const url = parseHttpsUrl(endpoint)
+    if (url) return `${url.origin}/files`
+    process.stderr.write(
+      `teams channel: TEAMS_BOT_ENDPOINT_URL is not an https URL (got ${endpoint}); send_file disabled\n`,
+    )
+    return null
+  }
+  process.stderr.write(
+    'teams channel: no TEAMS_BOT_ENDPOINT_URL or TEAMS_FILES_BASE_URL set; send_file disabled\n',
+  )
+  return null
+}
+
+function parseHttpsUrl(raw: string): URL | null {
+  try {
+    const url = new URL(raw)
+    return url.protocol === 'https:' && url.hostname ? url : null
+  } catch {
+    return null
   }
 }
 
@@ -192,5 +245,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     outboxDir,
     outboxTtlSeconds,
     sendableFilesRoot,
+    filesBaseUrl: resolveFilesBaseUrl(env),
   })
 }
