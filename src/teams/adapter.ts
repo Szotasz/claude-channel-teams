@@ -68,6 +68,8 @@ export type ChannelEventSink = (event: {
   fromName: string
   messageId?: string
   ts?: string
+  /** Group context only: whether the bot was @mentioned. Undefined in 1:1 chats. */
+  mentioned?: boolean
 }) => void
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
@@ -210,6 +212,12 @@ function makeResponseSink(): {
   return { res, done }
 }
 
+/** The channel / chat part of a conversation id (drops ';messageid=...'). */
+export function baseConversationId(conversationId: string): string {
+  const i = conversationId.indexOf(';')
+  return i === -1 ? conversationId : conversationId.slice(0, i)
+}
+
 /**
  * Build the turn handler that bridges the SDK's TurnContext to our gate + sink.
  *
@@ -296,9 +304,13 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     process.stderr.write(
       `teams channel: ctx convType=${conversationType ?? '<none>'} isGroup=${isGroupConv} thread=${threadConv} -> group=${isGroupContext} recipient=${a.recipient?.id ?? '<none>'} mentions=${JSON.stringify(mentionIds)} convId=${conversationId.slice(0, 32)}\n`,
     )
+    // One allowlist decision per turn: the unmentioned path and the gate below
+    // must not disagree because the allowlist changed between two reads.
+    const senderAllowed = deps.allowlist.isAllowed(aadObjectId)
+    let mentioned: boolean | undefined
     if (isGroupContext) {
       const botId = a.recipient?.id
-      const mentioned = botId
+      mentioned = botId
         ? (a.entities ?? []).some(
             (e) =>
               (e as { type?: string }).type === 'mention' &&
@@ -306,17 +318,30 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
           )
         : false
       if (!mentioned) {
-        process.stderr.write(
-          `teams channel: ignore: ${conversationType} message without bot @mention (convId=${conversationId.slice(0, 20)})\n`,
-        )
-        return
+        const optOut = deps.config.unmentionedConversations
+        const unmentionedOk = optOut !== undefined && (optOut.has('*') || optOut.has(baseConversationId(conversationId)))
+        if (!unmentionedOk) {
+          process.stderr.write(
+            `teams channel: ignore: ${conversationType} message without bot @mention (convId=${conversationId.slice(0, 20)})\n`,
+          )
+          return
+        }
+        // Delivered without a mention: allowlisted senders only. A non-allowlisted
+        // sender's unmentioned message never starts the pairing flow -- otherwise
+        // every channel member who writes anything would get a pairing DM.
+        if (!senderAllowed) {
+          process.stderr.write(
+            `teams channel: ignore: unmentioned ${conversationType ?? 'group'} message from a non-allowlisted sender (convId=${conversationId.slice(0, 20)})\n`,
+          )
+          return
+        }
       }
     }
 
     // Allowlist gate — the single most important application-level check.
     // A non-allowlisted sender enters the pairing path (Phase 3) if a
     // pending store is wired; otherwise it's dropped silently.
-    if (!deps.allowlist.isAllowed(aadObjectId)) {
+    if (!senderAllowed) {
       if (deps.pending && deps.sendPairingDm) {
         const ref = TurnContext.getConversationReference(a)
         const decision = deps.pending.recordIncoming({
@@ -409,7 +434,9 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // a bare "yes" or chatty prefix falls through to the regular channel
     // event. If the id doesn't match a pending request, treat the text as a
     // normal message — better than swallowing it silently.
-    if (deps.permission) {
+    // A tool-approval verdict must be addressed to the bot: in a shared
+    // conversation an unmentioned "yes <id>" is overheard text, not an answer.
+    if (deps.permission && mentioned !== false) {
       // Match against the raw text — annotations appended for attachments
       // would otherwise break the anchored regex.
       const match = PERMISSION_REPLY_RE.exec(rawText)
@@ -436,6 +463,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       fromName,
       messageId,
       ts,
+      ...(mentioned !== undefined ? { mentioned } : {}),
     })
   }
 }
