@@ -41,6 +41,7 @@ import type { PendingStore } from '../pairing/pair.js'
 import type { PermissionRelay } from '../permission/relay.js'
 import { PERMISSION_REPLY_RE } from '../permission/relay.js'
 import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
+import type { ChannelRefStore } from './channelRefs.js'
 import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
@@ -158,6 +159,8 @@ export interface AdapterDeps {
    * sets it.
    */
   attachments?: AttachmentHandler
+  /** Persisted per-channel references for post_to_channel. Optional. */
+  channelRefs?: ChannelRefStore
   /** Optional typing-indicator pump. Started after the gate passes so the
    *  Teams user sees "is typing…" while Claude works. Optional so existing
    *  tests still wire. */
@@ -527,6 +530,12 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // before pushing to Claude so a fast reply can always find its way back.
     const ref = TurnContext.getConversationReference(a)
     deps.refs.put(conversationId, ref, aadObjectId)
+    // Remember one reference per proactive-enabled channel (persisted), so the
+    // post_to_channel tool can open a new post there later, even after a restart.
+    if (isGroupContext && deps.channelRefs) {
+      const channelId = conversationId.split(';')[0]!
+      if (deps.config.proactiveChannels?.has(channelId)) deps.channelRefs.put(channelId, ref, aadObjectId)
+    }
 
     // Start the typing-indicator pump as early as possible — the user sees
     // "is typing…" while attachments are processed and Claude is notified.

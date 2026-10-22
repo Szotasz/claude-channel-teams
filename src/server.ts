@@ -47,6 +47,8 @@ import { createCloudAdapter } from './teams/auth.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
 import { createReplySender } from './teams/reply.js'
 import { createConversationRefStore } from './teams/conversationRefs.js'
+import { createChannelRefStore } from './teams/channelRefs.js'
+import { createChannelPoster } from './teams/channelPost.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { createFileSender } from './teams/sendFile.js'
@@ -104,6 +106,7 @@ const refs = createConversationRefStore({
   file: join(config.stateDir, 'conversation-refs.json'),
   isAllowed: (aad) => allowlist.isAllowed(aad),
 })
+const channelRefs = createChannelRefStore(join(config.stateDir, 'channel-refs.json'))
 
 // Ensure the received-files base directory exists at boot. A permission
 // problem here should fail loud rather than first surface mid-message.
@@ -208,6 +211,7 @@ try {
 // ── Outbound reply path (used by both `reply` tool and pairing DM hook) ─────
 
 const replier = createReplySender({ config, adapter, allowlist, refs, typingPump })
+const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
 
 const sendFile = createFileSender({
   config,
@@ -465,6 +469,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     ...plannerTools(config.plannerPlanIds),
+    ...((config.proactiveChannels?.size ?? 0) > 0
+      ? [
+          {
+            name: 'post_to_channel',
+            description:
+              'Start a NEW top-level post in a Microsoft Teams channel (not a reply in a thread). ' +
+              'Only for channels the operator enabled in TEAMS_PROACTIVE_CHANNELS; an allowlisted user must have ' +
+              'written in that channel at least once since. Returns the new thread\'s conversation_id, which works with reply.',
+            inputSchema: {
+              type: 'object' as const,
+              properties: {
+                channel_id: { type: 'string', description: "The channel id: a channel message's conversation_id without the ';messageid=...' part." },
+                text: { type: 'string', description: 'Message text, rendered as markdown like reply.' },
+              },
+              required: ['channel_id', 'text'],
+            },
+          },
+        ]
+      : []),
   ],
 }))
 
@@ -508,6 +531,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             },
           ],
         }
+      }
+
+      case 'post_to_channel': {
+        const channelId = args.channel_id
+        const text = args.text
+        if (typeof channelId !== 'string' || channelId.length === 0) {
+          throw new Error('post_to_channel requires a non-empty channel_id string')
+        }
+        if (typeof text !== 'string' || text.length === 0) {
+          throw new Error('post_to_channel requires a non-empty text string')
+        }
+        const r = await channelPoster.postToChannel(channelId, text)
+        return { content: [{ type: 'text', text: `posted (conv=${r.conversationId}${r.messageId ? `, message_id=${r.messageId}` : ''})` }] }
       }
 
       case 'send_file': {
@@ -722,6 +758,7 @@ const listener = startListener({
   adapter,
   allowlist,
   refs,
+  channelRefs,
   onEvent,
   pending,
   permission,
