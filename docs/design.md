@@ -554,3 +554,11 @@ plugins' patterns:
 - [ ] No third-party telemetry / phone-home.
 - [ ] License: MIT or Apache 2.0.
 - [ ] Generalised docs — no hard-coded tenant IDs, bot names, hostnames.
+
+## Planner tasks (`create_planner_task`)
+
+An opt-in MCP tool that creates a Microsoft Planner task through Graph with the
+bot's app-only token. It is off unless `TEAMS_PLANNER_PLAN_IDS` lists the plans
+it may write to, because the required `Tasks.ReadWrite.All` permission covers
+every plan in the tenant. Arguments are validated before any network call.
+See [planner.md](planner.md).

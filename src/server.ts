@@ -54,6 +54,12 @@ import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
 import { ensureBaseDir, processAttachments } from './teams/attachments.js'
+import {
+  createGraphTokenProvider,
+  createPlannerTask,
+  plannerTools,
+  validatePlannerArgs,
+} from './teams/planner.js'
 import { MicrosoftAppCredentials } from 'botframework-connector'
 
 // Crash safety — without these the process can die silently on any
@@ -286,6 +292,12 @@ mcp.setNotificationHandler(
 
 // ── Tool surface ────────────────────────────────────────────────────────────
 
+const graphToken = createGraphTokenProvider({
+  tenantId: config.tenantId,
+  appId: config.appId,
+  appPassword: config.appPassword,
+})
+
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
@@ -448,6 +460,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['aad_object_id'],
       },
     },
+    ...plannerTools(config.plannerPlanIds),
   ],
 }))
 
@@ -648,6 +661,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         return {
           content: [{ type: 'text', text: `revoked aad_object_id=${aadObjectId}` }],
         }
+      }
+
+      case 'create_planner_task': {
+        const input = validatePlannerArgs(args, config.plannerPlanIds)
+        const { taskId } = await createPlannerTask(input, { getToken: () => graphToken.getToken() })
+        return { content: [{ type: 'text', text: JSON.stringify({ task_id: taskId }) }] }
       }
 
       default:

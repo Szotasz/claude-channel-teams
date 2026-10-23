@@ -28,6 +28,19 @@ export function parseIdList(raw: string | undefined): ReadonlySet<string> {
   return new Set((raw ?? '').split(',').map(s => s.trim()).filter(s => s.length > 0))
 }
 
+/**
+ * Planner plan ids from an env var (comma-separated, like parseIdList). Every
+ * entry must look like a Graph plan id; one bad entry makes the whole list
+ * invalid (null) so a typo cannot silently widen or shrink the allow-list.
+ */
+export function parsePlannerPlanIds(raw: string | undefined): ReadonlySet<string> | null {
+  const ids = parseIdList(raw)
+  for (const id of ids) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return null
+  }
+  return ids
+}
+
 export interface Config {
   /**
    * Shared conversations (channel or group chat) in which an allowlisted
@@ -89,6 +102,12 @@ export interface Config {
    * instead of minting a token behind a link that cannot work.
    */
   filesBaseUrl: string | null
+  /**
+   * Planner plans the `create_planner_task` tool may write to. Empty (the
+   * default) keeps the tool off. From TEAMS_PLANNER_PLAN_IDS (comma-separated);
+   * see docs/planner.md.
+   */
+  plannerPlanIds: ReadonlySet<string>
 }
 
 /**
@@ -244,6 +263,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     )
   }
 
+  let plannerPlanIds = parsePlannerPlanIds(env.TEAMS_PLANNER_PLAN_IDS)
+  if (plannerPlanIds === null) {
+    process.stderr.write(
+      'teams channel: TEAMS_PLANNER_PLAN_IDS has an invalid plan id; create_planner_task stays off\n',
+    )
+    plannerPlanIds = new Set()
+  }
+
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
     stateDir,
@@ -260,5 +287,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     outboxTtlSeconds,
     sendableFilesRoot,
     filesBaseUrl: resolveFilesBaseUrl(env),
+    plannerPlanIds,
   })
 }
