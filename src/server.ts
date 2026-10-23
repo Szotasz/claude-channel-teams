@@ -50,6 +50,7 @@ import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { createFileSender } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
+import { createSharePointUploader } from './teams/sharepoint.js'
 import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
@@ -212,6 +213,15 @@ const sendFile = createFileSender({
   refs,
   outbox,
   downloadBaseUrl: config.filesBaseUrl,
+  sharePoint: config.sharePoint
+    ? createSharePointUploader({
+        tenantId: config.tenantId,
+        appId: config.appId,
+        appPassword: config.appPassword,
+        siteId: config.sharePoint.siteId,
+        folder: config.sharePoint.folder,
+      })
+    : undefined,
 })
 
 /**
@@ -535,7 +545,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           content: [
             {
               type: 'text',
-              text: `sent file (conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes}, token=${result.token.slice(0, 8)}…)`,
+              text: result.webUrl
+                ? `sent file to SharePoint (conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes})`
+                : `sent file (conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes}, token=${result.token!.slice(0, 8)}…)`,
             },
           ],
         }
