@@ -237,20 +237,20 @@ export function baseConversationId(conversationId: string): string {
  * tokens, impractical to produce in tests).
  */
 export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promise<void> {
-  return async function handle(ctx: TurnContext) {
-    const state = { answered: false }
+  return async function answeredTurn(ctx: TurnContext) {
+    const invoke = { answered: false }
     try {
-      await turn(ctx, state)
+      await turn(ctx, invoke)
     } finally {
       // A composeExtension invoke must be answered within five seconds; "no response" is status 200 without a body.
-      if (!state.answered && ctx.activity.type === 'invoke' && ctx.activity.name?.startsWith('composeExtension/')) {
-        await answerInvoke(ctx, state)
+      if (!invoke.answered && ctx.activity.type === 'invoke' && ctx.activity.name?.startsWith('composeExtension/')) {
+        await answerEmptyInvoke(ctx, invoke)
       }
     }
   }
 
-  async function answerInvoke(ctx: TurnContext, state: { answered: boolean }) {
-    state.answered = true
+  async function answerEmptyInvoke(ctx: TurnContext, invoke: { answered: boolean }) {
+    invoke.answered = true
     try {
       await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200 } } as Partial<Activity>)
     } catch (err) {
@@ -258,7 +258,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     }
   }
 
-  async function turn(ctx: TurnContext, state: { answered: boolean }) {
+  async function turn(ctx: TurnContext, invoke: { answered: boolean }) {
     const a = ctx.activity
     // Diagnostic: log every inbound so we know what arrived.
     process.stderr.write(
@@ -273,6 +273,11 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
       : undefined
     const action = messageActionFrom(a)
+    if (action && !deps.config.messageActions) {
+      process.stderr.write('teams channel: drop message action: TEAMS_MESSAGE_ACTIONS is not on\n')
+      await answerEmptyInvoke(ctx, invoke)
+      return
+    }
     if (a.type !== 'message' && !messageEvent && !action) return
 
     const aadObjectIdRaw = a.from?.aadObjectId
@@ -309,12 +314,12 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       // Message action from a message's "..." menu: allowlisted senders only, never pairs, answered with no body.
       if (!deps.allowlist.isAllowed(aadObjectId)) {
         process.stderr.write(`teams channel: drop message action from a sender not on the allowlist (${aadObjectId})\n`)
-        await answerInvoke(ctx, state)
+        await answerEmptyInvoke(ctx, invoke)
         return
       }
       // Answer first (Teams allows five seconds), then hand the event over; a failing hand-over is logged, the
       // invoke is already answered.
-      await answerInvoke(ctx, state)
+      await answerEmptyInvoke(ctx, invoke)
       try {
         deps.refs.put(conversationId, TurnContext.getConversationReference(a), aadObjectId)
         const payloadId = (a.value as { messagePayload?: { id?: unknown } } | undefined)?.messagePayload?.id

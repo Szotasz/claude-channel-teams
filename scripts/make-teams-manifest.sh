@@ -26,10 +26,11 @@
 # --command "<title>: <description>" declares a Teams slash command (repeatable, order kept, max 12). The value is split at
 # the first ": "; one leading "/" on the title is dropped, the title must match [A-Za-z0-9][A-Za-z0-9_-]* (max 128 bytes) and
 # be unique (case-insensitive); the description is required, max 4000 bytes, without control characters. It adds
-# supportsTargetedMessages and one commandLists entry (personal, team, groupChat; triggers mention and slash) to the bot,
+# supportsTargetedMessages and one commandLists entry (personal scope only for now; triggers mention and slash) to the bot,
 # which raises the manifest to version 1.29 (only when at least one --command is given). The commands arrive as targeted
-# messages that are visible only to the sender. An app that is already installed must be re-uploaded/upgraded in Teams for
-# the change to take effect.
+# messages that are visible only to the sender. Nothing in the server answers a targeted message privately yet, so in a
+# channel or group chat the answer would be visible to everyone; that is why commands are limited to 1:1 chats. An app
+# that is already installed must be re-uploaded/upgraded in Teams for the change to take effect.
 #
 # --message-action "<id>: <title>: <description>" adds an entry to the "..." (More actions) menu of a Teams message
 # (repeatable, order kept, max 10). The value is split at the first ": " into the id and the rest, the rest at its first
@@ -253,7 +254,7 @@ if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
       \"supportsTargetedMessages\": true,
       \"commandLists\": [
         {
-          \"scopes\": [\"personal\", \"team\", \"groupChat\"],
+          \"scopes\": [\"personal\"],
           \"triggers\": [\"mention\", \"slash\"],
           \"commands\": [${CMD_ITEMS}
           ]
@@ -332,8 +333,8 @@ if [ "$RSC_ALL" = 1 ]; then
   echo "RSC: requests ChannelMessage.Read.Group and ChatMessage.Read.Chat; the team or chat owner consents at install."
 fi
 if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
-  echo "COMMANDS: declares ${#CMD_TITLES[@]} slash command(s); the manifest is version 1.29. Re-upload or upgrade an already installed app."
+  echo "COMMANDS: declares ${#CMD_TITLES[@]} slash command(s), for 1:1 chats only for now; the manifest is version 1.29. Re-upload or upgrade an already installed app."
 fi
 if [ "${#MA_IDS[@]}" -gt 0 ]; then
-  echo "MESSAGE ACTIONS: declares ${#MA_IDS[@]} message action(s) in the \"...\" menu. Re-upload or upgrade an already installed app."
+  echo "MESSAGE ACTIONS: declares ${#MA_IDS[@]} message action(s) in the \"...\" menu. Re-upload or upgrade an already installed app, and set TEAMS_MESSAGE_ACTIONS=1 in the plugin .env so the server delivers them."
 fi

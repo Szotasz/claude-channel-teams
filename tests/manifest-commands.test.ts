@@ -59,7 +59,7 @@ describe('make-teams-manifest.sh --command', () => {
     expect(bot.supportsTargetedMessages).toBe(true)
     expect(bot.commandLists).toEqual([
       {
-        scopes: ['personal', 'team', 'groupChat'],
+        scopes: ['personal'],
         triggers: ['mention', 'slash'],
         commands: [
           { title: 'deadlines', description: 'Upcoming tender deadlines' },
