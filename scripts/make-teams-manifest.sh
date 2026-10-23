@@ -11,7 +11,16 @@
 #
 # Usage:
 #   make-teams-manifest.sh [--app-id <guid>] [--name "Marveen"] \
-#       [--env-file ~/.claude/channels/teams/.env] [--out ./teams-app.zip]
+#       [--env-file ~/.claude/channels/teams/.env] [--out ./teams-app.zip] \
+#       [--rsc-all-messages]
+#
+# --rsc-all-messages adds the RSC permissions ChannelMessage.Read.Group and ChatMessage.Read.Chat (application) and the
+# webApplicationInfo block they need (manifest 1.12 or later; this one is 1.16). Teams then delivers every message in the
+# team channels and group chats where the app is installed, not only @mentions, so all of their content reaches the bot
+# host: enable it only when you need it. The team or chat owner must consent when the app is installed. An app that is
+# already installed in a team must be upgraded there with the new permissions consented (Graph: upgrade the installation
+# with a consentedPermissionSet), otherwise the permission is not granted. On its own the plugin still acts only on
+# messages that @mention the bot (its mention gate); the permission is what a separate unmentioned-delivery option needs.
 set -euo pipefail
 
 APP_ID=""
@@ -21,6 +30,7 @@ APP_ID=""
 APP_NAME=""
 ENV_FILE="${HOME}/.claude/channels/teams/.env"
 OUT="./teams-app.zip"
+RSC_ALL=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -28,6 +38,7 @@ while [ $# -gt 0 ]; do
     --name) APP_NAME="$2"; shift 2 ;;
     --env-file) ENV_FILE="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
+    --rsc-all-messages) RSC_ALL=1; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -50,6 +61,23 @@ fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+RSC_BLOCK=""
+if [ "$RSC_ALL" = 1 ]; then
+  RSC_BLOCK=",
+  \"webApplicationInfo\": {
+    \"id\": \"${APP_ID}\",
+    \"resource\": \"https://RscBasedStoreApp\"
+  },
+  \"authorization\": {
+    \"permissions\": {
+      \"resourceSpecific\": [
+        { \"name\": \"ChannelMessage.Read.Group\", \"type\": \"Application\" },
+        { \"name\": \"ChatMessage.Read.Chat\", \"type\": \"Application\" }
+      ]
+    }
+  }"
+fi
 
 # Minimal valid Teams manifest. `id` is the app's own GUID; reusing the bot App
 # ID is allowed and keeps it one-value-simple for the owner.
@@ -78,7 +106,7 @@ cat > "$WORK/manifest.json" <<JSON
     }
   ],
   "permissions": ["identity", "messageTeamMembers"],
-  "validDomains": []
+  "validDomains": []${RSC_BLOCK}
 }
 JSON
 
@@ -118,3 +146,6 @@ Wrote $OUT (App ID ${APP_ID}).
 Upload it in Teams: Apps -> Manage your apps -> Upload a custom app -> pick this .zip.
 (Needs a work/school tenant with custom-app upload allowed.)
 EOF
+if [ "$RSC_ALL" = 1 ]; then
+  echo "RSC: requests ChannelMessage.Read.Group and ChatMessage.Read.Chat; the team or chat owner consents at install."
+fi
