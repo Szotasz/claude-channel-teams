@@ -6,6 +6,8 @@ import { loadConfig } from '../src/config.js'
 import {
   ACTIVITY_TOOL,
   activityTools,
+  createActivityRateLimiter,
+  handleSendActivity,
   sendActivityNotification,
   validateActivityArgs,
 } from '../src/teams/activityFeed.js'
@@ -159,5 +161,133 @@ describe('loadConfig activityFeed', () => {
       }
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('createActivityRateLimiter', () => {
+  const mk = (o = {}) => {
+    const c = { t: 0 }
+    return { c, l: createActivityRateLimiter({ now: () => c.t, ...o }) }
+  }
+  test('3 succeed, 4th null; users independent', () => {
+    const { l } = mk()
+    for (let i = 0; i < 3; i++) expect(l.reserve('a')).not.toBeNull()
+    expect(l.reserve('a')).toBeNull()
+    for (let i = 0; i < 3; i++) expect(l.reserve('b')).not.toBeNull()
+    expect(l.reserve('b')).toBeNull()
+  })
+  test('window expiry boundary', () => {
+    const { c, l } = mk()
+    for (let i = 0; i < 3; i++) l.reserve('a')
+    c.t = 10 * 60 * 1000 - 1
+    expect(l.reserve('a')).toBeNull()
+    c.t = 10 * 60 * 1000
+    expect(l.reserve('a')).not.toBeNull()
+  })
+  test('release frees exactly one slot, once', () => {
+    const { l } = mk()
+    const rs = [l.reserve('a')!, l.reserve('a')!, l.reserve('a')!]
+    rs[1]()
+    rs[1]()
+    expect(l.reserve('a')).not.toBeNull()
+    expect(l.reserve('a')).toBeNull()
+  })
+  test('a full limiter only makes room from expired histories, else refuses the new recipient', () => {
+    const { c, l } = mk({ maxRecipients: 2 })
+    for (let i = 0; i < 3; i++) expect(l.reserve('a')).not.toBeNull()
+    c.t = 5 * 60 * 1000
+    expect(l.reserve('b')).not.toBeNull()
+    // Full and nothing expired: the new recipient is refused, and 'a' keeps its history.
+    expect(l.reserve('c')).toBeNull()
+    expect(l.reserve('a')).toBeNull()
+    // 'a' has expired, 'b' has not: 'c' takes the place of 'a', and 'b' still has only 2 slots left.
+    c.t = 10 * 60 * 1000
+    expect(l.reserve('c')).not.toBeNull()
+    expect(l.reserve('b')).not.toBeNull()
+    expect(l.reserve('b')).not.toBeNull()
+    expect(l.reserve('b')).toBeNull()
+  })
+})
+
+describe('handleSendActivity', () => {
+  const FULL = '19:abc@thread.tacv2;messageid=1700000000000'
+  const okArgs = { conversation_id: FULL, aad_object_id: GUID, text: 'hi' }
+  const mkDeps = (over: Record<string, unknown> = {}, status = () => 204) => {
+    const t = 0
+    const f = fake(() => new Response(null, { status: status() }))
+    const rec = { assert: [] as string[], team: [] as string[], allowed: [] as string[] }
+    const d = {
+      enabled: true,
+      assertAllowedConversation: (id: string) => void rec.assert.push(id),
+      teamIdFor: (id: string) => (rec.team.push(id), id === '19:abc@thread.tacv2' ? 'team-1' : undefined),
+      isAllowed: (id: string) => (rec.allowed.push(id), true),
+      limiter: createActivityRateLimiter({ now: () => t }),
+      getToken: async () => 'TOK',
+      fetch: f.fetch,
+      ...over,
+    }
+    return { d, f, rec }
+  }
+  test('off', async () => {
+    const { d, f, rec } = mkDeps({ enabled: false })
+    await expect(handleSendActivity(okArgs, d)).rejects.toThrow('send_activity_notification is off (TEAMS_ACTIVITY_FEED is not 1)')
+    expect(rec.assert).toEqual([])
+    expect(f.calls.length).toBe(0)
+  })
+  test('conversation gate', async () => {
+    const { d, f, rec } = mkDeps({
+      assertAllowedConversation: (id: string) => {
+        rec.assert.push(id)
+        throw new Error('not allowed X')
+      },
+    })
+    await expect(handleSendActivity(okArgs, d)).rejects.toThrow('not allowed X')
+    expect(rec.assert).toEqual([FULL])
+    expect(f.calls.length).toBe(0)
+  })
+  test('team lookup uses the channel id', async () => {
+    const { d, f, rec } = mkDeps()
+    await handleSendActivity(okArgs, d)
+    expect(rec.team).toEqual(['19:abc@thread.tacv2'])
+    expect(f.calls[0].url).toBe('https://graph.microsoft.com/v1.0/teams/team-1/sendActivityNotification')
+    const n = mkDeps({ teamIdFor: () => undefined })
+    await expect(handleSendActivity(okArgs, n.d)).rejects.toThrow(
+      'team id unknown for this channel: it is learned from an inbound message in the channel',
+    )
+    expect(n.f.calls.length).toBe(0)
+  })
+  test('recipient gate', async () => {
+    const { d, f, rec } = mkDeps({
+      isAllowed: (id: string) => (rec.allowed.push(id), false),
+    })
+    await expect(handleSendActivity(okArgs, d)).rejects.toThrow('the recipient must be on the allowlist')
+    expect(rec.allowed).toEqual([GUID.toLowerCase()])
+    expect(f.calls.length).toBe(0)
+  })
+  test('rate limit', async () => {
+    const { d, f } = mkDeps()
+    for (let i = 0; i < 3; i++) await handleSendActivity(okArgs, d)
+    await expect(handleSendActivity(okArgs, d)).rejects.toThrow(
+      'too many activity notifications to this person (at most 3 in 10 minutes)',
+    )
+    expect(f.calls.length).toBe(3)
+  })
+  test('a failed send does not count', async () => {
+    let n = 0
+    const { d } = mkDeps({}, () => (n++ === 0 ? 500 : 204))
+    await expect(handleSendActivity(okArgs, d)).rejects.toThrow('Graph HTTP 500')
+    for (let i = 0; i < 3; i++) await handleSendActivity(okArgs, d)
+  })
+  test('concurrent calls cannot pass the limit together', async () => {
+    const { d, f } = mkDeps()
+    const r = await Promise.allSettled([0, 1, 2, 3].map(() => handleSendActivity(okArgs, d)))
+    expect(r.filter(x => x.status === 'fulfilled').length).toBe(3)
+    expect(r.flatMap(x => (x.status === 'rejected' ? [(x.reason as Error).message] : []))).toEqual([
+      'too many activity notifications to this person (at most 3 in 10 minutes)',
+    ])
+    expect(f.calls.length).toBe(3)
+  })
+  test('success', async () => {
+    expect(await handleSendActivity(okArgs, mkDeps().d)).toEqual({ sent: true })
   })
 })

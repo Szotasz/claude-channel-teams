@@ -84,11 +84,81 @@ export async function sendActivityNotification(
   throw new Error(`Graph HTTP ${res.status}${code ? ' ' + code : ''}`)
 }
 
+export function createActivityRateLimiter(
+  opts: { max?: number; windowMs?: number; maxRecipients?: number; now?: () => number } = {},
+): { reserve(userId: string): (() => void) | null } {
+  const max = opts.max ?? 3
+  const windowMs = opts.windowMs ?? 10 * 60 * 1000
+  const maxRecipients = opts.maxRecipients ?? 1000
+  const now = opts.now ?? Date.now
+  const users = new Map<string, number[]>()
+  return {
+    reserve(userId) {
+      const t = now()
+      const kept = (users.get(userId) ?? []).filter(x => t - x < windowMs)
+      if (kept.length >= max) {
+        users.set(userId, kept)
+        return null
+      }
+      if (!users.has(userId) && users.size + 1 > maxRecipients) {
+        for (const [id, stamps] of users) {
+          if (stamps.every(x => t - x >= windowMs)) users.delete(id)
+        }
+        // Still full: refuse the new recipient. Dropping a history inside its window would hand that person new slots.
+        if (users.size + 1 > maxRecipients) return null
+      }
+      kept.push(t)
+      users.set(userId, kept)
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        const list = users.get(userId)
+        const i = list ? list.indexOf(t) : -1
+        if (list && i !== -1) list.splice(i, 1)
+      }
+    },
+  }
+}
+
+export async function handleSendActivity(
+  args: Record<string, unknown>,
+  deps: {
+    enabled: boolean
+    assertAllowedConversation: (conversationId: string) => unknown
+    teamIdFor: (channelId: string) => string | undefined
+    isAllowed: (aadObjectId: string) => boolean
+    limiter: { reserve(userId: string): (() => void) | null }
+    getToken: () => Promise<string>
+    fetch?: FetchFn
+  },
+): Promise<{ sent: true }> {
+  if (!deps.enabled) throw new Error('send_activity_notification is off (TEAMS_ACTIVITY_FEED is not 1)')
+  const input = validateActivityArgs(args)
+  deps.assertAllowedConversation(input.conversationId)
+  const teamId = deps.teamIdFor(input.channelId)
+  if (!teamId) throw new Error('team id unknown for this channel: it is learned from an inbound message in the channel')
+  if (!deps.isAllowed(input.userId)) throw new Error('the recipient must be on the allowlist')
+  const release = deps.limiter.reserve(input.userId)
+  if (!release) throw new Error('too many activity notifications to this person (at most 3 in 10 minutes)')
+  try {
+    await sendActivityNotification(
+      { teamId, channelId: input.channelId, messageId: input.messageId, userId: input.userId, text: input.text },
+      { getToken: deps.getToken, fetch: deps.fetch },
+    )
+  } catch (err) {
+    release()
+    throw err
+  }
+  return { sent: true }
+}
+
 export const ACTIVITY_TOOL = {
   name: 'send_activity_notification',
   description:
     'Send a Teams activity feed notification to one person about a team channel or channel thread, from an inbound message. ' +
-    "Needs the app's TeamsActivity.Send.Group grant in that team.",
+    "Needs the app's TeamsActivity.Send.Group grant in that team." +
+    ' The recipient must be on the allowlist; at most 3 notifications per person in 10 minutes.',
   inputSchema: {
     type: 'object' as const,
     properties: {
