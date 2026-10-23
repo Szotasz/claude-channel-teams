@@ -16,8 +16,16 @@ const MAX_FROM = 100
 const MAX_COMMAND = 64
 const TEAMS_LINK_PREFIX = 'https://teams.microsoft.com/'
 
+const CUT_MARK = ' [...]'
+
+/** At most `max` characters, the cut mark included. */
 function cut(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max)} [...]` : s
+  return s.length > max ? `${s.slice(0, max - CUT_MARK.length)}${CUT_MARK}` : s
+}
+
+/** Every line separator a reader may honour (CR, CRLF, VT, FF, NEL, LS, PS) becomes '\n'. */
+function normalizeLines(s: string): string {
+  return s.replace(/\r\n?|[\u000b\u000c\u0085\u2028\u2029]/g, '\n')
 }
 
 function htmlToText(html: string): string {
@@ -70,6 +78,9 @@ export function messageActionFrom(activity: Activity): MessageAction | undefined
   const content = payload.body?.content
   let message = typeof content === 'string' ? content : ''
   if (payload.body?.contentType === 'html') message = htmlToText(message)
+  // The quoted message has another author: no line break may escape the '> ' prefix, and no '<' or '>' may pass as
+  // markup around this event (a fake tag), so both are kept as entities.
+  message = normalizeLines(message).replace(/</g, '&lt;').replace(/>/g, '&gt;')
   message = cut(message, MAX_MESSAGE)
   if (message) lines.push('message:', ...message.split('\n').map(l => `> ${l}`))
   else lines.push('message: -')
