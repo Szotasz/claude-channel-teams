@@ -417,6 +417,8 @@ bot's connector client (about 2 changes per second). Inbound, a user's
 added: …` / `[Reaction] removed: …` channel event for the reacted-to message,
 marked `message_event="reaction"` like the edit / delete / restore events.
 
+The `reply` tool (and `edit_message`) also take an optional `format` parameter: `'extendedmarkdown'` for tables, task lists and quotes; default `'markdown'`.
+
 ### Error paths
 
 | Condition | Behaviour |
