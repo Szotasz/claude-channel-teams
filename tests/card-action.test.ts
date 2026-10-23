@@ -5,6 +5,7 @@ import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
 
 import { makeTurnHandler } from '../src/teams/adapter'
+import { makeEarlyAckTurn } from '../src/teams/earlyAck'
 import { cardActionFrom, cardActionText, cleanLabel } from '../src/teams/cardAction'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createPendingStore } from '../src/pairing/pair'
@@ -62,7 +63,7 @@ function setup(sender = SENDER, extra: Record<string, unknown> = {}) {
     ...extra,
   })
   const run = (a: Activity) => turn(new TurnContext(bot as any, a))
-  return { run, events, bot, pending, cleanup: () => rmSync(dir, { recursive: true }) }
+  return { run, turn, events, bot, pending, cleanup: () => rmSync(dir, { recursive: true }) }
 }
 
 describe('adapter: card actions', () => {
@@ -180,5 +181,37 @@ describe('cardAction helpers', () => {
     expect(cardActionText({ kind: 'execute', title: 'Go', verb: 'go', dataJson: '{"tender":"T-1"}' })).toBe(
       '[Card action] title="Go" verb="go"\ndata: {"tender":"T-1"}',
     )
+  })
+})
+
+describe('adapter: card actions behind the early-ack queue', () => {
+  // A message turn runs with its activity only (makeEarlyAckTurn); an invoke keeps the whole context, so it is answered.
+  test('E1 an execute invoke through makeEarlyAckTurn is answered', async () => {
+    const t = setup()
+    const turn = makeEarlyAckTurn(t.turn)
+    await turn(new TurnContext(t.bot as any, act()))
+    expect(t.events.length).toBe(1)
+    expect(t.bot.sent.length).toBe(1)
+    expect(t.bot.sent[0].type).toBe('invokeResponse')
+    expect(t.bot.sent[0].value.body.value).toBe('Received.')
+    t.cleanup()
+  })
+
+  test('E2 a submit through makeEarlyAckTurn reaches Claude and sends nothing', async () => {
+    const t = setup()
+    const turn = makeEarlyAckTurn(t.turn)
+    await turn(new TurnContext(t.bot as any, act({ type: 'message', name: undefined, text: '', value: { a: 1 } })))
+    expect(t.events.length).toBe(1)
+    expect(t.events[0].cardAction.kind).toBe('submit')
+    expect(t.bot.sent).toEqual([])
+    t.cleanup()
+  })
+
+  test('E3 an invoke that arrives with its activity only is not answered, and nothing throws', async () => {
+    const t = setup()
+    await t.turn({ activity: act() })
+    expect(t.events.length).toBe(1)
+    expect(t.bot.sent).toEqual([])
+    t.cleanup()
   })
 })
