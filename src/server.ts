@@ -227,7 +227,8 @@ const permission = createPermissionRelay({
   // The "primary operator" is the most-recently-active allowlisted
   // conversation. v1 single-operator scope (see docs/security.md).
   resolveTargetConversation: () => {
-    const id = refs.mostRecentConversationId()
+    // Only a 1:1 chat: the prompt shows the tool call, which must not land in a channel or group chat other people read.
+    const id = refs.mostRecentPersonalConversationId()
     if (!id) return undefined
     const stored = refs.get(id)
     if (!stored) return undefined
