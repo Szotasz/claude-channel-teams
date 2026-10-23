@@ -162,6 +162,14 @@ describe('adapter: dialogs', () => {
     expect(body(t)).toEqual({ task: { type: 'message', value: 'Not allowed.' } })
     t.cleanup()
   })
+  test('an unknown task/* invoke from an allowlisted sender still gets one task answer', async () => {
+    const t = setup()
+    await t.run(act({ name: 'task/unknown' }))
+    expect(t.events.length).toBe(0)
+    expect(t.bot.sent.length).toBe(1)
+    expect(body(t)).toEqual({ task: { type: 'message', value: 'Not allowed.' } })
+    t.cleanup()
+  })
   test('throwing onEvent leaves one task answer', async () => {
     const t = setup(SENDER, { onEvent: () => { throw new Error('boom') } })
     await expect(t.run(submit({ a: 1 }))).rejects.toThrow('boom')
