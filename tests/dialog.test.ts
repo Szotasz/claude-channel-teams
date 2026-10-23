@@ -50,6 +50,7 @@ function setup(sender = SENDER, extra: Record<string, unknown> = {}) {
   const pending = createPendingStore(join(dir, 'pending.json'))
   const events: any[] = []
   const bot = new RecordingAdapter()
+  const refs = createConversationRefStore()
   const turn = makeTurnHandler({
     config: {
       stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p', appType: 'SingleTenant',
@@ -57,13 +58,13 @@ function setup(sender = SENDER, extra: Record<string, unknown> = {}) {
     } as any,
     adapter: {} as any,
     allowlist,
-    refs: createConversationRefStore(),
+    refs,
     onEvent: e => events.push(e),
     pending,
     ...extra,
   })
   const run = (a: Activity) => turn(new TurnContext(bot as any, a))
-  return { run, events, bot, pending, cleanup: () => rmSync(dir, { recursive: true }) }
+  return { run, events, bot, pending, refs, cleanup: () => rmSync(dir, { recursive: true }) }
 }
 
 const body = (t: any, i = 0) => t.bot.sent[i].value.body
@@ -144,6 +145,15 @@ describe('adapter: dialogs', () => {
     expect(t.events[0].messageId).toBe('card-msg-1')
     expect(t.bot.sent.length).toBe(1)
     expect(body(t)).toEqual({ task: { type: 'message', value: 'Sent.' } })
+    t.cleanup()
+  })
+  test('submit stores the conversation reference of the sender before the event', async () => {
+    let refAtEvent: unknown
+    const t = setup(SENDER, { onEvent: (e: any) => { refAtEvent = t.refs.get('conv-abc'); t.events.push(e) } })
+    await t.run(submit({ q: 'a' }))
+    expect(t.events.length).toBe(1)
+    expect(refAtEvent).toBeDefined()
+    expect((refAtEvent as { aadObjectId: string }).aadObjectId).toBe(SENDER.toLowerCase())
     t.cleanup()
   })
   test('oversized submit data is truncated', async () => {
