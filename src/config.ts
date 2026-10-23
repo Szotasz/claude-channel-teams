@@ -41,6 +41,12 @@ export function parsePlannerPlanIds(raw: string | undefined): ReadonlySet<string
   return ids
 }
 
+/** True only when TEAMS_TARGETED_MESSAGES is '1' or 'true' (case-insensitive, trimmed). */
+export function targetedMessagesEnabled(env: NodeJS.ProcessEnv): boolean {
+  const v = env.TEAMS_TARGETED_MESSAGES?.trim().toLowerCase()
+  return v === '1' || v === 'true'
+}
+
 export interface Config {
   /**
    * Shared conversations (channel or group chat) in which an allowlisted
@@ -66,6 +72,11 @@ export interface Config {
   tenantId: string
   /** Address to bind the local HTTP listener (loopback by default). */
   bindHost: string
+  /**
+   * Use Teams targeted messages for the permission prompt and the pairing code
+   * in shared conversations. Off by default; env `TEAMS_TARGETED_MESSAGES=1`.
+   */
+  targetedMessages: boolean
   /** Port for the local HTTP listener. */
   port: number
   /**
@@ -281,6 +292,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appType: 'SingleTenant' as const,
     tenantId,
     bindHost,
+    targetedMessages: targetedMessagesEnabled(env),
     port,
     receivedFilesDir,
     outboxDir,
