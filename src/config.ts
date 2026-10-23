@@ -22,6 +22,7 @@
 import { chmodSync, mkdirSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { parseMentionTags } from './teams/mentions.js'
 
 /** A comma-separated id list from an env var: trimmed, empty entries dropped. */
 export function parseIdList(raw: string | undefined): ReadonlySet<string> {
@@ -205,6 +206,12 @@ export interface Config {
    * it works only together with TEAMS_MEETING_EVENTS. See docs/meeting-transcripts.md.
    */
   meetingTranscripts: boolean
+  /**
+   * Team tags reply may mention, name -> tag id. Empty (the default) keeps tag
+   * mentions off. From TEAMS_MENTION_TAGS (Name=id, comma-separated); see
+   * docs/mentions.md.
+   */
+  mentionTags: ReadonlyMap<string, string>
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -395,6 +402,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     process.stderr.write('teams channel: TEAMS_ACK_DELAY_MS must be an integer from 0 to 10000; using 3000\n')
     ackDelayMs = 3000
   }
+  let mentionTags = parseMentionTags(env.TEAMS_MENTION_TAGS)
+  if (mentionTags === null) {
+    process.stderr.write('teams channel: TEAMS_MENTION_TAGS has an invalid entry; tag mentions stay off\n')
+    mentionTags = new Map()
+  }
 
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
@@ -421,5 +433,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     meetingEvents: parseFlag(env.TEAMS_MEETING_EVENTS),
     meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),
     meetingTranscripts: parseFlag(env.TEAMS_MEETING_TRANSCRIPTS),
+    mentionTags,
   })
 }

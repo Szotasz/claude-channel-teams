@@ -244,7 +244,7 @@ const acks = config.ackText
   : undefined
 const knownUsers = createKnownUsers()
 const userViews = createUserViewStore()
-const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews })
+const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews, mentionTags: config.mentionTags })
 const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
 const directMessenger = createDirectMessenger({ config, adapter, allowlist, refs, replier })
 
@@ -395,6 +395,23 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               },
               required: ['name', 'abstract'],
               additionalProperties: false,
+            },
+          },
+          mentions: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 10,
+            description:
+              'Optional @mentions, at most 10. A person: { type: "user", aad_object_id, name }, who must be a member of this conversation. A team tag: { type: "tag", tag }, only tags listed in TEAMS_MENTION_TAGS, only in a team channel. The text must contain <at>name</at> for each (the tag name for a tag). If a person is not a member, the reply fails and names them; nothing is sent.',
+            items: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['user', 'tag'] },
+                aad_object_id: { type: 'string' },
+                name: { type: 'string' },
+                tag: { type: 'string' },
+              },
+              required: ['type'],
             },
           },
         },
@@ -613,11 +630,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (rawUserCards !== undefined && !Array.isArray(rawUserCards)) {
           throw new Error('user_cards must be an array')
         }
-        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined
+        const rawMentions = args.mentions ?? undefined
+        if (rawMentions !== undefined && !Array.isArray(rawMentions)) {
+          throw new Error('mentions must be an array')
+        }
+        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || rawMentions !== undefined
           ? await replier.sendReply(conversationId, text, card, {
               ...(aiGenerated ? { aiGenerated } : {}),
               ...(rawCitations !== undefined ? { citations: rawCitations } : {}),
               ...(rawUserCards !== undefined ? { userCards: rawUserCards } : {}),
+              ...(rawMentions !== undefined ? { mentions: rawMentions } : {}),
             })
           : card !== undefined
             ? await replier.sendReply(conversationId, text, card)
