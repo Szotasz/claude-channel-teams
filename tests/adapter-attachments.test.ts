@@ -75,8 +75,10 @@ describe('adapter: attachment wiring', () => {
     const refs = createConversationRefStore()
     const events: any[] = []
     let handlerCalls = 0
-    const handler = async (_atts: any, _name: string) => {
+    let seenText: string | undefined
+    const handler = async (_atts: any, _name: string, messageText?: string) => {
       handlerCalls += 1
+      seenText = messageText
       return { annotations: ['[Attached: /tmp/x.pdf (application/pdf, 1.0 KB)]'] }
     }
     const turn = makeTurnHandler({
@@ -92,6 +94,7 @@ describe('adapter: attachment wiring', () => {
     }))
     await turn(ctx)
     expect(handlerCalls).toBe(1)
+    expect(seenText).toBe('with files')
     expect(events.length).toBe(1)
     expect(events[0].text).toBe('with files\n\n[Attached: /tmp/x.pdf (application/pdf, 1.0 KB)]')
     rmSync(dir, { recursive: true })
