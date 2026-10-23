@@ -153,5 +153,8 @@ describe('server.ts wiring', () => {
     expect(server.indexOf('?', cond)).toBeLessThan(server.indexOf(sentence))
     expect(server.indexOf(sentence)).toBeLessThan(server.indexOf(': []', cond))
     expect(server.slice(cond, server.indexOf(sentence))).not.toContain(']')
+    // The sentence is the first entry of the branch taken when the flag is on: a negated, compared or widened
+    // condition, or swapped branches, do not match.
+    expect(server).toMatch(/\.\.\.\(config\.activityFeed\n\s*\? \[\n\s*"send_activity_notification pings one person's/)
   })
 })
