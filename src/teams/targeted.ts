@@ -40,29 +40,44 @@ export interface ContinueAdapter {
   ): Promise<void>
 }
 
+/**
+ * POST a prepared targeted activity through the turn's connector client, so the request is signed with the
+ * bot's credentials. Throws on a non-2xx answer; returns the response body text.
+ */
+export async function postTargetedActivity(
+  adapter: ContinueAdapter,
+  appId: string,
+  ref: Partial<ConversationReference>,
+  body: Record<string, unknown>,
+): Promise<string | undefined> {
+  let bodyText: string | undefined
+  await adapter.continueConversationAsync(appId, ref, async ctx => {
+    const client = ctx.turnState.get((ctx.adapter as any).ConnectorClientKey) as
+      | { sendRequest(req: unknown): Promise<{ status: number; bodyAsText?: string | null }> }
+      | undefined
+    if (!client) throw new Error('no connector client for this turn')
+    const serviceUrl = String(ref.serviceUrl ?? '')
+    if (!serviceUrl) throw new Error('no service URL')
+    const res = await client.sendRequest(
+      createPipelineRequest({
+        url: targetedActivityUrl(serviceUrl, String(ref.conversation!.id)),
+        method: 'POST',
+        headers: createHttpHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      }),
+    )
+    if (res.status < 200 || res.status > 299) {
+      throw new Error(`targeted send failed (HTTP ${res.status})`)
+    }
+    bodyText = typeof res.bodyAsText === 'string' ? res.bodyAsText : undefined
+  })
+  return bodyText
+}
+
 /** Send a targeted message through the turn's connector client, so the request is signed with the bot's credentials. */
 export function createTargetedSender(adapter: ContinueAdapter, appId: string): TargetedSender {
   return async (ref, text) => {
-    const body = buildTargetedActivity(ref, text)
-    await adapter.continueConversationAsync(appId, ref, async ctx => {
-      const client = ctx.turnState.get((ctx.adapter as any).ConnectorClientKey) as
-        | { sendRequest(req: unknown): Promise<{ status: number }> }
-        | undefined
-      if (!client) throw new Error('no connector client for this turn')
-      const serviceUrl = String(ref.serviceUrl ?? '')
-      if (!serviceUrl) throw new Error('no service URL')
-      const res = await client.sendRequest(
-        createPipelineRequest({
-          url: targetedActivityUrl(serviceUrl, String(ref.conversation!.id)),
-          method: 'POST',
-          headers: createHttpHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify(body),
-        }),
-      )
-      if (res.status < 200 || res.status > 299) {
-        throw new Error(`targeted send failed (HTTP ${res.status})`)
-      }
-    })
+    await postTargetedActivity(adapter, appId, ref, buildTargetedActivity(ref, text))
   }
 }
 

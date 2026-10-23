@@ -46,7 +46,7 @@ import { loadConfig, meetingEventsWarning } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
-import { createReplySender, parseQuoteArg, parseReplyFormat } from './teams/reply.js'
+import { createReplySender, parseQuoteArg, parseReplyFormat, parseTargetedMessageId } from './teams/reply.js'
 import { createConversationRefStore, isPersonalReference } from './teams/conversationRefs.js'
 import { createChannelRefStore } from './teams/channelRefs.js'
 import { createChannelPoster } from './teams/channelPost.js'
@@ -60,6 +60,7 @@ import {
   selectPromptConversation,
   type PromptDelivery,
 } from './teams/targeted.js'
+import { createTargetedInbound } from './teams/targetedInbound.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { withSendRetry, sendTracker, SHUTDOWN_SEND_WAIT_MS } from './teams/sendRetry.js'
@@ -191,6 +192,7 @@ const mcp = new Server(
       'In a channel or group chat the tag also carries mentioned="true" or "false". mentioned="false" means the message was NOT addressed to you (the operator opted that conversation in so you can follow it): reply only when you are clearly expected to.',
       '',
       'A tag with message_event="edited", "restored" or "deleted" is about an earlier message (message_id); edited/restored carry its new text. message_event="reaction" is a user\'s emoji reaction to that message. Neither is a new request.',
+      'A tag with targeted="true" is a private message only you and the sender see (for example a slash command). Answer it with the reply tool and pass its message_id as targeted_message_id, so the answer is private too.',
       '',
       ...(config.meetingEvents
         ? [
@@ -285,7 +287,8 @@ const acks = config.ackText
 const knownUsers = createKnownUsers()
 const userViews = createUserViewStore()
 const seenMessages = createSeenMessages()
-const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews, seenMessages, feedback: config.feedback })
+const targetedInbound = createTargetedInbound()
+const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews, seenMessages, feedback: config.feedback, targetedInbound })
 const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
 const directMessenger = createDirectMessenger({ config, adapter, allowlist, refs, replier })
 const teamGroups = createTeamGroupStore()
@@ -307,6 +310,7 @@ const sendFile = createFileSender({
         folder: config.sharePoint.folder,
       })
     : undefined,
+  targetedInbound,
 })
 
 /**
@@ -478,6 +482,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'Optional. extendedmarkdown lets Teams render tables, task lists and block quotes; omitted or null means markdown.',
           },
           quote_message_id: { type: 'string', description: 'Optional. The message_id of a message in THIS conversation to quote above the reply (an inbound message_id, or a message this bot sent here since the plugin started); Teams shows it as a preview bubble. Other ids are refused.' },
+          targeted_message_id: {
+            type: 'string',
+            description: 'message_id of an inbound tag with targeted="true": the reply is then shown only to that sender',
+          },
+          public: {
+            type: 'boolean',
+            description: 'post publicly even though the latest message in this conversation was a private (targeted) one',
+          },
         },
         required: ['conversation_id', 'text'],
       },
@@ -537,6 +549,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           caption: {
             type: 'string',
             description: 'Optional message text shown alongside the card.',
+          },
+          public: {
+            type: 'boolean',
+            description: 'post publicly even though the latest message in this conversation was a private (targeted) one',
           },
         },
         required: ['conversation_id'],
@@ -739,13 +755,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         const format = parseReplyFormat(args.format)
         const quoteMessageId = parseQuoteArg(args.quote_message_id)
-        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown' || quoteMessageId !== undefined
+        const targetedMessageId = parseTargetedMessageId(args.targeted_message_id)
+        const isPublic = args.public === true
+        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown' || quoteMessageId !== undefined || targetedMessageId !== undefined || isPublic
           ? await replier.sendReply(conversationId, text, card, {
               ...(aiGenerated ? { aiGenerated } : {}),
               ...(rawCitations !== undefined ? { citations: rawCitations } : {}),
               ...(rawUserCards !== undefined ? { userCards: rawUserCards } : {}),
               ...(format !== 'markdown' ? { format } : {}),
               ...(quoteMessageId !== undefined ? { quoteMessageId } : {}),
+              ...(targetedMessageId !== undefined ? { targetedMessageId } : {}),
+              ...(isPublic ? { public: true } : {}),
             })
           : card !== undefined
             ? await replier.sendReply(conversationId, text, card)
@@ -818,6 +838,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           filename,
           mime,
           caption,
+          ...(args.public === true ? { public: true } : {}),
         })
         return {
           content: [
@@ -1100,6 +1121,7 @@ const listener = startListener({
   channelRefs,
   seenMessages,
   onEvent: inboundDebouncer.push,
+  targetedInbound,
   pending,
   permission,
   typingPump,
