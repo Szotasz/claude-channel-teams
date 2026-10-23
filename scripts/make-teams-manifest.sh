@@ -13,7 +13,7 @@
 #   make-teams-manifest.sh [--app-id <guid>] [--name "Marveen"] \
 #       [--env-file ~/.claude/channels/teams/.env] [--out ./teams-app.zip] \
 #       [--rsc-all-messages] [--rsc-meeting-events] [--rsc-meeting-transcripts] [--command "<title>: <description>"]... \
-#       [--prompt "<title>: <prompt>"]...
+#       [--prompt "<title>: <prompt>"]... [--activity-feed]
 #
 # --rsc-all-messages adds the RSC permissions ChannelMessage.Read.Group and ChatMessage.Read.Chat (application) and the
 # webApplicationInfo block they need (manifest 1.12 or later; this one is 1.16). Teams then delivers every message in the
@@ -51,6 +51,11 @@
 # same commandLists entry as the --command entries; with --prompt alone that entry has the same scopes but no
 # triggers and no supportsTargetedMessages. Either option raises the manifest to version 1.29. Not tested in a
 # Teams tenant.
+#
+# --activity-feed adds the RSC permission TeamsActivity.Send.Group (application) and the webApplicationInfo block, for the
+# opt-in send_activity_notification tool (TEAMS_ACTIVITY_FEED=1, see docs/activity-feed.md). The systemDefault activity
+# type needs no activities section. Combined with --rsc-all-messages there is one webApplicationInfo and one permission
+# list. An app already installed in a team must be upgraded there and the new permission consented.
 set -euo pipefail
 
 APP_ID=""
@@ -65,6 +70,7 @@ RSC_MEETING=0
 RSC_TRANSCRIPTS=0
 CMD_RAW=()
 PROMPT_RAW=()
+ACTIVITY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -81,6 +87,7 @@ while [ $# -gt 0 ]; do
     --prompt)
       [ $# -ge 2 ] || { echo "--prompt needs a value: '<title>: <prompt>'" >&2; exit 2; }
       PROMPT_RAW+=("$2"); shift 2 ;;
+    --activity-feed) ACTIVITY=1; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -204,7 +211,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 RSC_BLOCK=""
-if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ] || [ "$RSC_TRANSCRIPTS" = 1 ]; then
+if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ] || [ "$RSC_TRANSCRIPTS" = 1 ] || [ "$ACTIVITY" = 1 ]; then
   RSC_PERMS=""
   if [ "$RSC_ALL" = 1 ]; then
     RSC_PERMS="        { \"name\": \"ChannelMessage.Read.Group\", \"type\": \"Application\" },
@@ -220,6 +227,11 @@ if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ] || [ "$RSC_TRANSCRIPTS" = 1 ]; t
     [ -z "$RSC_PERMS" ] || RSC_PERMS="${RSC_PERMS},
 "
     RSC_PERMS="${RSC_PERMS}        { \"name\": \"OnlineMeetingTranscript.Read.Chat\", \"type\": \"Application\" }"
+  fi
+  if [ "$ACTIVITY" = 1 ]; then
+    [ -z "$RSC_PERMS" ] || RSC_PERMS="${RSC_PERMS},
+"
+    RSC_PERMS="${RSC_PERMS}        { \"name\": \"TeamsActivity.Send.Group\", \"type\": \"Application\" }"
   fi
   RSC_BLOCK=",
   \"webApplicationInfo\": {
@@ -356,4 +368,7 @@ if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
 fi
 if [ "${#PROMPT_TITLES[@]}" -gt 0 ]; then
   echo "PROMPTS: declares ${#PROMPT_TITLES[@]} prompt starter(s); the manifest is version 1.29. Re-upload or upgrade an already installed app."
+fi
+if [ "$ACTIVITY" = 1 ]; then
+  echo "RSC: requests TeamsActivity.Send.Group (send_activity_notification); the team owner consents at install."
 fi
