@@ -144,7 +144,10 @@ chat owner consents at install; an app already installed in a team must be
 upgraded there with the new permissions consented (Graph: upgrade with a
 consentedPermissionSet), or the permission is not granted. The plugin itself
 still acts only on @mentions (a separate unmentioned-delivery option is not part
-of this). Then the operator uploads it in
+of this). The repeatable `--command "<title>: <description>"` option declares
+Teams slash commands (max 12) and raises the manifest to version 1.29; the
+commands arrive as targeted messages visible only to the sender, and an app that
+is already installed must be re-uploaded or upgraded for the change. Then the operator uploads it in
 Teams by hand, which is the one thing `az` cannot do:
 
 > Teams, then **Apps**, then **Manage your apps**, then **Upload a custom app**,
