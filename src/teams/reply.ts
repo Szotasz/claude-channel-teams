@@ -17,9 +17,10 @@
 import { type CloudAdapter, type ConversationReference } from 'botbuilder'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
-import type { ConversationRefStore } from './conversationRefs.js'
+import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
 import { withSendRetry } from './sendRetry.js'
+import { isStreamClosedError, type StatusStreams } from './statusStream.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
 import { createPipelineRequest } from '@azure/core-rest-pipeline'
 
@@ -141,6 +142,8 @@ export interface ReplyDeps {
   refs: ConversationRefStore
   /** Optional typing-indicator pump — stopped when a reply lands. */
   typingPump?: TypingPump
+  /** Open status streams (TEAMS_STATUS_UPDATES). Optional so existing tests still wire. */
+  statusStreams?: StatusStreams
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -187,24 +190,49 @@ export function createReplySender(deps: ReplyDeps) {
     // the stored reference and our pinned credentials. The SDK takes care of
     // grabbing a fresh service-to-service token (cached by app id).
     let sentId: string | undefined
-    await deps.adapter.continueConversationAsync(
-      deps.config.appId,
-      ref,
-      async turnContext => {
-        const res = await withSendRetry('reply', () => turnContext.sendActivity({
-          type: 'message',
-          text,
-          textFormat: 'markdown',
-          ...(card !== undefined
-            ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
-            : {}),
-          ...(entity ? { entities: [entity as { type: string }] } : {}),
-        }))
-        sentId = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
-      },
-    )
+    let closedStream = false
+    const send = async (stream: { streamId: string } | undefined) => {
+      // The reply may have waited in the status queue: check the allowlist again now.
+      const { ref: current } = assertAllowedConversation(conversationId)
+      await deps.adapter.continueConversationAsync(
+        deps.config.appId,
+        current,
+        async turnContext => {
+          const activity = {
+            type: 'message',
+            text,
+            textFormat: 'markdown',
+            ...(card !== undefined
+              ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
+              : {}),
+            ...(entity ? { entities: [entity as { type: string }] } : {}),
+          }
+          // Streaming is 1:1 only: close the stream only if the conversation is still 1:1 now.
+          const closes = stream && isPersonalReference(current) ? stream : undefined
+          const streamEntity = closes ? { type: 'streaminfo', streamId: closes.streamId, streamType: 'final' } : undefined
+          const closing = streamEntity
+            ? { ...activity, entities: [...((activity as { entities?: unknown[] }).entities ?? []), streamEntity] }
+            : activity
+          const deliver = (a: unknown) => withSendRetry('reply', () => turnContext.sendActivity(a as any))
+          let res
+          try {
+            res = await deliver(closing)
+            closedStream = streamEntity !== undefined
+          } catch (err) {
+            if (!streamEntity || !isStreamClosedError(err)) throw err
+            process.stderr.write(`teams channel: status stream already closed conv=${conversationId}; reply sent as a new message\n`)
+            res = await deliver(activity)
+          }
+          sentId = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
+        },
+      )
+    }
+    // With status updates on, a 1:1 reply runs in the conversation's status queue: it closes the open stream.
+    // Other conversations never have a stream, so their replies do not wait.
+    if (deps.statusStreams && isPersonalReference(ref)) await deps.statusStreams.withStream(conversationId, send)
+    else await send(undefined)
     process.stderr.write(
-      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}\n`,
+      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${closedStream ? ' stream=closed' : ''}\n`,
     )
     return sentId
   }
@@ -277,5 +305,25 @@ export function createReplySender(deps: ReplyDeps) {
     )
   }
 
-  return { sendReply, editReply, react, assertAllowedConversation }
+  async function sendStatus(conversationId: string, text: string): Promise<void> {
+    if (!deps.statusStreams) throw new Error('status updates are not enabled (set TEAMS_STATUS_UPDATES)')
+    const { ref } = assertAllowedConversation(conversationId)
+    if (!isPersonalReference(ref)) throw new Error('status updates work only in a 1:1 chat')
+    await deps.statusStreams.update(conversationId, text, async activity => {
+      // The call may have waited for its slot: check the allowlist again now.
+      const { ref: current } = assertAllowedConversation(conversationId)
+      if (!isPersonalReference(current)) throw new Error('status updates work only in a 1:1 chat')
+      // Teams shows no typing animation while a stream is open.
+      deps.typingPump?.stop(conversationId)
+      let id: string | undefined
+      await deps.adapter.continueConversationAsync(deps.config.appId, current, async turnContext => {
+        const res = await turnContext.sendActivity(activity as any)
+        id = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
+      })
+      return id
+    })
+    process.stderr.write(`teams channel: status update conv=${conversationId} len=${text.length}\n`)
+  }
+
+  return { sendReply, editReply, react, assertAllowedConversation, sendStatus }
 }
