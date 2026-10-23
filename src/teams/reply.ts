@@ -22,6 +22,7 @@ import type { TypingPump } from './typingPump.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
 import {
   isChannelReference,
+  isUsableDisplayName,
   mentionEntity,
   teamsMemberLookup,
   validateMentions,
@@ -203,22 +204,43 @@ export function createReplySender(deps: ReplyDeps) {
       async turnContext => {
         const mentionEntities: ReturnType<typeof mentionEntity>[] = []
         const notMembers: string[] = []
+        const renames = new Map<string, string>()
+        // Compared without letter case: two entities whose texts differ only in case could be taken for one.
+        const shownNames = new Set<string>(mentions.filter(m => m.type === 'tag').map(m => m.name.toLowerCase()))
         for (const m of mentions) {
           if (m.type === 'tag') {
             mentionEntities.push(mentionEntity(m.name, m.id, true))
             continue
           }
-          const memberId = await (deps.lookupMember ?? teamsMemberLookup)(turnContext, m.aadObjectId)
-          if (memberId === undefined) notMembers.push(m.name)
-          else mentionEntities.push(mentionEntity(m.name, memberId, false))
+          const member = await (deps.lookupMember ?? teamsMemberLookup)(turnContext, m.aadObjectId)
+          if (member === undefined) {
+            notMembers.push(m.name)
+            continue
+          }
+          if (!isUsableDisplayName(member.name)) {
+            throw new Error(`mentions: Teams returned no usable display name for ${m.name}`)
+          }
+          if (shownNames.has(member.name.toLowerCase())) {
+            throw new Error(`mentions: two entries would show the same name: ${member.name}`)
+          }
+          shownNames.add(member.name.toLowerCase())
+          renames.set(m.name, member.name)
+          mentionEntities.push(mentionEntity(member.name, member.id, false))
         }
         if (notMembers.length > 0) {
           throw new Error(`mentions: not a member of this conversation: ${notMembers.join(', ')}`)
         }
+        // One pass over the text, so a rename can never feed another rename.
+        const outText = renames.size === 0
+          ? text
+          : text.replace(/<at>([^<>]*)<\/at>/g, (whole, inner: string) => {
+              const shown = renames.get(inner)
+              return shown === undefined ? whole : `<at>${shown}</at>`
+            })
         const entities = [...mentionEntities, ...(entity ? [entity] : [])]
         const res = await turnContext.sendActivity({
           type: 'message',
-          text,
+          text: outText,
           textFormat: 'markdown',
           ...(card !== undefined
             ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }

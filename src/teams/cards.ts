@@ -3,6 +3,8 @@
  * goes out: the shape Teams renders, a size Teams accepts, and https-only links and images.
  * No action that posts back to the bot: Action.Submit and Action.Execute clicks cannot be received yet, and an
  * msteams imBack / messageBack / signin action would post text in the name of the user who clicks it.
+ * No mention entity either: people and team tags are mentioned through reply's mentions, which checks that a
+ * person is a member of the conversation.
  */
 
 export const ADAPTIVE_CARD_CONTENT_TYPE = 'application/vnd.microsoft.card.adaptive'
@@ -30,6 +32,9 @@ function walk(value: unknown, path: string, depth: number): string | undefined {
   }
   const here = `card${path ? '.' + path : ''}`
   const type = (value as Record<string, unknown>).type
+  if (typeof type === 'string' && type.toLowerCase() === 'mention') {
+    return `${here} is a mention entity; mention people and team tags with reply's mentions instead`
+  }
   if (typeof type === 'string' && POSTBACK_ACTIONS.has(type)) {
     return `${here} is an ${type}, which this plugin cannot receive yet`
   }

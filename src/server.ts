@@ -345,7 +345,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             minItems: 1,
             maxItems: 10,
             description:
-              'Optional @mentions, at most 10. A person: { type: "user", aad_object_id, name }, who must be a member of this conversation. A team tag: { type: "tag", tag }, only tags listed in TEAMS_MENTION_TAGS, only in a team channel. The text must contain <at>name</at> for each (the tag name for a tag). If a person is not a member, the reply fails and names them; nothing is sent.',
+              'Optional @mentions, at most 10. A person: { type: "user", aad_object_id, name }, who must be a member of this conversation; name only marks the place in the text, and the plugin shows the person\'s Teams display name there instead. A team tag: { type: "tag", tag }, only tags listed in TEAMS_MENTION_TAGS, only in a team channel. The text must contain <at>name</at> for each (the tag name for a tag). If a person is not a member, the reply fails and names them; nothing is sent.',
             items: {
               type: 'object',
               properties: {

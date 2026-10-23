@@ -64,7 +64,7 @@ describe('reply with mentions', () => {
         'mentions: not a member of this conversation: Ann',
       )
       expect(s.state.sends).toBe(0)
-      spy.mockImplementation(async () => ({ id: '29:from-getmember' }) as any)
+      spy.mockImplementation(async () => ({ id: '29:from-getmember', name: 'Ann' }) as any)
       await s.sendReply('conv', 'Hi <at>Ann</at>', undefined, { mentions: [user] })
       expect(s.state.sent.entities).toEqual([
         { type: 'mention', text: '<at>Ann</at>', mentioned: { id: '29:from-getmember', name: 'Ann' } },
@@ -76,7 +76,7 @@ describe('reply with mentions', () => {
 
   test('the lookup gets the lower-cased AAD id', async () => {
     const seen: string[] = []
-    const s = setup({ id: 'c' }, { lookupMember: async (_c: unknown, id: string) => (seen.push(id), '29:m') })
+    const s = setup({ id: 'c' }, { lookupMember: async (_c: unknown, id: string) => (seen.push(id), { id: '29:m', name: 'Ann' }) })
     await s.sendReply('conv', 'Hi <at>Ann</at>', undefined, { mentions: [{ ...user, aad_object_id: AAD.toUpperCase() }] })
     expect(seen).toEqual([AAD])
   })
@@ -90,7 +90,7 @@ describe('reply with mentions', () => {
   })
 
   test('member person', async () => {
-    const s = setup({ id: 'c' }, { lookupMember: async () => '29:mri-a' })
+    const s = setup({ id: 'c' }, { lookupMember: async () => ({ id: '29:mri-a', name: 'Ann' }) })
     await s.sendReply('conv', 'Hi <at>Ann</at>', undefined, { mentions: [user] })
     expect(s.state.sent.entities).toEqual([
       { type: 'mention', text: '<at>Ann</at>', mentioned: { id: '29:mri-a', name: 'Ann' } },
@@ -135,10 +135,90 @@ describe('reply with mentions', () => {
   })
 
   test('mention first, then AI entity', async () => {
-    const s = setup({ id: 'c' }, { lookupMember: async () => '29:mri-a' })
+    const s = setup({ id: 'c' }, { lookupMember: async () => ({ id: '29:mri-a', name: 'Ann' }) })
     await s.sendReply('conv', 'Hi <at>Ann</at>', undefined, { mentions: [user], aiGenerated: true })
     expect(s.state.sent.entities).toHaveLength(2)
     expect(s.state.sent.entities[0].type).toBe('mention')
     expect(s.state.sent.entities[1].additionalType).toEqual(['AIGeneratedContent'])
+  })
+
+  const people = [
+    { type: 'user', aad_object_id: AAD, name: 'Ann' },
+    { type: 'user', aad_object_id: 'abcdef01-0000-4000-8000-0000000000cd', name: 'Bob' },
+  ]
+
+  test('the shown name is the looked-up display name', async () => {
+    const s = setup({ id: 'c' }, { lookupMember: async () => ({ id: '29:mri-a', name: 'Ann Smith' }) })
+    await s.sendReply('conv', 'Hi <at>Security Team</at>', undefined, {
+      mentions: [{ type: 'user', aad_object_id: AAD, name: 'Security Team' }],
+    })
+    expect(s.state.sent.text).toBe('Hi <at>Ann Smith</at>')
+    expect(s.state.sent.entities).toEqual([
+      { type: 'mention', text: '<at>Ann Smith</at>', mentioned: { id: '29:mri-a', name: 'Ann Smith' } },
+    ])
+  })
+
+  test('no usable display name', async () => {
+    for (const name of [undefined, 'A<b>']) {
+      const s = setup({ id: 'c' }, { lookupMember: async () => ({ id: '29:m', name }) })
+      await expect(s.sendReply('conv', 'Hi <at>Ann</at>', undefined, { mentions: [user] })).rejects.toThrow(
+        new Error('mentions: Teams returned no usable display name for Ann'),
+      )
+      expect(s.state.sends).toBe(0)
+    }
+  })
+
+  test('two people with the same looked-up name', async () => {
+    const s = setup({ id: 'c' }, { lookupMember: async () => ({ id: '29:m', name: 'Ann Smith' }) })
+    await expect(
+      s.sendReply('conv', '<at>Ann</at> <at>Bob</at>', undefined, { mentions: people }),
+    ).rejects.toThrow(new Error('mentions: two entries would show the same name: Ann Smith'))
+    expect(s.state.sends).toBe(0)
+  })
+
+  test('two looked-up names that differ only in letter case', async () => {
+    let n = 0
+    const s = setup({ id: 'c' }, { lookupMember: async () => ({ id: `29:m${n}`, name: n++ === 0 ? 'Ann Smith' : 'ann smith' }) })
+    await expect(
+      s.sendReply('conv', '<at>Ann</at> <at>Bob</at>', undefined, { mentions: people }),
+    ).rejects.toThrow(new Error('mentions: two entries would show the same name: ann smith'))
+    expect(s.state.sends).toBe(0)
+  })
+
+  test('every place of a name is renamed, and $ patterns in a name stay literal', async () => {
+    const s = setup({ id: 'c' }, { lookupMember: async () => ({ id: '29:m', name: 'A $& B $1' }) })
+    await s.sendReply('conv', '<at>Ann</at>, again <at>Ann</at>', undefined, { mentions: [user] })
+    expect(s.state.sent.text).toBe('<at>A $& B $1</at>, again <at>A $& B $1</at>')
+  })
+
+  test('a C1 control character in the looked-up name is not usable', async () => {
+    const s = setup({ id: 'c' }, { lookupMember: async () => ({ id: '29:m', name: 'A\u0085B' }) })
+    await expect(s.sendReply('conv', 'Hi <at>Ann</at>', undefined, { mentions: [user] })).rejects.toThrow(
+      new Error('mentions: Teams returned no usable display name for Ann'),
+    )
+    expect(s.state.sends).toBe(0)
+  })
+
+  test('a looked-up name equal to a tag name', async () => {
+    const s = setup(channel, { lookupMember: async () => ({ id: '29:m', name: 'Finance' }), mentionTags: tagsMap })
+    await expect(
+      s.sendReply('conv', '<at>Ann</at> <at>Finance</at>', undefined, { mentions: [user, tag] }),
+    ).rejects.toThrow(new Error('mentions: two entries would show the same name: Finance'))
+    expect(s.state.sends).toBe(0)
+  })
+
+  test('renames do not cascade', async () => {
+    const names: Record<string, string> = { [AAD]: 'Ann', 'abcdef01-0000-4000-8000-0000000000cd': 'Carl' }
+    const s = setup(
+      { id: 'c' },
+      { lookupMember: async (_c: unknown, id: string) => ({ id: `29:${id}`, name: names[id] }) },
+    )
+    await s.sendReply('conv', '<at>Bob</at> and <at>Ann</at>', undefined, {
+      mentions: [
+        { type: 'user', aad_object_id: AAD, name: 'Bob' },
+        { type: 'user', aad_object_id: 'abcdef01-0000-4000-8000-0000000000cd', name: 'Ann' },
+      ],
+    })
+    expect(s.state.sent.text).toBe('<at>Ann</at> and <at>Carl</at>')
   })
 })

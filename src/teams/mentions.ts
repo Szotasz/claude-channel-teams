@@ -16,7 +16,7 @@ function isValidName(v: unknown): v is string {
     v.length >= 1 &&
     v.trim() === v &&
     v.length <= 100 &&
-    !/[<>,=\u0000-\u001f\u007f]/.test(v)
+    !/[<>,=\u0000-\u001f\u007f-\u009f]/.test(v)
   )
 }
 
@@ -113,8 +113,25 @@ export function isChannelReference(
   return typeof c?.id === 'string' && /@thread\.tacv2/.test(c.id)
 }
 
-/** Resolves to the member's id, or undefined when the person is not a member. */
-export type MemberLookup = (ctx: TurnContext, aadObjectId: string) => Promise<string | undefined>
+/** Resolves to the member's id and display name, or undefined when the person is not a member. */
+export type MemberLookup = (
+  ctx: TurnContext,
+  aadObjectId: string,
+) => Promise<{ id: string; name: string | undefined } | undefined>
+
+/**
+ * A display name that can go inside <at>...</at>: non-empty, no surrounding spaces, at most 256 characters, no < > or
+ * control characters.
+ */
+export function isUsableDisplayName(name: unknown): name is string {
+  return (
+    typeof name === 'string' &&
+    name.length >= 1 &&
+    name.length <= 256 &&
+    name.trim() === name &&
+    !/[<>\u0000-\u001f\u007f-\u009f]/.test(name)
+  )
+}
 
 export function isNotMemberError(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false
@@ -127,7 +144,7 @@ export function isNotMemberError(err: unknown): boolean {
 }
 
 export function createMemberLookup(
-  getMember: (ctx: TurnContext, userId: string) => Promise<{ id?: string } | undefined>,
+  getMember: (ctx: TurnContext, userId: string) => Promise<{ id?: string; name?: string } | undefined>,
 ): MemberLookup {
   return async (ctx, aadObjectId) => {
     let member
@@ -137,7 +154,8 @@ export function createMemberLookup(
       if (isNotMemberError(err)) return undefined
       throw err
     }
-    return typeof member?.id === 'string' && member.id.length > 0 ? member.id : undefined
+    if (typeof member?.id !== 'string' || member.id.length === 0) return undefined
+    return { id: member.id, name: typeof member.name === 'string' ? member.name : undefined }
   }
 }
 

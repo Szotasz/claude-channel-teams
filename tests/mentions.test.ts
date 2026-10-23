@@ -8,6 +8,7 @@ import {
   mentionEntity,
   isChannelReference,
   createMemberLookup,
+  isUsableDisplayName,
 } from '../src/teams/mentions'
 import { loadConfig } from '../src/config'
 
@@ -43,6 +44,9 @@ describe('validateMentions', () => {
     expect(() => v([{ type: 'x' }])).toThrow('mentions[0].type must be "user" or "tag"')
     expect(() => v([user({ aad_object_id: 'nope' })])).toThrow('mentions[0].aad_object_id must be an AAD object id')
     expect(() => v([user({ name: 'A<b' })])).toThrow('mentions[0].name must be 1-100 characters without < > , =')
+    expect(() => v([user({ name: 'A\u0085B' })], '<at>A\u0085B</at>')).toThrow(
+      'mentions[0].name must be 1-100 characters without < > , =',
+    )
     expect(() => v([user({ name: ' Ann' })])).toThrow('mentions[0].name must be 1-100 characters without < > , =')
     expect(() => v([{ type: 'tag', tag: 'Finance' }], 'x', new Map())).toThrow(
       'tag mentions are not enabled (set TEAMS_MENTION_TAGS)',
@@ -119,7 +123,8 @@ describe('createMemberLookup', () => {
   const ctx = {} as any
   const lookup = (f: () => Promise<any>) => createMemberLookup(f)
   test('member id', async () => {
-    expect(await lookup(async () => ({ id: '29:x' }))(ctx, AAD)).toBe('29:x')
+    expect(await lookup(async () => ({ id: 'x', name: 'Ann Smith' }))(ctx, AAD)).toEqual({ id: 'x', name: 'Ann Smith' })
+    expect(await lookup(async () => ({ id: 'x' }))(ctx, AAD)).toEqual({ id: 'x', name: undefined })
   })
   test('not member errors', async () => {
     for (const e of [
@@ -137,6 +142,13 @@ describe('createMemberLookup', () => {
   test('no id', async () => {
     expect(await lookup(async () => ({}))(ctx, AAD)).toBeUndefined()
   })
+})
+
+test('isUsableDisplayName', () => {
+  for (const n of ['Ann Smith', 'Søren Åberg', 'Ann, Sales', 'A'.repeat(256)]) expect(isUsableDisplayName(n)).toBe(true)
+  for (const n of ['', ' Ann', 'A<b', 'A>b', 'A\nB', 'A\u0085B', 'A\u009fB', 'A'.repeat(257), 5, undefined]) {
+    expect(isUsableDisplayName(n)).toBe(false)
+  }
 })
 
 describe('loadConfig mentionTags', () => {
