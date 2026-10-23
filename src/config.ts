@@ -22,6 +22,7 @@
 import { chmodSync, mkdirSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { parseMentionTags } from './teams/mentions.js'
 
 /** A comma-separated id list from an env var: trimmed, empty entries dropped. */
 export function parseIdList(raw: string | undefined): ReadonlySet<string> {
@@ -108,6 +109,12 @@ export interface Config {
    * see docs/planner.md.
    */
   plannerPlanIds: ReadonlySet<string>
+  /**
+   * Team tags reply may mention, name -> tag id. Empty (the default) keeps tag
+   * mentions off. From TEAMS_MENTION_TAGS (Name=id, comma-separated); see
+   * docs/mentions.md.
+   */
+  mentionTags: ReadonlyMap<string, string>
 }
 
 /**
@@ -271,6 +278,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     plannerPlanIds = new Set()
   }
 
+  let mentionTags = parseMentionTags(env.TEAMS_MENTION_TAGS)
+  if (mentionTags === null) {
+    process.stderr.write('teams channel: TEAMS_MENTION_TAGS has an invalid entry; tag mentions stay off\n')
+    mentionTags = new Map()
+  }
+
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
     stateDir,
@@ -288,5 +301,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sendableFilesRoot,
     filesBaseUrl: resolveFilesBaseUrl(env),
     plannerPlanIds,
+    mentionTags,
   })
 }

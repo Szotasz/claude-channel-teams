@@ -352,6 +352,8 @@ entity (`additionalType: ["AIGeneratedContent"]`, `citation: [...]`); the text
 refers to a citation as `[1]`, `[2]`. Citations are validated before anything is
 sent and nothing is truncated.
 
+`reply` can also @mention people and team tags (`mentions`); see docs/mentions.md.
+
 ### Error paths
 
 | Condition | Behaviour |

@@ -20,6 +20,13 @@ import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
+import {
+  isChannelReference,
+  mentionEntity,
+  teamsMemberLookup,
+  validateMentions,
+  type MemberLookup,
+} from './mentions.js'
 
 export type CitationInput = {
   name: string
@@ -137,6 +144,10 @@ export interface ReplyDeps {
   refs: ConversationRefStore
   /** Optional typing-indicator pump — stopped when a reply lands. */
   typingPump?: TypingPump
+  /** Team tags that may be mentioned (name -> tag id). Optional so existing tests still wire. */
+  mentionTags?: ReadonlyMap<string, string>
+  /** Membership check for mentioned people; defaults to TeamsInfo.getMember. Injected by tests. */
+  lookupMember?: MemberLookup
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -167,7 +178,7 @@ export function createReplySender(deps: ReplyDeps) {
     conversationId: string,
     text: string,
     card?: unknown,
-    opts?: { aiGenerated?: boolean; citations?: CitationInput[] },
+    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; mentions?: unknown },
   ): Promise<string | undefined> {
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
@@ -175,6 +186,9 @@ export function createReplySender(deps: ReplyDeps) {
     }
     const entity = buildMessageEntity(opts ?? {})
     const { ref } = assertAllowedConversation(conversationId)
+    const mentions = opts?.mentions !== undefined
+      ? validateMentions(opts.mentions, text, deps.mentionTags ?? new Map(), isChannelReference(ref))
+      : []
     // Stop the typing pump first. We do this before the network send so the
     // indicator clears even if the connector call throws — flapping
     // "is typing…" forever after a failure is worse than the failure itself.
@@ -187,6 +201,21 @@ export function createReplySender(deps: ReplyDeps) {
       deps.config.appId,
       ref,
       async turnContext => {
+        const mentionEntities: ReturnType<typeof mentionEntity>[] = []
+        const notMembers: string[] = []
+        for (const m of mentions) {
+          if (m.type === 'tag') {
+            mentionEntities.push(mentionEntity(m.name, m.id, true))
+            continue
+          }
+          const memberId = await (deps.lookupMember ?? teamsMemberLookup)(turnContext, m.aadObjectId)
+          if (memberId === undefined) notMembers.push(m.name)
+          else mentionEntities.push(mentionEntity(m.name, memberId, false))
+        }
+        if (notMembers.length > 0) {
+          throw new Error(`mentions: not a member of this conversation: ${notMembers.join(', ')}`)
+        }
+        const entities = [...mentionEntities, ...(entity ? [entity] : [])]
         const res = await turnContext.sendActivity({
           type: 'message',
           text,
@@ -194,13 +223,13 @@ export function createReplySender(deps: ReplyDeps) {
           ...(card !== undefined
             ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
             : {}),
-          ...(entity ? { entities: [entity as { type: string }] } : {}),
+          ...(entities.length > 0 ? { entities: entities as { type: string }[] } : {}),
         })
         sentId = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
       },
     )
     process.stderr.write(
-      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}\n`,
+      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${mentions.length > 0 ? ` mentions=${mentions.length}` : ''}\n`,
     )
     return sentId
   }

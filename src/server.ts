@@ -203,7 +203,7 @@ try {
 
 // ── Outbound reply path (used by both `reply` tool and pairing DM hook) ─────
 
-const replier = createReplySender({ config, adapter, allowlist, refs, typingPump })
+const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, mentionTags: config.mentionTags })
 
 const sendFile = createFileSender({
   config,
@@ -338,6 +338,23 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               },
               required: ['name', 'abstract'],
               additionalProperties: false,
+            },
+          },
+          mentions: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 10,
+            description:
+              'Optional @mentions, at most 10. A person: { type: "user", aad_object_id, name }, who must be a member of this conversation. A team tag: { type: "tag", tag }, only tags listed in TEAMS_MENTION_TAGS, only in a team channel. The text must contain <at>name</at> for each (the tag name for a tag). If a person is not a member, the reply fails and names them; nothing is sent.',
+            items: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['user', 'tag'] },
+                aad_object_id: { type: 'string' },
+                name: { type: 'string' },
+                tag: { type: 'string' },
+              },
+              required: ['type'],
             },
           },
         },
@@ -488,10 +505,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (rawCitations !== undefined && !Array.isArray(rawCitations)) {
           throw new Error('citations must be an array')
         }
-        const id = aiGenerated || rawCitations !== undefined
+        const rawMentions = args.mentions ?? undefined
+        if (rawMentions !== undefined && !Array.isArray(rawMentions)) {
+          throw new Error('mentions must be an array')
+        }
+        const id = aiGenerated || rawCitations !== undefined || rawMentions !== undefined
           ? await replier.sendReply(conversationId, text, card, {
               ...(aiGenerated ? { aiGenerated } : {}),
               ...(rawCitations !== undefined ? { citations: rawCitations } : {}),
+              ...(rawMentions !== undefined ? { mentions: rawMentions } : {}),
             })
           : card !== undefined
             ? await replier.sendReply(conversationId, text, card)
