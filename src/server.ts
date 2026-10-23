@@ -46,7 +46,7 @@ import { loadConfig, meetingEventsWarning } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
-import { createReplySender } from './teams/reply.js'
+import { createReplySender, parseTargetedMessageId } from './teams/reply.js'
 import { createConversationRefStore, isPersonalReference } from './teams/conversationRefs.js'
 import { createChannelRefStore } from './teams/channelRefs.js'
 import { createChannelPoster } from './teams/channelPost.js'
@@ -59,6 +59,7 @@ import {
   selectPromptConversation,
   type PromptDelivery,
 } from './teams/targeted.js'
+import { createTargetedInbound } from './teams/targetedInbound.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { withSendRetry, sendTracker, SHUTDOWN_SEND_WAIT_MS } from './teams/sendRetry.js'
@@ -181,6 +182,7 @@ const mcp = new Server(
       'In a channel or group chat the tag also carries mentioned="true" or "false". mentioned="false" means the message was NOT addressed to you (the operator opted that conversation in so you can follow it): reply only when you are clearly expected to.',
       '',
       'A tag with message_event="edited", "restored" or "deleted" is about an earlier message (message_id); edited/restored carry its new text. message_event="reaction" is a user\'s emoji reaction to that message. Neither is a new request.',
+      'A tag with targeted="true" is a private message only you and the sender see (for example a slash command). Answer it with the reply tool and pass its message_id as targeted_message_id, so the answer is private too.',
       '',
       ...(config.meetingEvents
         ? [
@@ -250,7 +252,8 @@ const acks = config.ackText
   : undefined
 const knownUsers = createKnownUsers()
 const userViews = createUserViewStore()
-const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews })
+const targetedInbound = createTargetedInbound()
+const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews, targetedInbound })
 const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
 const directMessenger = createDirectMessenger({ config, adapter, allowlist, refs, replier })
 
@@ -261,6 +264,7 @@ const sendFile = createFileSender({
   refs,
   outbox,
   downloadBaseUrl: config.filesBaseUrl,
+  targetedInbound,
 })
 
 /**
@@ -399,6 +403,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               additionalProperties: false,
             },
           },
+          targeted_message_id: {
+            type: 'string',
+            description: 'message_id of an inbound tag with targeted="true": the reply is then shown only to that sender',
+          },
+          public: {
+            type: 'boolean',
+            description: 'post publicly even though the latest message in this conversation was a private (targeted) one',
+          },
         },
         required: ['conversation_id', 'text'],
       },
@@ -456,6 +468,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           caption: {
             type: 'string',
             description: 'Optional message text shown alongside the card.',
+          },
+          public: {
+            type: 'boolean',
+            description: 'post publicly even though the latest message in this conversation was a private (targeted) one',
           },
         },
         required: ['conversation_id'],
@@ -615,11 +631,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (rawUserCards !== undefined && !Array.isArray(rawUserCards)) {
           throw new Error('user_cards must be an array')
         }
-        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined
+        const targetedMessageId = parseTargetedMessageId(args.targeted_message_id)
+        const isPublic = args.public === true
+        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || targetedMessageId !== undefined || isPublic
           ? await replier.sendReply(conversationId, text, card, {
               ...(aiGenerated ? { aiGenerated } : {}),
               ...(rawCitations !== undefined ? { citations: rawCitations } : {}),
               ...(rawUserCards !== undefined ? { userCards: rawUserCards } : {}),
+              ...(targetedMessageId !== undefined ? { targetedMessageId } : {}),
+              ...(isPublic ? { public: true } : {}),
             })
           : card !== undefined
             ? await replier.sendReply(conversationId, text, card)
@@ -692,6 +712,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           filename,
           mime,
           caption,
+          ...(args.public === true ? { public: true } : {}),
         })
         return {
           content: [
@@ -952,6 +973,7 @@ const listener = startListener({
   refs,
   channelRefs,
   onEvent: inboundDebouncer.push,
+  targetedInbound,
   pending,
   permission,
   typingPump,

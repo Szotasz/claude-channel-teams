@@ -25,8 +25,26 @@ import { isStreamClosedError, type StatusStreams } from './statusStream.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
 import { createPipelineRequest } from '@azure/core-rest-pipeline'
 import { USER_VIEW_VERB, usesReservedVerb, validateUserCards, type UserCard } from './userViews.js'
+import { buildTargetedActivity, postTargetedActivity } from './targeted.js'
+import type { TargetedInbound } from './targetedInbound.js'
 
 export const REACTION_ID_RE = /^[a-z0-9_]{1,40}$/
+
+export const LATEST_PRIVATE_MESSAGE =
+  'the latest message in this conversation was private (targeted): answer it with targeted_message_id. ' +
+  'Use public: true only for a message meant for everyone in the conversation.'
+
+/**
+ * The reply tool's targeted_message_id: absent (undefined or null) or a non-empty string. Anything else is
+ * refused, so a private answer with a malformed id can never fall through to a public post.
+ */
+export function parseTargetedMessageId(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'string' || raw.length === 0) {
+    throw new Error('targeted_message_id must be the message_id string of the inbound tag')
+  }
+  return raw
+}
 
 export type CitationInput = {
   name: string
@@ -152,6 +170,23 @@ export interface ReplyDeps {
   knownUsers?: { get(aadObjectId: string): string | undefined }
   /** Stored user-specific views (user_cards). */
   userViews?: { create(baseCard: Record<string, unknown>, userCards: UserCard[], userMris: string[]): { id: string; base: Record<string, unknown> } }
+  /** Memory of inbound targeted messages and targeted messages sent. */
+  targetedInbound?: TargetedInbound
+  /** Clock, for tests. */
+  now?: () => number
+}
+
+export interface ReplyOptions {
+  /** Show the 'AI generated' label. */
+  aiGenerated?: boolean
+  /** Numbered source citations. */
+  citations?: CitationInput[]
+  /** message_id of an inbound targeted message: the reply is then shown only to its sender. */
+  targetedMessageId?: string
+  /** Post publicly even though the latest message in the conversation was targeted. */
+  public?: boolean
+  /** Per-user views of the card (user_cards), checked in sendReply. */
+  userCards?: unknown
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -178,12 +213,61 @@ export function createReplySender(deps: ReplyDeps) {
     return { ref: stored.ref }
   }
 
+  const nowMs = () => (deps.now ?? Date.now)()
+
+  /** Refuse a public post right after a private (targeted) inbound unless explicitly asked for. */
+  function assertPublicAllowed(conversationId: string, isPublic: boolean | undefined): void {
+    if (isPublic !== true && deps.targetedInbound?.latestIsTargeted(conversationId, nowMs())) {
+      throw new Error(LATEST_PRIVATE_MESSAGE)
+    }
+  }
+
+  async function sendTargetedReply(
+    conversationId: string,
+    text: string,
+    card: unknown,
+    targetedMessageId: string,
+    entity?: Record<string, unknown>,
+  ): Promise<string | undefined> {
+    const entry = deps.targetedInbound?.get(conversationId, targetedMessageId, nowMs())
+    if (!entry) throw new Error('unknown or expired targeted_message_id for this conversation')
+    if (!deps.allowlist.isAllowed(entry.aadObjectId)) {
+      throw new ConversationNotAllowedError(conversationId)
+    }
+    const body = {
+      ...buildTargetedActivity(entry.ref, text),
+      textFormat: 'markdown',
+      entities: [{ type: 'targetedMessageInfo', messageId: targetedMessageId }, ...(entity ? [entity as { type: string }] : [])],
+      ...(card !== undefined
+        ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
+        : {}),
+    }
+    deps.typingPump?.stop(conversationId)
+    // No fallback: a failure here must never turn into a public post.
+    const bodyText = await postTargetedActivity(deps.adapter, deps.config.appId, entry.ref, body)
+    let sentId: string | undefined
+    try {
+      const id = (JSON.parse(bodyText ?? '') as { id?: unknown } | null)?.id
+      if (typeof id === 'string' && id.length > 0) sentId = id
+    } catch {
+      // No JSON body: no id to report.
+    }
+    if (sentId) deps.targetedInbound?.rememberSent(sentId)
+    process.stderr.write(
+      `teams channel: targeted reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}\n`,
+    )
+    return sentId
+  }
+
   async function sendReply(
     conversationId: string,
     text: string,
     card?: unknown,
-    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown },
+    opts: ReplyOptions = {},
   ): Promise<string | undefined> {
+    if (opts.targetedMessageId !== undefined && opts.public === true) {
+      throw new Error('targeted_message_id and public cannot be combined')
+    }
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
       if (!checked.ok) throw new Error(`invalid card: ${checked.error}`)
@@ -206,7 +290,11 @@ export function createReplySender(deps: ReplyDeps) {
       storeViews = () => deps.userViews!.create(card as Record<string, unknown>, userCards, mris).base
       views = userCards.length
     }
-    const entity = buildMessageEntity(opts ?? {})
+    const entity = buildMessageEntity(opts)
+    if (opts.targetedMessageId !== undefined) {
+      return sendTargetedReply(conversationId, text, card, opts.targetedMessageId, entity)
+    }
+    assertPublicAllowed(conversationId, opts.public)
     const { ref } = assertAllowedConversation(conversationId)
     // Stop the typing pump first. We do this before the network send so the
     // indicator clears even if the connector call throws — flapping
@@ -289,6 +377,9 @@ export function createReplySender(deps: ReplyDeps) {
     messageId: string,
     text: string,
   ): Promise<void> {
+    if (deps.targetedInbound?.isSentTargeted(messageId)) {
+      throw new Error('editing a targeted message is not supported')
+    }
     const { ref } = assertAllowedConversation(conversationId)
     await deps.adapter.continueConversationAsync(
       deps.config.appId,
@@ -382,5 +473,5 @@ export function createReplySender(deps: ReplyDeps) {
     return id
   }
 
-  return { sendReply, editReply, react, assertAllowedConversation, sendStatus, sendAck }
+  return { sendReply, editReply, react, assertAllowedConversation, assertPublicAllowed, sendStatus, sendAck }
 }
