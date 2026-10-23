@@ -33,21 +33,13 @@ function firstStatement(src: string): string {
 
 describe('server.ts wiring', () => {
   test('#12 the permission prompt target is the most recent 1:1 chat, re-checked against the allowlist', () => {
-    const body = block(server, 'resolveTargetConversation: () => {')
-    expect(body).toContain('const id = refs.mostRecentPersonalConversationId()')
-    expect(body).not.toContain('mostRecentConversationId(')
-    expect(body).toContain('const stored = refs.get(id)')
-    expect(body).toContain('if (!allowlist.isAllowed(stored.aadObjectId)) return undefined')
-    // In this order: the 1:1 lookup, the stored reference, the allowlist guard, and only then `return id`.
-    const at = (s: string) => body.indexOf(s)
-    expect(at('const id = refs.mostRecentPersonalConversationId()')).toBeLessThan(at('const stored = refs.get(id)'))
-    expect(at('const stored = refs.get(id)')).toBeLessThan(at('if (!allowlist.isAllowed(stored.aadObjectId))'))
-    expect(at('if (!allowlist.isAllowed(stored.aadObjectId))')).toBeLessThan(at('return id'))
-    // Every return is a whole line: `return undefined`, or `return id` as the last statement. No line continues an
-    // expression from the line before, so a return cannot carry on onto the next line.
-    expect((body.match(/\breturn\b[^\n]*/g) ?? []).filter(r => r !== 'return undefined')).toEqual(['return id'])
-    expect(body).toMatch(/\n\s*return id\n\s*\}$/)
-    expect(body).not.toMatch(/\n\s*(\?|:|\|\||&&|\.)/)
+    // Selection and delivery live in src/teams/targeted.ts (tests/targeted.test.ts T5/T6): with targeted messages off
+    // only a 1:1 chat is chosen, the allowlist is re-checked, and a shared conversation never gets a plain message.
+    // server.ts only delegates, with the live allowlist.
+    expect(server).toContain('resolveTargetConversation: () => selectPromptConversation(promptDelivery),')
+    expect(server).toMatch(/sendDm: \(conversationId, text\) =>\n\s*deliverPrompt\(promptDelivery, conversationId, text\),/)
+    expect(block(server, 'const promptDelivery: PromptDelivery = {')).toContain('isAllowed: id => allowlist.isAllowed(id),')
+    expect(server).not.toContain('mostRecentConversationId(')
   })
 
   test('#9 the reply tool treats a null card as no card, and sends that normalized card', () => {
