@@ -49,6 +49,7 @@ import type { DeliveredMessages } from './deliveredMessages.js'
 import type { InboundIds } from './inboundIds.js'
 import { invisibleMeta, stripInvisible } from './invisibleChars.js'
 import { makeEarlyAckTurn } from './earlyAck.js'
+import { cardActionFrom, cardActionText } from './cardAction.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -96,6 +97,7 @@ export type ChannelEventSink = (event: {
   hasAttachments?: boolean
   /** Set by the inbound debouncer when several quick messages were merged into this one. */
   merged?: { count: number; messageIds: string[] }
+  cardAction?: { kind: 'execute' | 'submit'; verb?: string }
 }) => void
 
 // The most mention names one event carries.
@@ -153,6 +155,7 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.ts ? { ts: event.ts } : {}),
     ...(event.messageEvent ? { message_event: event.messageEvent } : {}),
     ...(event.mentioned !== undefined ? { mentioned: event.mentioned ? 'true' : 'false' } : {}),
+    ...(event.cardAction ? { card_action: event.cardAction.kind, ...(event.cardAction.verb ? { action_verb: event.cardAction.verb } : {}) } : {}),
     ...(event.isGroup !== undefined ? { is_group: String(event.isGroup) } : {}),
     ...(event.teamId !== undefined ? { team_id: event.teamId } : {}),
     ...(event.teamName !== undefined ? { team_name: event.teamName } : {}),
@@ -350,19 +353,57 @@ export function baseConversationId(conversationId: string): string {
 }
 
 /**
+ * What a turn gets. A message turn gets only the activity, because makeEarlyAckTurn may run it after botbuilder
+ * revoked the context; an invoke turn (a card Action.Execute) is never queued there and keeps the whole context,
+ * because its answer goes back through it.
+ */
+export type InboundTurn = Pick<TurnContext, 'activity'> | TurnContext
+
+/** The context an invoke is answered through; a turn that carries only its activity has none. */
+function invokeContext(ctx: InboundTurn): TurnContext | undefined {
+  return ctx.activity.type === 'invoke' && 'sendActivity' in ctx ? ctx : undefined
+}
+
+async function respondToCardInvoke(ctx: TurnContext, message: string) {
+  await ctx.sendActivity({
+    type: 'invokeResponse',
+    value: { status: 200, body: { statusCode: 200, type: 'application/vnd.microsoft.activity.message', value: message } },
+  } as Partial<Activity>)
+}
+
+/**
  * Build the turn handler that bridges the SDK's TurnContext to our gate + sink.
  *
  * Exported so the unit tests can call it directly with a synthesised
  * TurnContext — bypassing the JWT validator (which requires Microsoft-signed
  * tokens, impractical to produce in tests).
  */
-export function makeTurnHandler(deps: AdapterDeps): (ctx: Pick<TurnContext, 'activity'>) => Promise<void> {
-  const handle = async function turn(ctx: Pick<TurnContext, 'activity'>) {
+export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promise<void> {
+  // An Action.Execute invoke must always be answered (no answer = HTTP 501): every path of turn() that does not answer
+  // it, the early drops and a throw included, gets 'Not allowed.' here.
+  const handle = async function answeredTurn(ctx: InboundTurn) {
+    const invoke = { answered: false, ctx: invokeContext(ctx) }
+    try {
+      await turn(ctx, invoke)
+    } finally {
+      const card = cardActionFrom(ctx.activity)
+      if (card && card.kind !== 'submit' && !invoke.answered) await answer(invoke, 'Not allowed.')
+    }
+  }
+
+  async function answer(invoke: { answered: boolean; ctx: TurnContext | undefined }, message: string) {
+    invoke.answered = true
+    if (invoke.ctx) await respondToCardInvoke(invoke.ctx, message)
+    else process.stderr.write('teams channel: card action without an invoke context, not answered\n')
+  }
+
+  async function turn(ctx: InboundTurn, invoke: { answered: boolean; ctx: TurnContext | undefined }) {
     const a = ctx.activity
     // Diagnostic: log every inbound so we know what arrived.
     process.stderr.write(
       `teams channel: inbound type=${a.type} from=${a.from?.aadObjectId ?? '<none>'} convId=${a.conversation?.id?.slice(0, 20) ?? '<none>'} text=${JSON.stringify((a.text ?? '').slice(0, 60))}\n`,
     )
+    const card = cardActionFrom(a)
     // We only care about message activities in v1. Conversation update,
     // typing, etc. are ignored — they don't carry a payload Claude needs.
     const eventType = (a.channelData as { eventType?: unknown } | undefined)?.eventType
@@ -371,7 +412,8 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: Pick<TurnContext, 'act
       : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
       : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
       : undefined
-    if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent) return
+    if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card) return
+    const answerInvoke = (message: string) => answer(invoke, message)
 
     const aadObjectIdRaw = a.from?.aadObjectId
     if (!aadObjectIdRaw) {
@@ -426,6 +468,35 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: Pick<TurnContext, 'act
         ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
         messageEvent: 'reaction',
       })
+      return
+    }
+
+    // A click on a card button: no @mention is needed, no pairing, never a permission reply.
+    if (card) {
+      if (card.kind === 'automatic') {
+        // A refresh the client fired by itself: not a click, so no event.
+        process.stderr.write('teams channel: ignore automatic card refresh invoke\n')
+        await answerInvoke('Ignored.')
+        return
+      }
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop card action from a sender not on the allowlist (${aadObjectId})\n`)
+        if (card.kind === 'execute') await answerInvoke('Not allowed.')
+        return
+      }
+      const ref = TurnContext.getConversationReference(a)
+      deps.refs.put(conversationId, ref, aadObjectId)
+      deps.onEvent({
+        text: cardActionText(card),
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        cardAction: { kind: card.kind, ...(card.verb ? { verb: card.verb } : {}) },
+      })
+      if (card.kind === 'execute') await answerInvoke('Received.')
       return
     }
 
