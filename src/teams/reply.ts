@@ -20,6 +20,7 @@ import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
+import { USER_VIEW_VERB, usesReservedVerb, validateUserCards, type UserCard } from './userViews.js'
 
 export type CitationInput = {
   name: string
@@ -137,6 +138,10 @@ export interface ReplyDeps {
   refs: ConversationRefStore
   /** Optional typing-indicator pump — stopped when a reply lands. */
   typingPump?: TypingPump
+  /** Person -> user MRI, learned from inbound activities (user-specific views). */
+  knownUsers?: { get(aadObjectId: string): string | undefined }
+  /** Stored user-specific views (user_cards). */
+  userViews?: { create(baseCard: Record<string, unknown>, userCards: UserCard[], userMris: string[]): { id: string; base: Record<string, unknown> } }
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -167,14 +172,34 @@ export function createReplySender(deps: ReplyDeps) {
     conversationId: string,
     text: string,
     card?: unknown,
-    opts?: { aiGenerated?: boolean; citations?: CitationInput[] },
+    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown },
   ): Promise<string | undefined> {
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
       if (!checked.ok) throw new Error(`invalid card: ${checked.error}`)
+      // A click on a button with this verb would be taken for a view refresh and never reach Claude.
+      if (usesReservedVerb(card)) throw new Error(`card uses the reserved verb ${USER_VIEW_VERB}`)
+    }
+    let outCard = card
+    let views = 0
+    let storeViews: (() => Record<string, unknown>) | undefined
+    if (opts?.userCards !== undefined) {
+      const userCards = validateUserCards(opts.userCards, card)
+      if (!deps.knownUsers || !deps.userViews) throw new Error('user_cards is not available in this server')
+      const unknown = userCards.filter(u => !deps.knownUsers!.get(u.aadObjectId)).map(u => u.aadObjectId)
+      if (unknown.length > 0) {
+        throw new Error(
+          `user_cards: no Teams user id is known yet for ${unknown.join(', ')} (they have not written to the bot since it started)`,
+        )
+      }
+      const mris = userCards.map(u => deps.knownUsers!.get(u.aadObjectId)!)
+      storeViews = () => deps.userViews!.create(card as Record<string, unknown>, userCards, mris).base
+      views = userCards.length
     }
     const entity = buildMessageEntity(opts ?? {})
     const { ref } = assertAllowedConversation(conversationId)
+    // The view is stored only after every check has passed, right before the send.
+    if (storeViews) outCard = storeViews()
     // Stop the typing pump first. We do this before the network send so the
     // indicator clears even if the connector call throws — flapping
     // "is typing…" forever after a failure is worse than the failure itself.
@@ -191,8 +216,8 @@ export function createReplySender(deps: ReplyDeps) {
           type: 'message',
           text,
           textFormat: 'markdown',
-          ...(card !== undefined
-            ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
+          ...(outCard !== undefined
+            ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: outCard }] }
             : {}),
           ...(entity ? { entities: [entity as { type: string }] } : {}),
         })
@@ -200,7 +225,7 @@ export function createReplySender(deps: ReplyDeps) {
       },
     )
     process.stderr.write(
-      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}\n`,
+      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${views > 0 ? ` views=${views}` : ''}\n`,
     )
     return sentId
   }
