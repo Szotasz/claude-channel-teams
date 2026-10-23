@@ -167,6 +167,14 @@ export function htmlToText(html: string): string {
   return cut ? `${s}\n[... HTML cut at ${MAX_HTML_INPUT_CHARS} characters before conversion]` : s
 }
 
+/**
+ * Inline text reaches Claude inside the channel event. htmlToText decodes entities, so '&lt;/channel&gt;' in an HTML
+ * part would arrive as a literal tag; '<' and '>' are therefore kept as entities in every inlined text.
+ */
+export function neutralizeMarkup(text: string): string {
+  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 const TRUNCATION_NOTE = '\n[... truncated at 65536 characters]'
 export function capInline(text: string): string {
   if (text.length <= MAX_INLINE_CHARS) return text

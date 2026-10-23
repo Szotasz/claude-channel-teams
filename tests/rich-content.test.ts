@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { capInline, cardToText, comparableHtml, comparableMessage, htmlToText, MAX_INLINE_CHARS } from '../src/teams/richContent'
+import { capInline, cardToText, comparableHtml, comparableMessage, htmlToText, MAX_INLINE_CHARS, neutralizeMarkup } from '../src/teams/richContent'
 
 describe('htmlToText', () => {
   test('forwarded message fixture', () => {
@@ -16,6 +16,19 @@ describe('htmlToText', () => {
     for (const s of ['[quote]', 'see the PDF', '[/quote]', 'reply']) expect(t).toContain(s)
   })
   test('numeric entities', () => expect(htmlToText('&#0;a&#x41;')).toBe('aA'))
+})
+
+describe('capInline boundary', () => {
+  test('exactly the cap is kept, one more is cut to the cap', () => {
+    const at = 'a'.repeat(MAX_INLINE_CHARS)
+    expect(capInline(at)).toBe(at)
+    const over = capInline('a'.repeat(MAX_INLINE_CHARS + 1))
+    expect(over.length).toBe(MAX_INLINE_CHARS)
+    expect(over.endsWith('\n[... truncated at 65536 characters]')).toBe(true)
+  })
+  test('neutralizeMarkup keeps < and > as entities', () => {
+    expect(neutralizeMarkup('a<b>c</b>')).toBe('a&lt;b&gt;c&lt;/b&gt;')
+  })
 })
 
 describe('capInline', () => {

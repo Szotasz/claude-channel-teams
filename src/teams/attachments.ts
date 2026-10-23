@@ -43,7 +43,7 @@ import { mkdirSync, renameSync, statSync, writeFileSync, existsSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import type { Attachment } from 'botframework-schema'
-import { CARD_CONTENT_TYPES, capInline, cardToText, comparableHtml, comparableMessage, htmlToText } from './richContent.js'
+import { CARD_CONTENT_TYPES, capInline, cardToText, comparableHtml, comparableMessage, htmlToText, neutralizeMarkup } from './richContent.js'
 
 /** 50 MB cap per file. Anything larger is skipped with an annotation. */
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
@@ -399,12 +399,12 @@ export async function processOne(
     const comparable = comparableHtml(html)
     const own = comparableMessage(deps.messageText ?? '')
     if (!comparable || comparable === own) return { kind: 'ignored', reason: 'html repeats the message text', originalName: declaredName }
-    return { kind: 'inline', label: 'HTML content', text: capInline(text), originalName: declaredName }
+    return { kind: 'inline', label: 'HTML content', text: capInline(neutralizeMarkup(text)), originalName: declaredName }
   }
   if (typeof att.contentType === 'string' && CARD_CONTENT_TYPES.has(att.contentType)) {
     const text = cardToText(att.contentType, att.content)
     if (!text) return { kind: 'skipped', reason: 'card with no text', originalName: declaredName }
-    return { kind: 'inline', label: 'Card content', text: capInline(text), originalName: declaredName }
+    return { kind: 'inline', label: 'Card content', text: capInline(neutralizeMarkup(text)), originalName: declaredName }
   }
 
   // Unknown shape — log and skip with an annotation so Hermes can tell the
