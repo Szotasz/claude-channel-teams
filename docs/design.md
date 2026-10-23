@@ -338,11 +338,14 @@ We point at Microsoft's documentation for these in
 `reply` returns the sent message's id (`message_id`) so Claude can pass it to
 `edit_message`. It can also carry an Adaptive Card (version 1.0–1.5, at most
 28000 characters as JSON, https-only URLs and images), which is checked before
-anything is sent. Actions that post back to the bot (Action.Submit,
-Action.Execute, msteams imBack / messageBack / signin) are refused anywhere in
-the card until the plugin can receive a card click as its own, marked event:
-otherwise a model-written button could post text in the name of the user who
-clicks it.
+anything is sent. A click on an Action.Submit or Action.Execute button comes back as a channel event marked card_action (with action_verb),
+whose text starts with [Card action] and carries the button's title, verb and data; it is never matched as a permission
+reply, and an Action.Execute click gets a short invoke response. msteams imBack / messageBack / signin actions are still
+refused anywhere in the card: they would post text in the name of the user who clicks it, and so is a
+card refresh, whose Action.Execute fires without a click (an automatic invoke is answered and ignored). Every
+Action.Execute invoke gets an invoke response, also when it is dropped. Known limit: a click is not checked
+against a record of the cards this bot sent; the event's message_id is the card's message id (the activity's
+replyToId) when Teams sends one, which can be compared with the message_id that reply returned.
 
 `reply` can also mark a message as AI-generated (`ai_generated`) and attach
 numbered source citations (`citations`, at most 20; name ≤ 80, abstract ≤ 160
@@ -554,3 +557,7 @@ plugins' patterns:
 - [ ] No third-party telemetry / phone-home.
 - [ ] License: MIT or Apache 2.0.
 - [ ] Generalised docs — no hard-coded tenant IDs, bot names, hostnames.
+
+## Dialogs from card buttons
+
+A card button (`Action.Submit` with `"msteams": {"type": "task/fetch"}`) can open a Teams dialog; its submit reaches Claude as a `[Dialog submit]` event with `card_action="dialog"`. See [dialogs.md](dialogs.md).

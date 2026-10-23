@@ -45,6 +45,7 @@ import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
+import { buildDialogTask, cardActionFrom, cardActionText, dialogInvokeFrom, dialogSubmitText } from './cardAction.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -73,6 +74,7 @@ export type ChannelEventSink = (event: {
   mentioned?: boolean
   /** Set when the event is about an earlier, already delivered message. */
   messageEvent?: 'edited' | 'restored' | 'deleted'
+  cardAction?: { kind: 'execute' | 'submit' | 'dialog'; verb?: string }
 }) => void
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
@@ -226,6 +228,17 @@ export function baseConversationId(conversationId: string): string {
   return i === -1 ? conversationId : conversationId.slice(0, i)
 }
 
+async function respondToCardInvoke(ctx: TurnContext, message: string) {
+  await ctx.sendActivity({
+    type: 'invokeResponse',
+    value: { status: 200, body: { statusCode: 200, type: 'application/vnd.microsoft.activity.message', value: message } },
+  } as Partial<Activity>)
+}
+
+async function respondToTaskInvoke(ctx: TurnContext, body: unknown) {
+  await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200, body } } as Partial<Activity>)
+}
+
 /**
  * Build the turn handler that bridges the SDK's TurnContext to our gate + sink.
  *
@@ -234,12 +247,32 @@ export function baseConversationId(conversationId: string): string {
  * tokens, impractical to produce in tests).
  */
 export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promise<void> {
-  return async function turn(ctx: TurnContext) {
+  // An Action.Execute invoke must always be answered (no answer = HTTP 501): every path of turn() that does not answer
+  // it, the early drops and a throw included, gets 'Not allowed.' here.
+  return async function answeredTurn(ctx: TurnContext) {
+    const invoke = { answered: false }
+    try {
+      await turn(ctx, invoke)
+    } finally {
+      const card = cardActionFrom(ctx.activity)
+      if (card && card.kind !== 'submit' && !invoke.answered) await respondToCardInvoke(ctx, 'Not allowed.')
+      // Any task/* invoke, also one this code does not know, gets a task-format answer.
+      const taskInvoke = ctx.activity.type === 'invoke' && typeof ctx.activity.name === 'string' && ctx.activity.name.startsWith('task/')
+      if (taskInvoke && !invoke.answered) {
+        invoke.answered = true
+        await respondToTaskInvoke(ctx, { task: { type: 'message', value: 'Not allowed.' } })
+      }
+    }
+  }
+
+  async function turn(ctx: TurnContext, invoke: { answered: boolean }) {
     const a = ctx.activity
     // Diagnostic: log every inbound so we know what arrived.
     process.stderr.write(
       `teams channel: inbound type=${a.type} from=${a.from?.aadObjectId ?? '<none>'} convId=${a.conversation?.id?.slice(0, 20) ?? '<none>'} text=${JSON.stringify((a.text ?? '').slice(0, 60))}\n`,
     )
+    const card = cardActionFrom(a)
+    const dialog = dialogInvokeFrom(a)
     // We only care about message activities in v1. Conversation update,
     // typing, etc. are ignored — they don't carry a payload Claude needs.
     const eventType = (a.channelData as { eventType?: unknown } | undefined)?.eventType
@@ -248,7 +281,11 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
       : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
       : undefined
-    if (a.type !== 'message' && !messageEvent) return
+    if (a.type !== 'message' && !messageEvent && !card && !dialog) return
+    const answerInvoke = async (message: string) => {
+      invoke.answered = true
+      await respondToCardInvoke(ctx, message)
+    }
 
     const aadObjectIdRaw = a.from?.aadObjectId
     if (!aadObjectIdRaw) {
@@ -279,6 +316,71 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       return
     }
     const fromName = a.from?.name ?? ''
+
+    // A dialog (task module) opened from a card button, or its submit.
+    if (dialog) {
+      const answerTask = async (body: unknown) => {
+        invoke.answered = true
+        await respondToTaskInvoke(ctx, body)
+      }
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop dialog invoke from a sender not on the allowlist (${aadObjectId})\n`)
+        await answerTask({ task: { type: 'message', value: 'Not allowed.' } })
+        return
+      }
+      if (dialog.kind === 'fetch') {
+        const t = buildDialogTask(dialog.dialog)
+        await answerTask(
+          t.ok
+            ? { task: { type: 'continue', value: t.task } }
+            : { task: { type: 'message', value: 'This dialog cannot be opened.' } },
+        )
+        return
+      }
+      const ref = TurnContext.getConversationReference(a)
+      deps.refs.put(conversationId, ref, aadObjectId)
+      deps.onEvent({
+        text: dialogSubmitText(dialog.dataJson),
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        cardAction: { kind: 'dialog' },
+      })
+      await answerTask({ task: { type: 'message', value: 'Sent.' } })
+      return
+    }
+
+    // A click on a card button: no @mention is needed, no pairing, never a permission reply.
+    if (card) {
+      if (card.kind === 'automatic') {
+        // A refresh the client fired by itself: not a click, so no event.
+        process.stderr.write('teams channel: ignore automatic card refresh invoke\n')
+        await answerInvoke('Ignored.')
+        return
+      }
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop card action from a sender not on the allowlist (${aadObjectId})\n`)
+        if (card.kind === 'execute') await answerInvoke('Not allowed.')
+        return
+      }
+      const ref = TurnContext.getConversationReference(a)
+      deps.refs.put(conversationId, ref, aadObjectId)
+      deps.onEvent({
+        text: cardActionText(card),
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        cardAction: { kind: card.kind, ...(card.verb ? { verb: card.verb } : {}) },
+      })
+      if (card.kind === 'execute') await answerInvoke('Received.')
+      return
+    }
 
     // Channel / group-chat scope (manifest scopes 'team' + 'groupChat'). In a
     // SHARED conversation the bot must act ONLY when explicitly @mentioned --

@@ -134,18 +134,16 @@ describe('validateAdaptiveCard', () => {
     expect(err({ ...base, body: [{ iconUrl: 'http://x' }] })).toContain('card.body[0].iconUrl')
   })
 
-  test('no action that posts back to the bot', () => {
+  test('msteams post-back actions are refused, Submit and Execute pass', () => {
     const base = { type: 'AdaptiveCard', version: '1.5' }
-    expect(err({ ...base, actions: [{ type: 'Action.Submit', title: 'Go', data: { go: true } }] })).toBe(
-      'card.actions[0] is an Action.Submit, which this plugin cannot receive yet',
-    )
-    expect(err({ ...base, actions: [{ type: 'Action.Execute', verb: 'go' }] })).toContain('card.actions[0] is an Action.Execute')
+    expect(validateAdaptiveCard({ ...base, actions: [{ type: 'Action.Submit', title: 'Go', data: { go: true } }] })).toEqual({ ok: true })
+    expect(validateAdaptiveCard({ ...base, actions: [{ type: 'Action.Execute', verb: 'go' }] })).toEqual({ ok: true })
     expect(
-      err({ ...base, body: [{ type: 'Container', items: [], selectAction: { type: 'Action.Submit', data: {} } }] }),
-    ).toContain('card.body[0].selectAction is an Action.Submit')
+      validateAdaptiveCard({ ...base, body: [{ type: 'Container', items: [], selectAction: { type: 'Action.Submit', data: {} } }] }),
+    ).toEqual({ ok: true })
     expect(
-      err({ ...base, body: [{ type: 'ColumnSet', columns: [{ type: 'Column', selectAction: { type: 'Action.Execute' } }] }] }),
-    ).toContain('card.body[0].columns[0].selectAction is an Action.Execute')
+      validateAdaptiveCard({ ...base, body: [{ type: 'ColumnSet', columns: [{ type: 'Column', selectAction: { type: 'Action.Execute' } }] }] }),
+    ).toEqual({ ok: true })
     for (const t of ['imBack', 'messageBack', 'signin']) {
       expect(
         err({ ...base, actions: [{ type: 'Action.ShowCard', card: { type: 'AdaptiveCard', data: { msteams: { type: t, text: 'y abcde' } } } }] }),
@@ -158,6 +156,12 @@ describe('validateAdaptiveCard', () => {
         actions: [{ type: 'Action.OpenUrl', url: 'https://x.example' }, { type: 'Action.ShowCard', card: { type: 'AdaptiveCard', body: [] } }],
       }),
     ).toEqual({ ok: true })
+  })
+
+  test('a refresh is refused', () => {
+    expect(err({ type: 'AdaptiveCard', version: '1.5', refresh: { action: { type: 'Action.Execute', verb: 'x' } }, body: [] })).toBe(
+      'card.refresh is a refresh, which fires without a click',
+    )
   })
 
   test('nesting', () => {
