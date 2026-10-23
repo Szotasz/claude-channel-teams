@@ -661,3 +661,9 @@ and the channel notification):
   nothing buffered is lost when the process stops.
 - The three-window cap is measured on a monotonic clock, so a wall clock that
   is set back does not stretch it.
+
+## Message actions
+
+The "..." menu of a message can start an action (`make-teams-manifest.sh --message-action`). The submitted invoke is
+turned into a marked `message_action` event for allowlisted users only, and the bot answers the invoke at once with
+status 200 and no body. See [message-actions.md](message-actions.md).
