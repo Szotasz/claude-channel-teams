@@ -231,6 +231,12 @@ export interface Config {
    * TEAMS_CHANNEL_CREATE_TEAMS (comma-separated); see docs/create-channel.md.
    */
   channelCreateTeams: ReadonlySet<string>
+  /**
+   * Opt-in `send_activity_notification` tool (Teams activity feed pings via
+   * Microsoft Graph). True only when `TEAMS_ACTIVITY_FEED` is exactly `1`.
+   * See docs/activity-feed.md.
+   */
+  activityFeed: boolean
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -454,5 +460,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),
     meetingTranscripts: parseFlag(env.TEAMS_MEETING_TRANSCRIPTS),
     channelCreateTeams,
+    activityFeed: env.TEAMS_ACTIVITY_FEED === '1',
   })
 }
