@@ -45,6 +45,7 @@ import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
+import type { TargetedInbound } from './targetedInbound.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -73,6 +74,8 @@ export type ChannelEventSink = (event: {
   mentioned?: boolean
   /** Set when the event is about an earlier, already delivered message. */
   messageEvent?: 'edited' | 'restored' | 'deleted'
+  /** Shared conversation only: the message was a targeted (private) one. */
+  targeted?: boolean
 }) => void
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
@@ -128,6 +131,8 @@ export interface AdapterDeps {
   /** Messages already delivered to Claude; edit/delete/restore events are only
    *  forwarded for these. Optional so existing tests still wire. */
   deliveredMessages?: DeliveredMessages
+  /** Memory of inbound targeted messages. Optional so existing tests still wire. */
+  targetedInbound?: TargetedInbound
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -383,9 +388,13 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // must not disagree because the allowlist changed between two reads.
     const senderAllowed = deps.allowlist.isAllowed(aadObjectId)
     let mentioned: boolean | undefined
+    // A targeted message (only the bot and the sender see it) is addressed to the bot. 1:1: flag ignored.
+    const targeted = isGroupContext && (a.recipient as { isTargeted?: boolean } | undefined)?.isTargeted === true
     if (isGroupContext) {
       const botId = a.recipient?.id
-      mentioned = botId
+      mentioned = targeted
+        ? true
+        : botId
         ? (a.entities ?? []).some(
             (e) =>
               (e as { type?: string }).type === 'mention' &&
@@ -517,6 +526,9 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // before pushing to Claude so a fast reply can always find its way back.
     const ref = TurnContext.getConversationReference(a)
     deps.refs.put(conversationId, ref, aadObjectId)
+    if (targeted && a.id) {
+      deps.targetedInbound?.remember(conversationId, a.id, ref, aadObjectId, Date.now())
+    }
 
     // Start the typing-indicator pump as early as possible — the user sees
     // "is typing…" while attachments are processed and Claude is notified.
@@ -584,6 +596,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     if (typeof messageId === 'string' && messageId.length > 0) {
       deps.deliveredMessages?.remember(baseConversationId(conversationId), messageId, aadObjectId)
     }
+    if (isGroupContext) deps.targetedInbound?.noteDelivered(conversationId, targeted, Date.now())
     deps.onEvent({
       text,
       conversationId,
@@ -593,6 +606,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       messageId,
       ts,
       ...(mentioned !== undefined ? { mentioned } : {}),
+      ...(targeted ? { targeted: true } : {}),
     })
   }
 }
