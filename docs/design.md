@@ -425,6 +425,7 @@ added: …` / `[Reaction] removed: …` channel event for the reacted-to message
 marked `message_event="reaction"` like the edit / delete / restore events.
 
 The `reply` tool (and `edit_message`) also take an optional `format` parameter: `'extendedmarkdown'` for tables, task lists and quotes; default `'markdown'`.
+`reply` can also @mention people and team tags (`mentions`); see docs/mentions.md.
 
 ### Error paths
 

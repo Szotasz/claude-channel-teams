@@ -279,7 +279,7 @@ const acks = config.ackText
 const knownUsers = createKnownUsers()
 const userViews = createUserViewStore()
 const seenMessages = createSeenMessages()
-const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews, seenMessages, feedback: config.feedback })
+const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews, seenMessages, feedback: config.feedback, mentionTags: config.mentionTags })
 const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
 const directMessenger = createDirectMessenger({ config, adapter, allowlist, refs, replier })
 const teamGroups = createTeamGroupStore()
@@ -476,6 +476,23 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'Optional. extendedmarkdown lets Teams render tables, task lists and block quotes; omitted or null means markdown.',
           },
           quote_message_id: { type: 'string', description: 'Optional. The message_id of a message in THIS conversation to quote above the reply (an inbound message_id, or a message this bot sent here since the plugin started); Teams shows it as a preview bubble. Other ids are refused.' },
+          mentions: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 10,
+            description:
+              'Optional @mentions, at most 10. A person: { type: "user", aad_object_id, name }, who must be a member of this conversation. A team tag: { type: "tag", tag }, only tags listed in TEAMS_MENTION_TAGS, only in a team channel. The text must contain <at>name</at> for each (the tag name for a tag). If a person is not a member, the reply fails and names them; nothing is sent.',
+            items: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['user', 'tag'] },
+                aad_object_id: { type: 'string' },
+                name: { type: 'string' },
+                tag: { type: 'string' },
+              },
+              required: ['type'],
+            },
+          },
         },
         required: ['conversation_id', 'text'],
       },
@@ -737,13 +754,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         const format = parseReplyFormat(args.format)
         const quoteMessageId = parseQuoteArg(args.quote_message_id)
-        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown' || quoteMessageId !== undefined
+        const rawMentions = args.mentions ?? undefined
+        if (rawMentions !== undefined && !Array.isArray(rawMentions)) {
+          throw new Error('mentions must be an array')
+        }
+        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown' || quoteMessageId !== undefined || rawMentions !== undefined
           ? await replier.sendReply(conversationId, text, card, {
               ...(aiGenerated ? { aiGenerated } : {}),
               ...(rawCitations !== undefined ? { citations: rawCitations } : {}),
               ...(rawUserCards !== undefined ? { userCards: rawUserCards } : {}),
               ...(format !== 'markdown' ? { format } : {}),
               ...(quoteMessageId !== undefined ? { quoteMessageId } : {}),
+              ...(rawMentions !== undefined ? { mentions: rawMentions } : {}),
             })
           : card !== undefined
             ? await replier.sendReply(conversationId, text, card)

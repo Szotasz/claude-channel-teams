@@ -24,6 +24,13 @@ import { withSendRetry } from './sendRetry.js'
 import { isStreamClosedError, type StatusStreams } from './statusStream.js'
 import { feedbackChannelData } from './feedback.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
+import {
+  isChannelReference,
+  mentionEntity,
+  teamsMemberLookup,
+  validateMentions,
+  type MemberLookup,
+} from './mentions.js'
 import { createPipelineRequest } from '@azure/core-rest-pipeline'
 import { USER_VIEW_VERB, usesReservedVerb, validateUserCards, type UserCard } from './userViews.js'
 import type { SeenMessages } from './seenMessages.js'
@@ -178,6 +185,10 @@ export interface ReplyDeps {
   seenMessages?: SeenMessages
   /** Thumbs up / down buttons on every reply (TEAMS_FEEDBACK). Optional so existing tests still wire. */
   feedback?: boolean
+  /** Team tags that may be mentioned (name -> tag id). Optional so existing tests still wire. */
+  mentionTags?: ReadonlyMap<string, string>
+  /** Membership check for mentioned people; defaults to TeamsInfo.getMember. Injected by tests. */
+  lookupMember?: MemberLookup
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -208,7 +219,7 @@ export function createReplySender(deps: ReplyDeps) {
     conversationId: string,
     text: string,
     card?: unknown,
-    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown; format?: ReplyFormat; quoteMessageId?: string },
+    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown; format?: ReplyFormat; quoteMessageId?: string; mentions?: unknown },
   ): Promise<string | undefined> {
     const quoteMessageId = opts?.quoteMessageId
     if (quoteMessageId !== undefined && !QUOTE_ID_RE.test(quoteMessageId)) {
@@ -242,6 +253,9 @@ export function createReplySender(deps: ReplyDeps) {
     const entity = buildMessageEntity(opts ?? {})
     const format: ReplyFormat = opts?.format ?? 'markdown'
     const { ref } = assertAllowedConversation(conversationId)
+    const mentions = opts?.mentions !== undefined
+      ? validateMentions(opts.mentions, text, deps.mentionTags ?? new Map(), isChannelReference(ref))
+      : []
     // Stop the typing pump first. We do this before the network send so the
     // indicator clears even if the connector call throws — flapping
     // "is typing…" forever after a failure is worse than the failure itself.
@@ -261,8 +275,23 @@ export function createReplySender(deps: ReplyDeps) {
         deps.config.appId,
         current,
         async turnContext => {
+          const mentionEntities: ReturnType<typeof mentionEntity>[] = []
+          const notMembers: string[] = []
+          for (const m of mentions) {
+            if (m.type === 'tag') {
+              mentionEntities.push(mentionEntity(m.name, m.id, true))
+              continue
+            }
+            const memberId = await (deps.lookupMember ?? teamsMemberLookup)(turnContext, m.aadObjectId)
+            if (memberId === undefined) notMembers.push(m.name)
+            else mentionEntities.push(mentionEntity(m.name, memberId, false))
+          }
+          if (notMembers.length > 0) {
+            throw new Error(`mentions: not a member of this conversation: ${notMembers.join(', ')}`)
+          }
           const entities = [
             ...(quoteMessageId !== undefined ? [{ type: 'quotedReply', quotedReply: { messageId: quoteMessageId } }] : []),
+            ...mentionEntities,
             ...(entity ? [entity as { type: string }] : []),
           ]
           const activity = {
@@ -272,7 +301,7 @@ export function createReplySender(deps: ReplyDeps) {
             ...(outCard !== undefined
               ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: outCard }] }
               : {}),
-            ...(entities.length > 0 ? { entities } : {}),
+            ...(entities.length > 0 ? { entities: entities as { type: string }[] } : {}),
             ...(deps.feedback ? { channelData: feedbackChannelData() } : {}),
           }
           // Streaming is 1:1 only: close the stream only if the conversation is still 1:1 now.
@@ -314,7 +343,7 @@ export function createReplySender(deps: ReplyDeps) {
     else await send(undefined)
     if (sentId !== undefined) deps.seenMessages?.remember(conversationId, sentId)
     process.stderr.write(
-      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${closedStream ? ' stream=closed' : ''}${views > 0 ? ` views=${views}` : ''}${format === 'extendedmarkdown' ? ' format=extendedmarkdown' : ''}\n`,
+      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${closedStream ? ' stream=closed' : ''}${views > 0 ? ` views=${views}` : ''}${mentions.length > 0 ? ` mentions=${mentions.length}` : ''}${format === 'extendedmarkdown' ? ' format=extendedmarkdown' : ''}\n`,
     )
     return sentId
   }
