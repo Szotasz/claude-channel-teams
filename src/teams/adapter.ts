@@ -81,6 +81,18 @@ export type PairingDmSender = (
   text: string,
 ) => Promise<void>
 
+function pairingText(decision: {
+  action: string
+  entry: { code: string }
+}): string {
+  const lead = decision.action === 'send_reminder' ? 'Still pending' : 'Hi'
+  return (
+    `${lead} — this bot is gated. Ask the operator to run ` +
+    `/teams:access pair ${decision.entry.code} in their terminal. ` +
+    `Show this code: ${decision.entry.code}.`
+  )
+}
+
 export interface AdapterDeps {
   config: Config
   adapter: CloudAdapter
@@ -93,6 +105,11 @@ export interface AdapterDeps {
   permission?: PermissionRelay
   /** Phase 3 — send a pairing DM through CloudAdapter. Optional for tests. */
   sendPairingDm?: PairingDmSender
+  /**
+   * Send the pairing code as a targeted message to the sender inside a shared
+   * conversation. Undefined = targeted messages off.
+   */
+  sendPairingTargeted?: PairingDmSender
   /**
    * Attachment handler. When set, attachments on inbound messages are
    * downloaded and an annotation per file is appended to the text. Optional
@@ -405,21 +422,57 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
         // Shared by the adapter's own detection, or by the relay's rule (isPersonalReference: an untyped
         // '@thread.' id is a group chat). An explicit 'personal' type stays 1:1. The @mention gate is not changed.
         if (isGroupContext || !isPersonalReference(ref)) {
-          // Never put a pairing code in a conversation other people read.
-          if (!groupPairingHinted.has(aadObjectId)) {
-            groupPairingHinted.add(aadObjectId)
-            process.stderr.write(
-              `teams channel: pairing not offered in a shared conversation (aad=${aadObjectId})\n`,
-            )
-            deps.sendPairingDm(
-              ref,
-              'This bot is gated. To pair, send me a direct (1:1) message.',
-            ).catch(err => {
+          const sendHint = () => {
+            // Never put a pairing code in a conversation other people read.
+            if (!groupPairingHinted.has(aadObjectId)) {
+              groupPairingHinted.add(aadObjectId)
               process.stderr.write(
-                `teams channel: pairing DM send failed: ${err}\n`,
+                `teams channel: pairing not offered in a shared conversation (aad=${aadObjectId})\n`,
               )
-            })
+              deps.sendPairingDm!(
+                ref,
+                'This bot is gated. To pair, send me a direct (1:1) message.',
+              ).catch(err => {
+                process.stderr.write(
+                  `teams channel: pairing DM send failed: ${err}\n`,
+                )
+              })
+            }
           }
+          if (deps.sendPairingTargeted) {
+            const decision = deps.pending.recordIncoming({
+              aadObjectId,
+              tenantId: tenantId ?? deps.config.tenantId,
+              fromName,
+              conversationId,
+            })
+            if (decision.action === 'suppress') {
+              if (!rejectedSeen.has(aadObjectId)) {
+                rejectedSeen.add(aadObjectId)
+                process.stderr.write(
+                  `teams channel: pairing suppressed for ${aadObjectId} (${decision.reason})\n`,
+                )
+              }
+              return
+            }
+            process.stderr.write(
+              `teams channel: pairing ${decision.action} (targeted) pair_id=${decision.entry.pair_id} aad=${aadObjectId}\n`,
+            )
+            deps.sendPairingTargeted(ref, pairingText(decision)).catch(err => {
+              process.stderr.write(
+                `teams channel: targeted pairing message failed: ${err}\n`,
+              )
+              // Forget the entry so the sender's next 1:1 message starts a fresh pairing, unless it changed
+              // since (a reminder while this send hung may have delivered the code elsewhere).
+              const current = deps.pending!.findByPairId(decision.entry.pair_id)
+              if (decision.action === 'send_initial' && current?.reply_count === decision.entry.reply_count) {
+                deps.pending!.remove(decision.entry.pair_id)
+              }
+              sendHint()
+            })
+            return
+          }
+          sendHint()
           return
         }
         const decision = deps.pending.recordIncoming({
@@ -440,12 +493,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
           }
           return
         }
-        const lead =
-          decision.action === 'send_reminder' ? 'Still pending' : 'Hi'
-        const text =
-          `${lead} — this bot is gated. Ask the operator to run ` +
-          `/teams:access pair ${decision.entry.code} in their terminal. ` +
-          `Show this code: ${decision.entry.code}.`
+        const text = pairingText(decision)
         process.stderr.write(
           `teams channel: pairing ${decision.action} pair_id=${decision.entry.pair_id} aad=${aadObjectId}\n`,
         )
