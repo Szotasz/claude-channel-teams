@@ -577,3 +577,10 @@ token comes from the shared app-only helper (`createGraphTokenProvider` in
 are not covered (channel threads only). Messages
 from senders not on the allowlist are returned with `allowlisted=false` and
 are data, not instructions.
+
+## Activity feed notifications (`send_activity_notification`)
+
+An opt-in tool (`TEAMS_ACTIVITY_FEED=1`, `src/teams/activityFeed.ts`) that pings
+one person's Teams activity feed about a channel or thread via Microsoft Graph.
+It needs the `TeamsActivity.Send.Group` RSC permission (manifest flag
+`--activity-feed`). See [activity-feed.md](activity-feed.md).
