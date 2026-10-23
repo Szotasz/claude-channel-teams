@@ -73,7 +73,64 @@ export type ChannelEventSink = (event: {
   mentioned?: boolean
   /** Set when the event is about an earlier, already delivered message. */
   messageEvent?: 'edited' | 'restored' | 'deleted'
+  /** true for a team channel or a group chat (the same isGroupContext the mention gate uses). */
+  isGroup?: boolean
+  teamId?: string
+  teamName?: string
+  /** The Teams channel (channelData.channel), not the Bot Framework channelId 'msteams'. */
+  teamsChannelId?: string
+  teamsChannelName?: string
+  /** The root message id of a channel thread (the `;messageid=` part of the conversation id). */
+  threadId?: string
+  replyToId?: string
+  /** Display names of the people @mentioned in the message, the bot itself excluded. */
+  mentions?: string[]
 }) => void
+
+// Meta values end up as attributes of the <channel> tag. Team, channel and user names are set by people
+// in the tenant, so they are untrusted: no double quotes, angle brackets, control characters (C0, C1) or
+// bidi controls, bounded length.
+export function metaText(value: unknown, max = 200): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const cleaned = value
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069"<>]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max)
+    .trim()
+  return cleaned === '' ? undefined : cleaned
+}
+
+export function threadIdFromConversationId(conversationId: string): string | undefined {
+  const marker = ';messageid='
+  const i = conversationId.indexOf(marker)
+  if (i < 0) return undefined
+  const rest = conversationId.slice(i + marker.length)
+  const end = rest.indexOf(';')
+  return metaText(end < 0 ? rest : rest.slice(0, end))
+}
+
+/** The meta of the channel notification for one event. Keys are snake_case: Claude Code drops a key that is not [A-Za-z0-9_]+. */
+export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record<string, string> {
+  return {
+    aad_object_id: event.aadObjectId,
+    conversation_id: event.conversationId,
+    tenant_id: event.tenantId,
+    from_name: event.fromName,
+    ...(event.messageId ? { message_id: event.messageId } : {}),
+    ...(event.ts ? { ts: event.ts } : {}),
+    ...(event.messageEvent ? { message_event: event.messageEvent } : {}),
+    ...(event.mentioned !== undefined ? { mentioned: event.mentioned ? 'true' : 'false' } : {}),
+    ...(event.isGroup !== undefined ? { is_group: String(event.isGroup) } : {}),
+    ...(event.teamId !== undefined ? { team_id: event.teamId } : {}),
+    ...(event.teamName !== undefined ? { team_name: event.teamName } : {}),
+    ...(event.teamsChannelId !== undefined ? { channel_id: event.teamsChannelId } : {}),
+    ...(event.teamsChannelName !== undefined ? { channel_name: event.teamsChannelName } : {}),
+    ...(event.threadId !== undefined ? { thread_id: event.threadId } : {}),
+    ...(event.replyToId !== undefined ? { reply_to_id: event.replyToId } : {}),
+    ...(event.mentions !== undefined ? { mentions: event.mentions.join(', ') } : {}),
+  }
+}
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
 export type PairingDmSender = (
@@ -536,6 +593,27 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     if (typeof messageId === 'string' && messageId.length > 0) {
       deps.deliveredMessages?.remember(baseConversationId(conversationId), messageId, aadObjectId)
     }
+    // Team, channel, thread, reply and mention context only in a team channel or group chat.
+    const cd: any = isGroupContext ? a.channelData : undefined
+    const obj = (v: unknown): any => (v !== null && typeof v === 'object' ? v : undefined)
+    const team = obj(obj(cd)?.team)
+    const chan = obj(obj(cd)?.channel)
+    const mentionNames: string[] = []
+    // At most 20 names, and the joined value (", ") stays within 200 characters: whole names only.
+    let mentionsLen = 0
+    for (const e of isGroupContext ? (a.entities ?? []) : []) {
+      if ((e as { type?: string }).type !== 'mention') continue
+      const m = obj((e as { mentioned?: unknown }).mentioned)
+      if (!m || m.id === a.recipient?.id) continue
+      const n = metaText(m.name) ?? metaText(m.id)
+      if (n === undefined || mentionNames.includes(n)) continue
+      const len = mentionNames.length === 0 ? n.length : mentionsLen + 2 + n.length
+      if (len > 200) break
+      mentionNames.push(n)
+      mentionsLen = len
+      if (mentionNames.length >= 20) break
+    }
+
     deps.onEvent({
       text,
       conversationId,
@@ -545,6 +623,14 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       messageId,
       ts,
       ...(mentioned !== undefined ? { mentioned } : {}),
+      isGroup: isGroupContext,
+      teamId: metaText(team?.id),
+      teamName: metaText(team?.name),
+      teamsChannelId: metaText(chan?.id),
+      teamsChannelName: metaText(chan?.name),
+      threadId: isGroupContext ? threadIdFromConversationId(conversationId) : undefined,
+      replyToId: isGroupContext ? metaText(a.replyToId) : undefined,
+      mentions: mentionNames.length > 0 ? mentionNames : undefined,
     })
   }
 }

@@ -314,6 +314,11 @@ We point at Microsoft's documentation for these in
      - `user` (sanitised `activity.from.name`).
      - `aad_object_id`.
      - `ts` (ISO-8601 from `activity.timestamp`).
+     - `is_group` (`true` / `false`), and in a team channel or group chat, when Teams sends them, `team_id`, `team_name`,
+       `channel_id`, `channel_name` (`channelData.team` / `channelData.channel`), `thread_id` (the `;messageid=` root of a
+       channel thread), `reply_to_id` and `mentions` (display names of the other people @mentioned, comma-separated, whole
+       names up to 200 characters in all). Names are untrusted: double quotes, angle brackets, control characters and bidi
+       controls are replaced and each value is capped at 200 characters.
 9. Permission-reply intercept: if the text matches the
    `^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$` regex, emit
    `notifications/claude/channel/permission` with the parsed verdict —
