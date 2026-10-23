@@ -109,6 +109,16 @@ export function buildMessageEntity(opts: {
   }
 }
 
+export type ReplyFormat = 'markdown' | 'extendedmarkdown'
+
+/** The format argument of reply / edit_message: omitted or null (models often send null for an optional field) means
+ * markdown; anything other than the two formats is an error before anything is sent. */
+export function parseReplyFormat(value: unknown): ReplyFormat {
+  if (value === undefined || value === null) return 'markdown'
+  if (value === 'markdown' || value === 'extendedmarkdown') return value
+  throw new Error('format must be markdown or extendedmarkdown')
+}
+
 export class UnknownConversationError extends Error {
   constructor(conversationId: string) {
     super(
@@ -167,13 +177,14 @@ export function createReplySender(deps: ReplyDeps) {
     conversationId: string,
     text: string,
     card?: unknown,
-    opts?: { aiGenerated?: boolean; citations?: CitationInput[] },
+    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; format?: ReplyFormat },
   ): Promise<string | undefined> {
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
       if (!checked.ok) throw new Error(`invalid card: ${checked.error}`)
     }
     const entity = buildMessageEntity(opts ?? {})
+    const format: ReplyFormat = opts?.format ?? 'markdown'
     const { ref } = assertAllowedConversation(conversationId)
     // Stop the typing pump first. We do this before the network send so the
     // indicator clears even if the connector call throws — flapping
@@ -190,7 +201,7 @@ export function createReplySender(deps: ReplyDeps) {
         const res = await turnContext.sendActivity({
           type: 'message',
           text,
-          textFormat: 'markdown',
+          textFormat: format,
           ...(card !== undefined
             ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
             : {}),
@@ -200,7 +211,7 @@ export function createReplySender(deps: ReplyDeps) {
       },
     )
     process.stderr.write(
-      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}\n`,
+      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${format === 'extendedmarkdown' ? ' format=extendedmarkdown' : ''}\n`,
     )
     return sentId
   }
@@ -214,17 +225,18 @@ export function createReplySender(deps: ReplyDeps) {
     conversationId: string,
     messageId: string,
     text: string,
+    format: ReplyFormat = 'markdown',
   ): Promise<void> {
     const { ref } = assertAllowedConversation(conversationId)
     await deps.adapter.continueConversationAsync(
       deps.config.appId,
       ref,
       async turnContext => {
-        await turnContext.updateActivity({ type: 'message', id: messageId, text, textFormat: 'markdown' })
+        await turnContext.updateActivity({ type: 'message', id: messageId, text, textFormat: format })
       },
     )
     process.stderr.write(
-      `teams channel: message edited conv=${conversationId} id=${messageId}\n`,
+      `teams channel: message edited conv=${conversationId} id=${messageId}${format === 'extendedmarkdown' ? ' format=extendedmarkdown' : ''}\n`,
     )
   }
 

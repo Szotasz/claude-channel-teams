@@ -352,6 +352,8 @@ entity (`additionalType: ["AIGeneratedContent"]`, `citation: [...]`); the text
 refers to a citation as `[1]`, `[2]`. Citations are validated before anything is
 sent and nothing is truncated.
 
+The `reply` tool (and `edit_message`) also take an optional `format` parameter: `'extendedmarkdown'` for tables, task lists and quotes; default `'markdown'`.
+
 ### Error paths
 
 | Condition | Behaviour |
