@@ -23,7 +23,20 @@ import { chmodSync, mkdirSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
+/** A comma-separated id list from an env var: trimmed, empty entries dropped. */
+export function parseIdList(raw: string | undefined): ReadonlySet<string> {
+  return new Set((raw ?? '').split(',').map(s => s.trim()).filter(s => s.length > 0))
+}
+
 export interface Config {
+  /**
+   * Shared conversations (channel or group chat) in which an allowlisted
+   * sender's message is delivered without an @mention of the bot. Entries are
+   * conversation ids without any ';messageid=...' suffix; '*' means every
+   * shared conversation. Empty (the default) keeps the mention requirement
+   * everywhere. From TEAMS_UNMENTIONED_CONVERSATIONS (comma-separated).
+   */
+  unmentionedConversations?: ReadonlySet<string>
   /** Persistent state dir — credentials, allowlist, future inbox. Mode 0700. */
   stateDir: string
   /** Path to `<stateDir>/allowlist.json`. */
@@ -232,6 +245,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   return Object.freeze({
+    unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
     stateDir,
     allowlistFile: join(stateDir, 'allowlist.json'),
     pendingFile: join(stateDir, 'pending.json'),
