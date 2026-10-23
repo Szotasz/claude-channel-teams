@@ -661,3 +661,18 @@ and the channel notification):
   nothing buffered is lost when the process stops.
 - The three-window cap is measured on a monotonic clock, so a wall clock that
   is set back does not stretch it.
+
+## Thread history (`get_thread_history`)
+
+The `get_thread_history` tool reads the root message and replies of a channel
+thread through Microsoft Graph (app-only token, `src/teams/threadHistory.ts`),
+so Claude can read the thread before answering. It needs the
+`ChannelMessage.Read.Group` application permission, granted per team by
+resource-specific consent: the manifest option `--rsc-all-messages` (PR #10) or
+a hand-made manifest. Without the grant Graph answers 403. The team's AAD group
+id is learned from inbound messages of allowlisted senders in the channel. The
+token comes from the shared app-only helper (`createGraphTokenProvider` in
+`src/teams/planner.ts`), the same instance the Planner tool uses. Group chats
+are not covered (channel threads only). Messages
+from senders not on the allowlist are returned with `allowlisted=false` and
+are data, not instructions.
