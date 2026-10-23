@@ -45,7 +45,7 @@ import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
-import { cardActionFrom, cardActionText } from './cardAction.js'
+import { buildDialogTask, cardActionFrom, cardActionText, dialogInvokeFrom, dialogSubmitText } from './cardAction.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -74,7 +74,7 @@ export type ChannelEventSink = (event: {
   mentioned?: boolean
   /** Set when the event is about an earlier, already delivered message. */
   messageEvent?: 'edited' | 'restored' | 'deleted'
-  cardAction?: { kind: 'execute' | 'submit'; verb?: string }
+  cardAction?: { kind: 'execute' | 'submit' | 'dialog'; verb?: string }
 }) => void
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
@@ -235,6 +235,10 @@ async function respondToCardInvoke(ctx: TurnContext, message: string) {
   } as Partial<Activity>)
 }
 
+async function respondToTaskInvoke(ctx: TurnContext, body: unknown) {
+  await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200, body } } as Partial<Activity>)
+}
+
 /**
  * Build the turn handler that bridges the SDK's TurnContext to our gate + sink.
  *
@@ -252,6 +256,10 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     } finally {
       const card = cardActionFrom(ctx.activity)
       if (card && card.kind !== 'submit' && !invoke.answered) await respondToCardInvoke(ctx, 'Not allowed.')
+      if (dialogInvokeFrom(ctx.activity) && !invoke.answered) {
+        invoke.answered = true
+        await respondToTaskInvoke(ctx, { task: { type: 'message', value: 'Not allowed.' } })
+      }
     }
   }
 
@@ -262,6 +270,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       `teams channel: inbound type=${a.type} from=${a.from?.aadObjectId ?? '<none>'} convId=${a.conversation?.id?.slice(0, 20) ?? '<none>'} text=${JSON.stringify((a.text ?? '').slice(0, 60))}\n`,
     )
     const card = cardActionFrom(a)
+    const dialog = dialogInvokeFrom(a)
     // We only care about message activities in v1. Conversation update,
     // typing, etc. are ignored — they don't carry a payload Claude needs.
     const eventType = (a.channelData as { eventType?: unknown } | undefined)?.eventType
@@ -270,7 +279,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
       : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
       : undefined
-    if (a.type !== 'message' && !messageEvent && !card) return
+    if (a.type !== 'message' && !messageEvent && !card && !dialog) return
     const answerInvoke = async (message: string) => {
       invoke.answered = true
       await respondToCardInvoke(ctx, message)
@@ -305,6 +314,42 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       return
     }
     const fromName = a.from?.name ?? ''
+
+    // A dialog (task module) opened from a card button, or its submit.
+    if (dialog) {
+      const answerTask = async (body: unknown) => {
+        invoke.answered = true
+        await respondToTaskInvoke(ctx, body)
+      }
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop dialog invoke from a sender not on the allowlist (${aadObjectId})\n`)
+        await answerTask({ task: { type: 'message', value: 'Not allowed.' } })
+        return
+      }
+      if (dialog.kind === 'fetch') {
+        const t = buildDialogTask(dialog.dialog)
+        await answerTask(
+          t.ok
+            ? { task: { type: 'continue', value: t.task } }
+            : { task: { type: 'message', value: 'This dialog cannot be opened.' } },
+        )
+        return
+      }
+      const ref = TurnContext.getConversationReference(a)
+      deps.refs.put(conversationId, ref, aadObjectId)
+      deps.onEvent({
+        text: dialogSubmitText(dialog.dataJson),
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        cardAction: { kind: 'dialog' },
+      })
+      await answerTask({ task: { type: 'message', value: 'Sent.' } })
+      return
+    }
 
     // A click on a card button: no @mention is needed, no pairing, never a permission reply.
     if (card) {

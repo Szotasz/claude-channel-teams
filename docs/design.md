@@ -557,3 +557,7 @@ plugins' patterns:
 - [ ] No third-party telemetry / phone-home.
 - [ ] License: MIT or Apache 2.0.
 - [ ] Generalised docs — no hard-coded tenant IDs, bot names, hostnames.
+
+## Dialogs from card buttons
+
+A card button (`Action.Submit` with `"msteams": {"type": "task/fetch"}`) can open a Teams dialog; its submit reaches Claude as a `[Dialog submit]` event with `card_action="dialog"`. See [dialogs.md](dialogs.md).
