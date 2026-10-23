@@ -76,6 +76,11 @@ export interface Config {
    * instead of minting a token behind a link that cannot work.
    */
   filesBaseUrl: string | null
+  /**
+   * IANA time zone for the received-files folder and time prefix (TEAMS_PLUGIN_TZ).
+   * undefined = the host's time zone.
+   */
+  timeZone: string | undefined
 }
 
 /**
@@ -162,6 +167,21 @@ export function resolveFilesBaseUrl(env: NodeJS.ProcessEnv): string | null {
   return null
 }
 
+export function resolveTimeZone(env: NodeJS.ProcessEnv): string | undefined {
+  const value = env.TEAMS_PLUGIN_TZ?.trim()
+  if (!value) return undefined
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: value })
+    return value
+  } catch {
+    const shown = value.slice(0, 64).replace(/[^A-Za-z0-9_+\-/]/g, '?')
+    process.stderr.write(
+      `teams channel: TEAMS_PLUGIN_TZ "${shown}" is not a known time zone; using the host time zone\n`,
+    )
+    return undefined
+  }
+}
+
 function parseHttpsUrl(raw: string): URL | null {
   try {
     const url = new URL(raw)
@@ -246,5 +266,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     outboxTtlSeconds,
     sendableFilesRoot,
     filesBaseUrl: resolveFilesBaseUrl(env),
+    timeZone: resolveTimeZone(env),
   })
 }

@@ -10,8 +10,8 @@
  *
  *   <baseDir>/YYYY-MM-DD/HHMM-<sender-slug>-<original-filename>
  *
- * Date and time are evaluated in Europe/London because that's where Adnan
- * works and the morning brief / scheduling cadence is UK-time aligned. On
+ * Date and time are evaluated in the configured time zone (TEAMS_PLUGIN_TZ),
+ * or the host's time zone when it is not set. On
  * filename collision we append "-1", "-2" before the extension.
  *
  * Two attachment shapes are handled:
@@ -104,6 +104,8 @@ export interface ProcessAttachmentsDeps {
   fetchImpl?: typeof fetch
   /** Optional clock override for deterministic tests. Returns a Date. */
   now?: () => Date
+  /** IANA time zone for the date folder and time prefix. Unset = host time zone. */
+  timeZone?: string
 }
 
 /**
@@ -136,14 +138,11 @@ export function sanitiseFilename(name: string | undefined): string {
 }
 
 /**
- * Date stamp in Europe/London — YYYY-MM-DD.
- *
- * We use `Intl.DateTimeFormat` with the timezone explicitly set so the host
- * VM's TZ doesn't sneak in. Bristol summer time is UTC+1, winter is UTC.
+ * Date stamp in the configured time zone (host time zone when unset) — YYYY-MM-DD.
  */
-function londonDate(now: Date): string {
+export function localDate(now: Date, timeZone?: string): string {
   const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/London',
+    ...(timeZone ? { timeZone } : {}),
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -153,11 +152,11 @@ function londonDate(now: Date): string {
 }
 
 /**
- * Time stamp in Europe/London — HHMM (24h).
+ * Time stamp in the configured time zone (host time zone when unset) — HHMM (24h).
  */
-function londonTime(now: Date): string {
+export function localTime(now: Date, timeZone?: string): string {
   const fmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London',
+    ...(timeZone ? { timeZone } : {}),
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -400,8 +399,8 @@ export async function processAttachments(
   if (attachments.length === 0) return { annotations: [], results: [] }
 
   const now = (deps.now ?? (() => new Date()))()
-  const date = londonDate(now)
-  const time = londonTime(now)
+  const date = localDate(now, deps.timeZone)
+  const time = localTime(now, deps.timeZone)
   const slug = senderSlug(fromName)
   const prefix = `${time}-${slug}`
   const dateDir = join(deps.baseDir, date)

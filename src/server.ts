@@ -657,6 +657,7 @@ const listener = startListener({
   attachments: async (atts, fromName) =>
     processAttachments(atts, fromName, {
       baseDir: config.receivedFilesDir,
+      timeZone: config.timeZone,
       getBearerToken: () => inlineImageCredentials.getToken(),
     }),
 })
