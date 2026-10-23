@@ -122,6 +122,7 @@ MA_SEEN=" "
 validate_message_actions() {
   local LC_ALL=C
   local v id rest t d f
+  local c1=$'\xc2'"["$'\x80'"-"$'\x9f'"]"
   if [ "${#MA_RAW[@]}" -gt 0 ] && ! command -v iconv >/dev/null 2>&1; then
     echo "--message-action needs iconv to check that each value is valid UTF-8" >&2; exit 2
   fi
@@ -154,7 +155,9 @@ validate_message_actions() {
     if [ -z "$d" ] || [ "${#d}" -gt 128 ]; then
       echo "invalid --message-action description (1..128 bytes): $id" >&2; exit 2
     fi
-    if [[ "$t" == *[[:cntrl:]]* ]] || [[ "$d" == *[[:cntrl:]]* ]]; then
+    # [[:cntrl:]] under LC_ALL=C sees only the ASCII controls; the C1 controls U+0080..U+009F are the UTF-8 bytes
+    # C2 80..C2 9F.
+    if [[ "$t" == *[[:cntrl:]]* ]] || [[ "$d" == *[[:cntrl:]]* ]] || [[ "$t" == *$c1* ]] || [[ "$d" == *$c1* ]]; then
       echo "invalid --message-action (control character in title or description): $id" >&2; exit 2
     fi
     for f in "$t" "$d"; do

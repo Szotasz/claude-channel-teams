@@ -312,19 +312,25 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
         await answerInvoke(ctx, state)
         return
       }
-      deps.refs.put(conversationId, TurnContext.getConversationReference(a), aadObjectId)
-      const payloadId = (a.value as { messagePayload?: { id?: unknown } } | undefined)?.messagePayload?.id
-      deps.onEvent({
-        text: action.text,
-        conversationId,
-        aadObjectId,
-        tenantId: tenantId ?? deps.config.tenantId,
-        fromName,
-        messageId: typeof payloadId === 'string' && payloadId.length > 0 ? payloadId : a.id,
-        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
-        messageAction: action.command,
-      })
+      // Answer first (Teams allows five seconds), then hand the event over; a failing hand-over is logged, the
+      // invoke is already answered.
       await answerInvoke(ctx, state)
+      try {
+        deps.refs.put(conversationId, TurnContext.getConversationReference(a), aadObjectId)
+        const payloadId = (a.value as { messagePayload?: { id?: unknown } } | undefined)?.messagePayload?.id
+        deps.onEvent({
+          text: action.text,
+          conversationId,
+          aadObjectId,
+          tenantId: tenantId ?? deps.config.tenantId,
+          fromName,
+          messageId: typeof payloadId === 'string' && payloadId.length > 0 ? payloadId : a.id,
+          ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+          messageAction: action.command,
+        })
+      } catch (err) {
+        process.stderr.write(`teams channel: message action event failed: ${err instanceof Error ? err.message : 'error'}\n`)
+      }
       return
     }
 

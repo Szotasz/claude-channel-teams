@@ -132,6 +132,10 @@ describe('make-teams-manifest.sh --message-action', () => {
   test('M10 control characters', () => {
     expectRejected(...ma('a: T\tx: D'))
     expectRejected(...ma('a: T: D\nx'))
+    // C1 controls (U+0080..U+009F) are controls too; U+00A0 (no-break space) is not.
+    expectRejected(...ma('a: A\u0085B: D'))
+    expectRejected(...ma('a: T: D\u009fx'))
+    expect(run(...ma('a: A\u00a0B: D')).code).toBe(0)
   })
 
   test('M11 invalid UTF-8', () => {
