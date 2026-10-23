@@ -20,6 +20,7 @@ import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
+import type { SeenMessages } from './seenMessages.js'
 
 export type CitationInput = {
   name: string
@@ -109,6 +110,16 @@ export function buildMessageEntity(opts: {
   }
 }
 
+export const QUOTE_ID_RE = /^[0-9A-Za-z:._-]{1,128}$/
+
+/** The quote_message_id tool argument: omitted or null means no quote; any string goes on to sendReply, which rejects one
+ * that is not a valid id (the empty string included); any other type is an error. */
+export function parseQuoteArg(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string') return value
+  throw new Error('quote_message_id must be a string')
+}
+
 export class UnknownConversationError extends Error {
   constructor(conversationId: string) {
     super(
@@ -137,6 +148,8 @@ export interface ReplyDeps {
   refs: ConversationRefStore
   /** Optional typing-indicator pump — stopped when a reply lands. */
   typingPump?: TypingPump
+  /** Message ids seen per conversation; an outbound quote must be one of them. */
+  seenMessages?: SeenMessages
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -167,8 +180,15 @@ export function createReplySender(deps: ReplyDeps) {
     conversationId: string,
     text: string,
     card?: unknown,
-    opts?: { aiGenerated?: boolean; citations?: CitationInput[] },
+    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; quoteMessageId?: string },
   ): Promise<string | undefined> {
+    const quoteMessageId = opts?.quoteMessageId
+    if (quoteMessageId !== undefined && !QUOTE_ID_RE.test(quoteMessageId)) {
+      throw new Error('invalid quote message id')
+    }
+    if (quoteMessageId !== undefined && !(deps.seenMessages?.has(conversationId, quoteMessageId))) {
+      throw new Error('quote_message_id is not a message seen in this conversation')
+    }
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
       if (!checked.ok) throw new Error(`invalid card: ${checked.error}`)
@@ -187,16 +207,21 @@ export function createReplySender(deps: ReplyDeps) {
       deps.config.appId,
       ref,
       async turnContext => {
+        const entities = [
+          ...(quoteMessageId !== undefined ? [{ type: 'quotedReply', quotedReply: { messageId: quoteMessageId } }] : []),
+          ...(entity ? [entity as { type: string }] : []),
+        ]
         const res = await turnContext.sendActivity({
           type: 'message',
-          text,
+          text: quoteMessageId === undefined ? text : `<quoted messageId="${quoteMessageId}"/> ${text}`,
           textFormat: 'markdown',
           ...(card !== undefined
             ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
             : {}),
-          ...(entity ? { entities: [entity as { type: string }] } : {}),
+          ...(entities.length > 0 ? { entities } : {}),
         })
         sentId = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
+        if (sentId !== undefined) deps.seenMessages?.remember(conversationId, sentId)
       },
     )
     process.stderr.write(
