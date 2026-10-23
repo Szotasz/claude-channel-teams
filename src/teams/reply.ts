@@ -19,6 +19,7 @@ import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
+import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
 
 export class UnknownConversationError extends Error {
   constructor(conversationId: string) {
@@ -74,7 +75,15 @@ export function createReplySender(deps: ReplyDeps) {
     return { ref: stored.ref }
   }
 
-  async function sendReply(conversationId: string, text: string): Promise<void> {
+  async function sendReply(
+    conversationId: string,
+    text: string,
+    card?: unknown,
+  ): Promise<string | undefined> {
+    if (card !== undefined) {
+      const checked = validateAdaptiveCard(card)
+      if (!checked.ok) throw new Error(`invalid card: ${checked.error}`)
+    }
     const { ref } = assertAllowedConversation(conversationId)
     // Stop the typing pump first. We do this before the network send so the
     // indicator clears even if the connector call throws — flapping
@@ -83,16 +92,26 @@ export function createReplySender(deps: ReplyDeps) {
     // `continueConversationAsync` rehydrates the conversation context using
     // the stored reference and our pinned credentials. The SDK takes care of
     // grabbing a fresh service-to-service token (cached by app id).
+    let sentId: string | undefined
     await deps.adapter.continueConversationAsync(
       deps.config.appId,
       ref,
       async turnContext => {
-        await turnContext.sendActivity({ type: 'message', text, textFormat: 'markdown' })
+        const res = await turnContext.sendActivity({
+          type: 'message',
+          text,
+          textFormat: 'markdown',
+          ...(card !== undefined
+            ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
+            : {}),
+        })
+        sentId = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
       },
     )
     process.stderr.write(
-      `teams channel: reply sent conv=${conversationId} len=${text.length}\n`,
+      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}\n`,
     )
+    return sentId
   }
 
   /**

@@ -328,6 +328,11 @@ We point at Microsoft's documentation for these in
    optionally with `replyToId` when `reply_to` is set.
 6. Return the activity ID to Claude as the tool result.
 
+`reply` returns the sent message's id (`message_id`) so Claude can pass it to
+`edit_message`. It can also carry an Adaptive Card (version 1.0–1.5, at most
+28000 characters as JSON, https-only URLs and images), which is checked before
+anything is sent.
+
 ### Error paths
 
 | Condition | Behaviour |

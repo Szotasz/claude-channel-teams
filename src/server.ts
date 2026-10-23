@@ -286,7 +286,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Reply on Microsoft Teams. Pass conversation_id from the inbound message. ' +
         'Text is rendered as markdown — Teams supports bold, italic, headers, ' +
         'bullet/numbered lists, links, inline code, code blocks, and blockquotes. ' +
-        'Tables and HTML are not reliably supported across Teams clients.',
+        'Tables and HTML are not reliably supported across Teams clients.' +
+        ' Returns the message_id of the sent message; pass it to edit_message to update that message.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -295,6 +296,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'The conversation_id from the inbound <channel> tag. Pass through unchanged.',
           },
           text: { type: 'string', description: 'Message text. Teams renders this as markdown (bold, italic, headers, lists, links, inline code, code blocks, blockquotes).' },
+          card: {
+            type: 'object',
+            description: 'Optional Adaptive Card (type "AdaptiveCard", version 1.0 to 1.5, at most 28000 characters as JSON, https links and images only), sent below the text. Use it for structured content such as a decision with buttons; keep text as a one-line summary.',
+          },
         },
         required: ['conversation_id', 'text'],
       },
@@ -354,7 +359,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           message_id: {
             type: 'string',
-            description: 'The id of a message this bot previously sent (returned context from a prior reply).',
+            description: 'The message_id that reply returned for a message this bot sent.',
           },
           text: { type: 'string', description: 'New message text. Rendered as markdown.' },
         },
@@ -431,8 +436,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (typeof text !== 'string' || text.length === 0) {
           throw new Error('reply requires a non-empty text string')
         }
-        await replier.sendReply(conversationId, text)
-        return { content: [{ type: 'text', text: `sent (conv=${conversationId})` }] }
+        // A null card (some models send null for an optional field) means no card.
+        const card = args.card ?? undefined
+        const id = card !== undefined
+          ? await replier.sendReply(conversationId, text, card)
+          : await replier.sendReply(conversationId, text)
+        return {
+          content: [
+            {
+              type: 'text',
+              text: id ? `sent (conv=${conversationId}, message_id=${id})` : `sent (conv=${conversationId})`,
+            },
+          ],
+        }
       }
 
       case 'send_file': {
