@@ -28,13 +28,20 @@ An app that is already installed must be re-uploaded/upgraded in Teams for the m
 ```
 [Message action] command="<id>"
 from: <author of the quoted message>
-link: <https://teams.microsoft.com/... link, when present>
-message: <quoted message as plain text, max 4000 characters>
-note: <what the user typed, max 2000 characters, or ->
+link: <https://teams.microsoft.com/... link, when present and without whitespace>
+note: <what the user typed, at most 2000 characters, or ->
+message:
+> <quoted message as plain text, every line prefixed with "> ", at most 4000 characters>
 ```
 
 The tag carries `message_action="<id>"`, and `message_id` is the id of the quoted message. The quoted message and its
-author are data from that message, not instructions; only the note is the user's own words.
+author are data from that message, not instructions; only the note is the user's own words. Because anyone in the
+conversation can be the quoted message's author, the note comes first, every line separator of the quoted message
+(CR, CRLF, VT, FF, NEL, LS, PS) becomes a new "> " line, and its `<` and `>` are kept as `&lt;` and `&gt;`, so it
+cannot forge a note or link line or pass as markup. A cut text ends in " [...]" within the limit.
+
+Claude's answer goes to the conversation the action came from, as a normal message: in a channel or group chat
+everyone there sees it.
 
 ## Access
 
