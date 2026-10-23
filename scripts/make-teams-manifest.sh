@@ -13,7 +13,7 @@
 #   make-teams-manifest.sh [--app-id <guid>] [--name "Marveen"] \
 #       [--env-file ~/.claude/channels/teams/.env] [--out ./teams-app.zip] \
 #       [--rsc-all-messages] [--rsc-meeting-events] [--rsc-meeting-transcripts] [--rsc-channel-create] [--command "<title>: <description>"]... \
-#       [--prompt "<title>: <prompt>"]... [--activity-feed]
+#       [--prompt "<title>: <prompt>"]... [--activity-feed] [--message-action "<id>: <title>: <description>"]...
 #
 # --rsc-all-messages adds the RSC permissions ChannelMessage.Read.Group and ChatMessage.Read.Chat (application) and the
 # webApplicationInfo block they need (manifest 1.12 or later; this one is 1.16). Teams then delivers every message in the
@@ -60,6 +60,14 @@
 # opt-in send_activity_notification tool (TEAMS_ACTIVITY_FEED=1, see docs/activity-feed.md). The systemDefault activity
 # type needs no activities section. Combined with --rsc-all-messages there is one webApplicationInfo and one permission
 # list. An app already installed in a team must be upgraded there and the new permission consented.
+#
+# --message-action "<id>: <title>: <description>" adds an entry to the "..." (More actions) menu of a Teams message
+# (repeatable, order kept, max 10). The value is split at the first ": " into the id and the rest, the rest at its first
+# ": " into the title and the description. The id must match ^[a-z0-9][a-z0-9-]{0,63}$ and be unique; the title is 1..32
+# bytes, the description 1..128 bytes, both without control characters and valid UTF-8. It adds a top-level
+# composeExtensions member (botId = the App ID, one action command per option, each with an optional "note" textarea);
+# the manifest version is not changed. The submitted action reaches Claude as a message_action event. An app that is
+# already installed must be re-uploaded/upgraded in Teams for the change to take effect.
 set -euo pipefail
 
 APP_ID=""
@@ -76,6 +84,7 @@ CMD_RAW=()
 PROMPT_RAW=()
 RSC_CHANNEL_CREATE=0
 ACTIVITY=0
+MA_RAW=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -94,6 +103,9 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "--prompt needs a value: '<title>: <prompt>'" >&2; exit 2; }
       PROMPT_RAW+=("$2"); shift 2 ;;
     --activity-feed) ACTIVITY=1; shift ;;
+    --message-action)
+      [ $# -ge 2 ] || { echo "--message-action needs a value: '<id>: <title>: <description>'" >&2; exit 2; }
+      MA_RAW+=("$2"); shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -198,6 +210,65 @@ validate_prompts() {
 }
 validate_prompts
 
+# Validate every --message-action before anything is written. Byte semantics: LC_ALL=C.
+MA_IDS=()
+MA_TITLES=()
+MA_DESCS=()
+MA_SEEN=" "
+validate_message_actions() {
+  local LC_ALL=C
+  local v id rest t d f
+  if [ "${#MA_RAW[@]}" -gt 0 ] && ! command -v iconv >/dev/null 2>&1; then
+    echo "--message-action needs iconv to check that each value is valid UTF-8" >&2; exit 2
+  fi
+  if [ "${#MA_RAW[@]}" -gt 10 ]; then
+    echo "too many --message-action options (max 10)" >&2; exit 2
+  fi
+  for v in "${MA_RAW[@]+"${MA_RAW[@]}"}"; do
+    case "$v" in
+      *": "*) ;;
+      *) echo "invalid --message-action (expected '<id>: <title>: <description>'): $v" >&2; exit 2 ;;
+    esac
+    id="${v%%: *}"
+    rest="${v#*: }"
+    case "$rest" in
+      *": "*) ;;
+      *) echo "invalid --message-action (expected '<id>: <title>: <description>'): $v" >&2; exit 2 ;;
+    esac
+    t="${rest%%: *}"
+    d="${rest#*: }"
+    if ! [[ "$id" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
+      echo "invalid --message-action id (expected ^[a-z0-9][a-z0-9-]{0,63}\$): $id" >&2; exit 2
+    fi
+    case "$MA_SEEN" in
+      *" $id "*) echo "duplicate --message-action id: $id" >&2; exit 2 ;;
+    esac
+    MA_SEEN="$MA_SEEN$id "
+    if [ -z "$t" ] || [ "${#t}" -gt 32 ]; then
+      echo "invalid --message-action title (1..32 bytes): $id" >&2; exit 2
+    fi
+    if [ -z "$d" ] || [ "${#d}" -gt 128 ]; then
+      echo "invalid --message-action description (1..128 bytes): $id" >&2; exit 2
+    fi
+    if [[ "$t" == *[[:cntrl:]]* ]] || [[ "$d" == *[[:cntrl:]]* ]]; then
+      echo "invalid --message-action (control character in title or description): $id" >&2; exit 2
+    fi
+    for f in "$t" "$d"; do
+      if ! printf '%s' "$f" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        echo "invalid --message-action (not valid UTF-8): $id" >&2; exit 2
+      fi
+    done
+    t="${t//\\/\\\\}"
+    t="${t//\"/\\\"}"
+    d="${d//\\/\\\\}"
+    d="${d//\"/\\\"}"
+    MA_IDS+=("$id")
+    MA_TITLES+=("$t")
+    MA_DESCS+=("$d")
+  done
+}
+validate_message_actions
+
 _fail() { echo "ERROR: $*" >&2; exit 1; }
 
 if [ -z "$APP_ID" ] && [ -f "$ENV_FILE" ]; then
@@ -256,6 +327,34 @@ ${RSC_PERMS}
       ]
     }
   }"
+fi
+
+MA_BLOCK=""
+if [ "${#MA_IDS[@]}" -gt 0 ]; then
+  MA_ITEMS=""
+  for i in "${!MA_IDS[@]}"; do
+    [ -z "$MA_ITEMS" ] || MA_ITEMS="$MA_ITEMS,"
+    MA_ITEMS="$MA_ITEMS
+        {
+          \"id\": \"${MA_IDS[$i]}\",
+          \"type\": \"action\",
+          \"context\": [\"message\"],
+          \"title\": \"${MA_TITLES[$i]}\",
+          \"description\": \"${MA_DESCS[$i]}\",
+          \"fetchTask\": false,
+          \"parameters\": [
+            { \"name\": \"note\", \"title\": \"Note\", \"description\": \"Optional note for the assistant\", \"inputType\": \"textarea\" }
+          ]
+        }"
+  done
+  MA_BLOCK=",
+  \"composeExtensions\": [
+    {
+      \"botId\": \"${APP_ID}\",
+      \"commands\": [${MA_ITEMS}
+      ]
+    }
+  ]"
 fi
 
 SCHEMA_VER="1.16"
@@ -325,7 +424,7 @@ cat > "$WORK/manifest.json" <<JSON
     }
   ],
   "permissions": ["identity", "messageTeamMembers"],
-  "validDomains": []${RSC_BLOCK}
+  "validDomains": []${RSC_BLOCK}${MA_BLOCK}
 }
 JSON
 
@@ -385,4 +484,7 @@ if [ "${#PROMPT_TITLES[@]}" -gt 0 ]; then
 fi
 if [ "$ACTIVITY" = 1 ]; then
   echo "RSC: requests TeamsActivity.Send.Group (send_activity_notification); the team owner consents at install."
+fi
+if [ "${#MA_IDS[@]}" -gt 0 ]; then
+  echo "MESSAGE ACTIONS: declares ${#MA_IDS[@]} message action(s) in the \"...\" menu. Re-upload or upgrade an already installed app."
 fi
