@@ -306,7 +306,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string', description: 'Message text. Teams renders this as markdown (bold, italic, headers, lists, links, inline code, code blocks, blockquotes).' },
           card: {
             type: 'object',
-            description: 'Optional Adaptive Card (type "AdaptiveCard", version 1.0 to 1.5, at most 28000 characters as JSON, https links and images only), sent below the text. Use it for structured content; keep text as a one-line summary. Action.Submit and Action.Execute buttons come back as a [Card action] message with card_action and action_verb attributes; msteams imBack / messageBack / signin actions are refused.',
+            description: 'Optional Adaptive Card (type "AdaptiveCard", version 1.0 to 1.5, at most 28000 characters as JSON, https links and images only), sent below the text. Use it for structured content; keep text as a one-line summary. Action.Submit and Action.Execute buttons come back as a [Card action] message with card_action and action_verb attributes; msteams imBack / messageBack / signin actions are refused. A people picker is an Input.ChoiceSet with "choices.data": {"type": "Data.Query", "dataset": "graph.microsoft.com/users?scope=currentContext"} (the people in this conversation) and an id; the selected people\'s Entra ids come back in the card action data under that id, comma-separated when isMultiSelect is true.',
           },
           ai_generated: {
             type: 'boolean',

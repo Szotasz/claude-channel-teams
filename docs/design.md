@@ -343,7 +343,8 @@ whose text starts with [Card action] and carries the button's title, verb and da
 reply, and an Action.Execute click gets a short invoke response. msteams imBack / messageBack / signin actions are still
 refused anywhere in the card: they would post text in the name of the user who clicks it, and so is a
 card refresh, whose Action.Execute fires without a click (an automatic invoke is answered and ignored). Every
-Action.Execute invoke gets an invoke response, also when it is dropped. Known limit: a click is not checked
+Action.Execute invoke gets an invoke response, also when it is dropped. A card can also carry a people picker; see
+docs/people-picker.md. Known limit: a click is not checked
 against a record of the cards this bot sent; the event's message_id is the card's message id (the activity's
 replyToId) when Teams sends one, which can be compared with the message_id that reply returned.
 
