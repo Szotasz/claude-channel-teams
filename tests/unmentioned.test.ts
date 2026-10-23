@@ -134,11 +134,12 @@ describe('unmentioned delivery', () => {
     expect(incoming.length).toBe(0)
   })
 
-  test('a MENTIONED unknown sender in an opted-in channel still gets the pairing path', async () => {
+  test('a MENTIONED unknown sender in an opted-in channel gets the 1:1 hint, not a pairing code', async () => {
     const incoming: any[] = []
+    const sent: string[] = []
     const s = setup(new Set(['19:chan1@thread.tacv2']), {
       pending: { recordIncoming: (x: any) => { incoming.push(x); return { action: 'suppress', reason: 'test' } } },
-      sendPairingDm: async () => {},
+      sendPairingDm: async (_ref: any, text: string) => { sent.push(text) },
     })
     await s.run(makeActivity({
       from: { id: 'u2', name: 'X', aadObjectId: UNKNOWN_ID } as any,
@@ -146,7 +147,9 @@ describe('unmentioned delivery', () => {
       entities: [{ type: 'mention', text: '<at>Bot</at>', mentioned: { id: 'bot-1', name: 'Bot' } }] as any,
     }))
     expect(s.events.length).toBe(0)
-    expect(incoming.length).toBe(1)
+    // #12: a shared conversation never starts pairing, it only points the sender to a 1:1 chat.
+    expect(incoming.length).toBe(0)
+    expect(sent).toEqual(['This bot is gated. To pair, send me a direct (1:1) message.'])
   })
 
   test('an unmentioned "yes <id>" is not a tool-approval verdict, it is a normal message', async () => {
