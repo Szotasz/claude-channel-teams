@@ -22,6 +22,7 @@
 import { chmodSync, mkdirSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { isAbsolute, join } from 'path'
+import { parseMentionTags } from './teams/mentions.js'
 
 /** True only when TEAMS_MESSAGE_ACTIONS is '1' or 'true' (case-insensitive, trimmed). */
 export function messageActionsEnabled(env: NodeJS.ProcessEnv): boolean {
@@ -315,6 +316,12 @@ export interface Config {
    * From TEAMS_CHANNEL_EVENT_TEAMS (comma-separated); see docs/channel-events.md.
    */
   channelEventTeams?: ReadonlySet<string>
+  /**
+   * Team tags reply may mention, name -> tag id. Empty (the default) keeps tag
+   * mentions off. From TEAMS_MENTION_TAGS (Name=id, comma-separated); see
+   * docs/mentions.md.
+   */
+  mentionTags: ReadonlyMap<string, string>
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -575,6 +582,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     channelCreateTeams = new Set()
   }
 
+  let mentionTags = parseMentionTags(env.TEAMS_MENTION_TAGS)
+  if (mentionTags === null) {
+    process.stderr.write('teams channel: TEAMS_MENTION_TAGS has an invalid entry; tag mentions stay off\n')
+    mentionTags = new Map()
+  }
+
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
     ...(unmentionedFilterCmd !== undefined ? { unmentionedFilterCmd } : {}),
@@ -614,5 +627,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     feedback: parseFlag(env.TEAMS_FEEDBACK),
     channelEvents: parseFlag(env.TEAMS_CHANNEL_EVENTS),
     channelEventTeams: parseIdList(env.TEAMS_CHANNEL_EVENT_TEAMS),
+    mentionTags,
   })
 }
