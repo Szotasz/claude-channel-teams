@@ -45,6 +45,7 @@ import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
+import { messageActionFrom } from './messageAction.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -73,6 +74,8 @@ export type ChannelEventSink = (event: {
   mentioned?: boolean
   /** Set when the event is about an earlier, already delivered message. */
   messageEvent?: 'edited' | 'restored' | 'deleted'
+  /** Set when the event is a message action submitted from a message's "..." menu (the cleaned command id). */
+  messageAction?: string
 }) => void
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
@@ -234,7 +237,28 @@ export function baseConversationId(conversationId: string): string {
  * tokens, impractical to produce in tests).
  */
 export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promise<void> {
-  return async function turn(ctx: TurnContext) {
+  return async function handle(ctx: TurnContext) {
+    const state = { answered: false }
+    try {
+      await turn(ctx, state)
+    } finally {
+      // A composeExtension invoke must be answered within five seconds; "no response" is status 200 without a body.
+      if (!state.answered && ctx.activity.type === 'invoke' && ctx.activity.name?.startsWith('composeExtension/')) {
+        await answerInvoke(ctx, state)
+      }
+    }
+  }
+
+  async function answerInvoke(ctx: TurnContext, state: { answered: boolean }) {
+    state.answered = true
+    try {
+      await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200 } } as Partial<Activity>)
+    } catch (err) {
+      process.stderr.write(`teams channel: invoke response failed: ${err}\n`)
+    }
+  }
+
+  async function turn(ctx: TurnContext, state: { answered: boolean }) {
     const a = ctx.activity
     // Diagnostic: log every inbound so we know what arrived.
     process.stderr.write(
@@ -248,7 +272,8 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
       : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
       : undefined
-    if (a.type !== 'message' && !messageEvent) return
+    const action = messageActionFrom(a)
+    if (a.type !== 'message' && !messageEvent && !action) return
 
     const aadObjectIdRaw = a.from?.aadObjectId
     if (!aadObjectIdRaw) {
@@ -279,6 +304,29 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       return
     }
     const fromName = a.from?.name ?? ''
+
+    if (action) {
+      // Message action from a message's "..." menu: allowlisted senders only, never pairs, answered with no body.
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop message action from a sender not on the allowlist (${aadObjectId})\n`)
+        await answerInvoke(ctx, state)
+        return
+      }
+      deps.refs.put(conversationId, TurnContext.getConversationReference(a), aadObjectId)
+      const payloadId = (a.value as { messagePayload?: { id?: unknown } } | undefined)?.messagePayload?.id
+      deps.onEvent({
+        text: action.text,
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof payloadId === 'string' && payloadId.length > 0 ? payloadId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        messageAction: action.command,
+      })
+      await answerInvoke(ctx, state)
+      return
+    }
 
     // Channel / group-chat scope (manifest scopes 'team' + 'groupChat'). In a
     // SHARED conversation the bot must act ONLY when explicitly @mentioned --

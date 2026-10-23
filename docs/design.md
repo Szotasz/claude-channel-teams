@@ -554,3 +554,9 @@ plugins' patterns:
 - [ ] No third-party telemetry / phone-home.
 - [ ] License: MIT or Apache 2.0.
 - [ ] Generalised docs — no hard-coded tenant IDs, bot names, hostnames.
+
+## Message actions
+
+The "..." menu of a message can start an action (`make-teams-manifest.sh --message-action`). The submitted invoke is
+turned into a marked `message_action` event for allowlisted users only, and the bot answers the invoke at once with
+status 200 and no body. See [message-actions.md](message-actions.md).
