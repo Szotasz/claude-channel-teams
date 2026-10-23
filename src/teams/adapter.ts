@@ -44,6 +44,7 @@ import { isPersonalReference, type ConversationRefStore } from './conversationRe
 import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
+import type { DeliveredMessages } from './deliveredMessages.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -70,6 +71,8 @@ export type ChannelEventSink = (event: {
   ts?: string
   /** Group context only: whether the bot was @mentioned. Undefined in 1:1 chats. */
   mentioned?: boolean
+  /** Set when the event is about an earlier, already delivered message. */
+  messageEvent?: 'edited' | 'restored' | 'deleted'
 }) => void
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
@@ -105,6 +108,9 @@ export interface AdapterDeps {
    *  `GET /files/<token>` from this store. Optional so existing tests still
    *  wire. */
   outbox?: Outbox
+  /** Messages already delivered to Claude; edit/delete/restore events are only
+   *  forwarded for these. Optional so existing tests still wire. */
+  deliveredMessages?: DeliveredMessages
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -236,7 +242,13 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     )
     // We only care about message activities in v1. Conversation update,
     // typing, etc. are ignored — they don't carry a payload Claude needs.
-    if (a.type !== 'message') return
+    const eventType = (a.channelData as { eventType?: unknown } | undefined)?.eventType
+    const messageEvent: 'edited' | 'restored' | 'deleted' | undefined =
+      a.type === 'messageUpdate' && eventType === 'editMessage' ? 'edited'
+      : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
+      : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
+      : undefined
+    if (a.type !== 'message' && !messageEvent) return
 
     const aadObjectIdRaw = a.from?.aadObjectId
     if (!aadObjectIdRaw) {
@@ -298,6 +310,50 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       conversationType === 'groupChat' ||
       isGroupConv ||
       threadConv
+    if (messageEvent) {
+      // Update of an earlier message. Runs before the @mention gate, pairing and
+      // everything else: only a message we delivered, from the same still-allowed
+      // sender, is forwarded. Never pairs, never sends anything to Teams.
+      const targetId = a.id
+      if (typeof targetId !== 'string' || targetId.length === 0) {
+        process.stderr.write(`teams channel: drop — ${messageEvent} event without activity id\n`)
+        return
+      }
+      const entry = deps.deliveredMessages?.get(baseConversationId(conversationId), targetId)
+      if (!entry) {
+        process.stderr.write(`teams channel: drop — ${messageEvent} event for a message that was not delivered\n`)
+        return
+      }
+      if (entry.aadObjectId !== aadObjectId) {
+        process.stderr.write(`teams channel: drop — ${messageEvent} event from a different sender than the original\n`)
+        return
+      }
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop — ${messageEvent} event from a sender no longer in allowlist\n`)
+        return
+      }
+      let eventText: string
+      if (messageEvent === 'deleted') {
+        eventText = '[Message deleted]'
+      } else {
+        const body = isGroupContext
+          ? (TurnContext.removeRecipientMention(a) ?? '').trim()
+          : (typeof a.text === 'string' ? a.text.trim() : '')
+        const label = messageEvent === 'edited' ? '[Message edited]' : '[Message restored]'
+        eventText = `${label} ${body.length > 0 ? body : '(the new text was not included)'}`
+      }
+      deps.onEvent({
+        text: eventText,
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: targetId,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        messageEvent,
+      })
+      return
+    }
     // Diagnostic: the context signals on every inbound -- cheap, and the only way
     // to tell a mis-detected channel from a 1:1 after the fact (no other log has it).
     const mentionIds = (a.entities ?? [])
@@ -477,6 +533,9 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       }
     }
 
+    if (typeof messageId === 'string' && messageId.length > 0) {
+      deps.deliveredMessages?.remember(baseConversationId(conversationId), messageId, aadObjectId)
+    }
     deps.onEvent({
       text,
       conversationId,
