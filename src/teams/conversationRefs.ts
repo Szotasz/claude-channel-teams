@@ -6,10 +6,11 @@
  * activity that clears the allowlist gate, then look it up when Claude calls
  * the `reply` tool.
  *
- * Phase 2: in-memory only. A plugin restart loses the references. Operators
- * who depend on long-running threads will see this as `UnknownConversationError`
- * on the first reply after a restart — they need to send a new message to
- * re-seed the reference. Persistence is a stretch goal for a later phase.
+ * With a `file` option the references are persisted: they are what lets the
+ * bot answer after a restart. They are re-checked against the allowlist on
+ * load (and the existing outbound gate still checks every send), and a
+ * reference whose serviceUrl is not the Teams service host is never loaded.
+ * Without `file` the store is in-memory only.
  *
  * We also track which AAD ObjectID originally seeded each reference. The
  * outbound gate (`assertAllowedConversation`) uses this mapping to refuse
@@ -19,6 +20,10 @@
  */
 
 import type { ConversationReference } from 'botbuilder'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { randomBytes } from 'crypto'
+import { dirname } from 'path'
+import { isAllowedInlineImageHost } from './attachments.js'
 
 interface StoredRef {
   /** The Bot Framework reference used by `continueConversationAsync`. */
@@ -55,7 +60,34 @@ export interface ConversationRefStore {
   mostRecentPersonalConversationId(): string | undefined
 }
 
-export function createConversationRefStore(): ConversationRefStore {
+export interface RefStoreOptions {
+  /** When set, references are loaded from and saved to this JSON file (mode 0600, written atomically). */
+  file?: string
+  /** Re-checked on load: an entry whose sender is no longer allowed is dropped. */
+  isAllowed?: (aadObjectId: string) => boolean
+  /** Clock override for tests. */
+  now?: () => number
+  /** Keep at most this many references, the most recently seen ones (default 1000). */
+  maxEntries?: number
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function isValidEntry(e: any): boolean {
+  if (!e || typeof e !== 'object') return false
+  const { conversationId, ref, aadObjectId, lastSeen } = e
+  if (typeof conversationId !== 'string' || conversationId.length === 0 || conversationId.length > 512) return false
+  if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return false
+  if (!ref.conversation || typeof ref.conversation !== 'object' || ref.conversation.id !== conversationId) return false
+  if (typeof ref.serviceUrl !== 'string' || !isAllowedInlineImageHost(ref.serviceUrl)) return false
+  if (typeof aadObjectId !== 'string' || aadObjectId.length === 0) return false
+  if (typeof lastSeen !== 'number' || !Number.isFinite(lastSeen)) return false
+  return true
+}
+
+export function createConversationRefStore(opts: RefStoreOptions = {}): ConversationRefStore {
   const store = new Map<string, StoredRef>()
   const mostRecent = (accept: (stored: StoredRef) => boolean): string | undefined => {
     let bestId: string | undefined
@@ -68,6 +100,75 @@ export function createConversationRefStore(): ConversationRefStore {
     }
     return bestId
   }
+  const now = opts.now ?? Date.now
+  const maxEntries = opts.maxEntries ?? 1000
+  const file = opts.file
+
+  function load(path: string): void {
+    if (!existsSync(path)) return
+    let entries: unknown[]
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8'))
+      if (!parsed || typeof parsed !== 'object' || parsed.version !== 1 || !Array.isArray(parsed.refs)) {
+        throw new Error('unexpected format')
+      }
+      entries = parsed.refs
+    } catch (err) {
+      process.stderr.write(
+        `teams channel: conversation-refs file unreadable, starting empty (${errMsg(err)})\n`,
+      )
+      return
+    }
+    let dropped = 0
+    const kept: Array<[string, StoredRef]> = []
+    for (const e of entries as any[]) {
+      let ok = isValidEntry(e)
+      if (ok && opts.isAllowed) {
+        try {
+          ok = opts.isAllowed(e.aadObjectId)
+        } catch {
+          ok = false
+        }
+      }
+      if (!ok) {
+        dropped++
+        continue
+      }
+      kept.push([
+        e.conversationId,
+        { ref: e.ref, aadObjectId: String(e.aadObjectId).toLowerCase(), lastSeen: e.lastSeen },
+      ])
+    }
+    // Newest first; a conversation listed twice keeps its most recent entry.
+    kept.sort((a, b) => b[1].lastSeen - a[1].lastSeen)
+    for (const [id, stored] of kept) {
+      if (store.size >= maxEntries) break
+      if (!store.has(id)) store.set(id, stored)
+    }
+    if (dropped > 0) {
+      process.stderr.write(`teams channel: dropped ${dropped} stored conversation reference(s) on load\n`)
+    }
+  }
+
+  function save(path: string): void {
+    let tmp: string | undefined
+    try {
+      const dir = dirname(path)
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+      tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`
+      const refs = [...store].map(([conversationId, s]) => ({ conversationId, ...s }))
+      writeFileSync(tmp, JSON.stringify({ version: 1, refs }), { mode: 0o600 })
+      renameSync(tmp, path)
+    } catch (err) {
+      if (tmp) {
+        try { rmSync(tmp, { force: true }) } catch {}
+      }
+      process.stderr.write(`teams channel: could not save conversation references (${errMsg(err)})\n`)
+    }
+  }
+
+  if (file) load(file)
+
   return {
     put(conversationId, ref, aadObjectId) {
       // We index by conversation.id because that's what Claude will pass
@@ -76,8 +177,21 @@ export function createConversationRefStore(): ConversationRefStore {
       store.set(conversationId, {
         ref,
         aadObjectId: aadObjectId.toLowerCase(),
-        lastSeen: Date.now(),
+        lastSeen: now(),
       })
+      while (store.size > maxEntries) {
+        let oldestId: string | undefined
+        let oldestTs = Infinity
+        for (const [id, stored] of store) {
+          if (stored.lastSeen < oldestTs) {
+            oldestTs = stored.lastSeen
+            oldestId = id
+          }
+        }
+        if (oldestId === undefined) break
+        store.delete(oldestId)
+      }
+      if (file) save(file)
     },
     get(conversationId) {
       return store.get(conversationId)

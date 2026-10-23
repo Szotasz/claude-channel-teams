@@ -132,6 +132,12 @@ Location matches the official channels' convention
 MCP wire. Telegram's source confirms this: `homedir()` + path join, no
 helper from the SDK.
 
+Conversation references are kept in `<state dir>/conversation-refs.json`
+(mode 0600) so replies, the permission relay and proactive posts survive a
+restart. They are re-checked against the allowlist on load, entries whose
+service host is not the Teams one (`smba.*.trafficmanager.net` over https) are
+dropped, and at most 1000 are kept (most recently seen).
+
 ### `~/.claude/settings.json` snippet (operator-side)
 
 ```jsonc
