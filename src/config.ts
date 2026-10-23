@@ -240,6 +240,12 @@ export interface Config {
    * undefined = the host's time zone.
    */
   timeZone: string | undefined
+  /**
+   * Opt-in `send_activity_notification` tool (Teams activity feed pings via
+   * Microsoft Graph). True only when `TEAMS_ACTIVITY_FEED` is exactly `1`.
+   * See docs/activity-feed.md.
+   */
+  activityFeed: boolean
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -507,5 +513,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     channelCreateTeams,
     sharePoint: resolveSharePoint(env),
     timeZone: resolveTimeZone(env),
+    activityFeed: env.TEAMS_ACTIVITY_FEED === '1',
   })
 }

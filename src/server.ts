@@ -61,6 +61,7 @@ import {
   fetchThreadHistory,
   parseChannelThread,
 } from './teams/threadHistory.js'
+import { activityTools, sendActivityNotification, validateActivityArgs } from './teams/activityFeed.js'
 import { createFileSender, sendFileResultText } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createInboundIds } from './teams/inboundIds.js'
@@ -205,6 +206,8 @@ const mcp = new Server(
             '',
           ]
         : []),
+      "send_activity_notification (when enabled) pings one person's Teams activity feed about a channel or thread; use it only when someone asks for it or clearly needs to be alerted.",
+      '',
       'Tool-approval prompts may be relayed to Teams. If the operator replies "yes <id>" or "no <id>" from there, this server resolves the prompt and tells you the verdict — you do not call any tool to handle that.',
     ].join('\n'),
   },
@@ -645,6 +648,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       : []),
     ...statusTools(config.statusUpdates),
     ...channelTools(config.channelCreateTeams),
+    ...activityTools(config.activityFeed),
   ],
 }))
 
@@ -672,6 +676,23 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         )
         // Other people's messages: the model must not see invisible characters in them (as on the inbound path).
         return { content: [{ type: 'text', text: withInvisibleStripped({ text: JSON.stringify(list, null, 2) }).text }] }
+      }
+
+      case 'send_activity_notification': {
+        if (!config.activityFeed) {
+          throw new Error('send_activity_notification is off (TEAMS_ACTIVITY_FEED is not 1)')
+        }
+        const input = validateActivityArgs(args)
+        replier.assertAllowedConversation(input.conversationId)
+        const teamId = teamGroups.get(input.channelId)
+        if (!teamId) {
+          throw new Error('team id unknown for this channel: it is learned from an inbound message in the channel')
+        }
+        await sendActivityNotification(
+          { teamId, channelId: input.channelId, messageId: input.messageId, userId: input.userId, text: input.text },
+          { getToken: () => graphToken.getToken() },
+        )
+        return { content: [{ type: 'text', text: JSON.stringify({ sent: true }) }] }
       }
 
       case 'reply': {
