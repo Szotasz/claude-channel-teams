@@ -435,7 +435,9 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     } finally {
       const card = cardActionFrom(ctx.activity)
       if (card && card.kind !== 'submit' && !invoke.answered) await answer(invoke, c => respondToCardInvoke(c, 'Not allowed.'))
-      if (dialogInvokeFrom(ctx.activity) && !invoke.answered) {
+      // Any task/* invoke, also one this code does not know, gets a task-format answer.
+      const taskInvoke = ctx.activity.type === 'invoke' && typeof ctx.activity.name === 'string' && ctx.activity.name.startsWith('task/')
+      if (taskInvoke && !invoke.answered) {
         await answer(invoke, c => respondToTaskInvoke(c, { task: { type: 'message', value: 'Not allowed.' } }))
       }
     }
