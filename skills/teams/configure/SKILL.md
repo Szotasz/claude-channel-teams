@@ -137,7 +137,14 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/make-teams-manifest.sh"
 ```
 
 It reads `TEAMS_BOT_APP_ID` from `.env` and writes `./teams-app.zip` (optional
-`--name "<assistant name>"`, `--out <path>`). Then the operator uploads it in
+`--name "<assistant name>"`, `--out <path>`). `--rsc-all-messages` also requests the RSC permissions that
+make Teams deliver every channel and group chat message, not only @mentions, so
+all of that content reaches the bot host; use it only when needed. The team or
+chat owner consents at install; an app already installed in a team must be
+upgraded there with the new permissions consented (Graph: upgrade with a
+consentedPermissionSet), or the permission is not granted. The plugin itself
+still acts only on @mentions (a separate unmentioned-delivery option is not part
+of this). Then the operator uploads it in
 Teams by hand, which is the one thing `az` cannot do:
 
 > Teams, then **Apps**, then **Manage your apps**, then **Upload a custom app**,
