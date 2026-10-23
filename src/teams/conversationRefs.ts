@@ -29,6 +29,18 @@ interface StoredRef {
   lastSeen: number
 }
 
+/** A 1:1 chat with the bot. Shared conversations (team channels, group chats) are not personal. */
+export function isPersonalReference(ref: Partial<ConversationReference> | undefined): boolean {
+  const conv = ref?.conversation
+  if (!conv) return false
+  if (conv.conversationType === 'personal') return true
+  // Any other type ('channel', 'groupChat', or one this code does not know) is not 1:1: fail closed.
+  if (conv.conversationType !== undefined) return false
+  if ((conv as { isGroup?: boolean }).isGroup === true) return false
+  if (typeof conv.id === 'string' && conv.id.includes('@thread.')) return false
+  return true
+}
+
 export interface ConversationRefStore {
   put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string): void
   get(conversationId: string): StoredRef | undefined
@@ -39,10 +51,23 @@ export interface ConversationRefStore {
    * (single-operator scope; see docs/security.md).
    */
   mostRecentConversationId(): string | undefined
+  /** Like mostRecentConversationId(), but only over 1:1 chats (isPersonalReference). */
+  mostRecentPersonalConversationId(): string | undefined
 }
 
 export function createConversationRefStore(): ConversationRefStore {
   const store = new Map<string, StoredRef>()
+  const mostRecent = (accept: (stored: StoredRef) => boolean): string | undefined => {
+    let bestId: string | undefined
+    let bestTs = -Infinity
+    for (const [id, stored] of store) {
+      if (accept(stored) && stored.lastSeen > bestTs) {
+        bestTs = stored.lastSeen
+        bestId = id
+      }
+    }
+    return bestId
+  }
   return {
     put(conversationId, ref, aadObjectId) {
       // We index by conversation.id because that's what Claude will pass
@@ -61,15 +86,10 @@ export function createConversationRefStore(): ConversationRefStore {
       return store.size
     },
     mostRecentConversationId(): string | undefined {
-      let bestId: string | undefined
-      let bestTs = -Infinity
-      for (const [id, stored] of store) {
-        if (stored.lastSeen > bestTs) {
-          bestTs = stored.lastSeen
-          bestId = id
-        }
-      }
-      return bestId
+      return mostRecent(() => true)
+    },
+    mostRecentPersonalConversationId(): string | undefined {
+      return mostRecent(stored => isPersonalReference(stored.ref))
     },
   }
 }

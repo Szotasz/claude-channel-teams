@@ -158,6 +158,10 @@ operators on Pro/Max launch with
 
 Mirrors the Telegram model. Differences are noted inline.
 
+The permission prompt goes only to the most recent 1:1 chat with an allowlisted sender, never to a team channel or group
+chat. An unknown sender in a shared conversation gets no pairing code there, only a one-time hint to message the bot 1:1;
+pairing happens in the 1:1 chat.
+
 ### Step by step
 
 1. **Operator adds the bot to Teams.** Either by installing the bot app

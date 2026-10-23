@@ -40,7 +40,7 @@ import type { Allowlist } from '../pairing/allowlist.js'
 import type { PendingStore } from '../pairing/pair.js'
 import type { PermissionRelay } from '../permission/relay.js'
 import { PERMISSION_REPLY_RE } from '../permission/relay.js'
-import type { ConversationRefStore } from './conversationRefs.js'
+import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
@@ -107,6 +107,8 @@ export interface AdapterDeps {
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
 const rejectedSeen = new Set<string>()
+/** Senders already told (once) to pair in a 1:1 chat instead of a shared one. */
+const groupPairingHinted = new Set<string>()
 
 /**
  * Adapt a Bun-native fetch-style Request to the minimal `Request` interface
@@ -319,6 +321,26 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     if (!deps.allowlist.isAllowed(aadObjectId)) {
       if (deps.pending && deps.sendPairingDm) {
         const ref = TurnContext.getConversationReference(a)
+        // Shared by the adapter's own detection, or by the relay's rule (isPersonalReference: an untyped
+        // '@thread.' id is a group chat). An explicit 'personal' type stays 1:1. The @mention gate is not changed.
+        if (isGroupContext || !isPersonalReference(ref)) {
+          // Never put a pairing code in a conversation other people read.
+          if (!groupPairingHinted.has(aadObjectId)) {
+            groupPairingHinted.add(aadObjectId)
+            process.stderr.write(
+              `teams channel: pairing not offered in a shared conversation (aad=${aadObjectId})\n`,
+            )
+            deps.sendPairingDm(
+              ref,
+              'This bot is gated. To pair, send me a direct (1:1) message.',
+            ).catch(err => {
+              process.stderr.write(
+                `teams channel: pairing DM send failed: ${err}\n`,
+              )
+            })
+          }
+          return
+        }
         const decision = deps.pending.recordIncoming({
           aadObjectId,
           tenantId: tenantId ?? deps.config.tenantId,
