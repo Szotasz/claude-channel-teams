@@ -134,6 +134,32 @@ describe('validateAdaptiveCard', () => {
     expect(err({ ...base, body: [{ iconUrl: 'http://x' }] })).toContain('card.body[0].iconUrl')
   })
 
+  test('no action that posts back to the bot', () => {
+    const base = { type: 'AdaptiveCard', version: '1.5' }
+    expect(err({ ...base, actions: [{ type: 'Action.Submit', title: 'Go', data: { go: true } }] })).toBe(
+      'card.actions[0] is an Action.Submit, which this plugin cannot receive yet',
+    )
+    expect(err({ ...base, actions: [{ type: 'Action.Execute', verb: 'go' }] })).toContain('card.actions[0] is an Action.Execute')
+    expect(
+      err({ ...base, body: [{ type: 'Container', items: [], selectAction: { type: 'Action.Submit', data: {} } }] }),
+    ).toContain('card.body[0].selectAction is an Action.Submit')
+    expect(
+      err({ ...base, body: [{ type: 'ColumnSet', columns: [{ type: 'Column', selectAction: { type: 'Action.Execute' } }] }] }),
+    ).toContain('card.body[0].columns[0].selectAction is an Action.Execute')
+    for (const t of ['imBack', 'messageBack', 'signin']) {
+      expect(
+        err({ ...base, actions: [{ type: 'Action.ShowCard', card: { type: 'AdaptiveCard', data: { msteams: { type: t, text: 'y abcde' } } } }] }),
+      ).toBe(`card.actions[0].card.data.msteams is an msteams ${t} action, which would post text as the user`)
+    }
+    expect(
+      validateAdaptiveCard({
+        ...base,
+        msteams: { width: 'Full' },
+        actions: [{ type: 'Action.OpenUrl', url: 'https://x.example' }, { type: 'Action.ShowCard', card: { type: 'AdaptiveCard', body: [] } }],
+      }),
+    ).toEqual({ ok: true })
+  })
+
   test('nesting', () => {
     let node: any = {}
     for (let i = 0; i < 40; i++) node = { items: [node] }

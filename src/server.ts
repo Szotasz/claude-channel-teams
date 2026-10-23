@@ -298,7 +298,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string', description: 'Message text. Teams renders this as markdown (bold, italic, headers, lists, links, inline code, code blocks, blockquotes).' },
           card: {
             type: 'object',
-            description: 'Optional Adaptive Card (type "AdaptiveCard", version 1.0 to 1.5, at most 28000 characters as JSON, https links and images only), sent below the text. Use it for structured content such as a decision with buttons; keep text as a one-line summary.',
+            description: 'Optional Adaptive Card (type "AdaptiveCard", version 1.0 to 1.5, at most 28000 characters as JSON, https links and images only), sent below the text. Use it for structured content; keep text as a one-line summary. Buttons that post back to the bot (Action.Submit, Action.Execute, msteams imBack / messageBack / signin) are refused: a click could not be received.',
           },
         },
         required: ['conversation_id', 'text'],
