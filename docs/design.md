@@ -333,6 +333,15 @@ We point at Microsoft's documentation for these in
    optionally with `replyToId` when `reply_to` is set.
 6. Return the activity ID to Claude as the tool result.
 
+`reply` returns the sent message's id (`message_id`) so Claude can pass it to
+`edit_message`. It can also carry an Adaptive Card (version 1.0–1.5, at most
+28000 characters as JSON, https-only URLs and images), which is checked before
+anything is sent. Actions that post back to the bot (Action.Submit,
+Action.Execute, msteams imBack / messageBack / signin) are refused anywhere in
+the card until the plugin can receive a card click as its own, marked event:
+otherwise a model-written button could post text in the name of the user who
+clicks it.
+
 ### Error paths
 
 | Condition | Behaviour |
