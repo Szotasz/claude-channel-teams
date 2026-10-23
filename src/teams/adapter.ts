@@ -46,6 +46,8 @@ import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
 import { cardActionFrom, cardActionText } from './cardAction.js'
+import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
+import { userViewInvokeFrom } from './userViews.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -113,6 +115,10 @@ export interface AdapterDeps {
   /** Messages already delivered to Claude; edit/delete/restore events are only
    *  forwarded for these. Optional so existing tests still wire. */
   deliveredMessages?: DeliveredMessages
+  /** Person -> user MRI, filled from allowlisted inbound activities. Optional so existing tests still wire. */
+  knownUsers?: { set(aadObjectId: string, mri: string): void }
+  /** User-specific views; a refresh invoke with the reserved verb is answered from here. Optional for tests. */
+  userViews?: { cardFor(viewId: string, aadObjectId: string): Record<string, unknown> | undefined }
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -235,6 +241,13 @@ async function respondToCardInvoke(ctx: TurnContext, message: string) {
   } as Partial<Activity>)
 }
 
+async function respondWithCard(ctx: TurnContext, card: Record<string, unknown>) {
+  await ctx.sendActivity({
+    type: 'invokeResponse',
+    value: { status: 200, body: { statusCode: 200, type: ADAPTIVE_CARD_CONTENT_TYPE, value: card } },
+  } as Partial<Activity>)
+}
+
 /**
  * Build the turn handler that bridges the SDK's TurnContext to our gate + sink.
  *
@@ -308,6 +321,21 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
 
     // A click on a card button: no @mention is needed, no pairing, never a permission reply.
     if (card) {
+      const view = userViewInvokeFrom(a)
+      if (view) {
+        // A user-specific view refresh: answered from the store, never an event to Claude.
+        // A caller no longer on the allowlist gets the base card, not their own (revocation, as reply re-checks).
+        const viewer = deps.allowlist.isAllowed(aadObjectId) ? aadObjectId : ''
+        const shown = view.viewId && deps.userViews ? deps.userViews.cardFor(view.viewId, viewer) : undefined
+        if (shown) {
+          invoke.answered = true
+          await respondWithCard(ctx, shown)
+        } else {
+          process.stderr.write('teams channel: user view refresh for an unknown view (restart or evicted)\n')
+          await answerInvoke('Ignored.')
+        }
+        return
+      }
       if (card.kind === 'automatic') {
         // A refresh the client fired by itself: not a click, so no event.
         process.stderr.write('teams channel: ignore automatic card refresh invoke\n')
@@ -321,6 +349,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       }
       const ref = TurnContext.getConversationReference(a)
       deps.refs.put(conversationId, ref, aadObjectId)
+      if (typeof a.from?.id === 'string' && a.from.id) deps.knownUsers?.set(aadObjectId, a.from.id)
       deps.onEvent({
         text: cardActionText(card),
         conversationId,
@@ -524,6 +553,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // before pushing to Claude so a fast reply can always find its way back.
     const ref = TurnContext.getConversationReference(a)
     deps.refs.put(conversationId, ref, aadObjectId)
+    if (typeof a.from?.id === 'string' && a.from.id) deps.knownUsers?.set(aadObjectId, a.from.id)
 
     // Start the typing-indicator pump as early as possible — the user sees
     // "is typing…" while attachments are processed and Claude is notified.

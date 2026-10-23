@@ -347,6 +347,10 @@ Action.Execute invoke gets an invoke response, also when it is dropped. Known li
 against a record of the cards this bot sent; the event's message_id is the card's message id (the activity's
 replyToId) when Teams sends one, which can be compared with the message_id that reply returned.
 
+`reply` can also give some people their own card (`user_cards`), using the card's `refresh` property; see docs/user-views.md.
+That refresh is the one the plugin adds itself, with a reserved verb: its invoke is answered with a card instead of
+being ignored, and a card from Claude may not use that verb.
+
 `reply` can also mark a message as AI-generated (`ai_generated`) and attach
 numbered source citations (`citations`, at most 20; name ≤ 80, abstract ≤ 160
 characters, optional http(s) url, ≤ 3 keywords of ≤ 28 characters, optional
