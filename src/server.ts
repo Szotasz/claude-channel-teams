@@ -45,7 +45,13 @@ import { loadConfig } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
 import { startListener, type ChannelEventSink } from './teams/adapter.js'
 import { createReplySender } from './teams/reply.js'
-import { createConversationRefStore } from './teams/conversationRefs.js'
+import { createConversationRefStore, isPersonalReference } from './teams/conversationRefs.js'
+import {
+  createTargetedSender,
+  deliverPrompt,
+  selectPromptConversation,
+  type PromptDelivery,
+} from './teams/targeted.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { createFileSender } from './teams/sendFile.js'
@@ -234,29 +240,25 @@ async function sendActivityRaw(
   )
 }
 
+const sendTargeted = config.targetedMessages
+  ? createTargetedSender(adapter, config.appId)
+  : undefined
+const promptDelivery: PromptDelivery = {
+  refs,
+  isAllowed: id => allowlist.isAllowed(id),
+  sendPlain: (ref, text) => sendActivityRaw(ref, text),
+  sendTargeted,
+}
+
 // ── Permission relay ────────────────────────────────────────────────────────
 
 const permission = createPermissionRelay({
   // The "primary operator" is the most-recently-active allowlisted
   // conversation. v1 single-operator scope (see docs/security.md).
-  resolveTargetConversation: () => {
-    // Only a 1:1 chat: the prompt shows the tool call, which must not land in a channel or group chat other people read.
-    const id = refs.mostRecentPersonalConversationId()
-    if (!id) return undefined
-    const stored = refs.get(id)
-    if (!stored) return undefined
-    // Defence: re-check the allowlist at the time of relay. An operator who
-    // got revoked between their last DM and now should not get prompted.
-    if (!allowlist.isAllowed(stored.aadObjectId)) return undefined
-    return id
-  },
-  sendDm: async (conversationId, text) => {
-    const stored = refs.get(conversationId)
-    if (!stored) {
-      throw new Error(`no conversation reference for ${conversationId}`)
-    }
-    await sendActivityRaw(stored.ref, text)
-  },
+  // The prompt shows the tool call, so a shared conversation only ever gets it as a targeted message.
+  resolveTargetConversation: () => selectPromptConversation(promptDelivery),
+  sendDm: (conversationId, text) =>
+    deliverPrompt(promptDelivery, conversationId, text),
   emitVerdict: (request_id, behavior) => {
     mcp
       .notification({
@@ -598,7 +600,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         pending.remove(entry.pair_id)
         // Send the confirmation DM through the captured conversation ref.
         const stored = refs.get(entry.conversation_id)
-        if (stored) {
+        if (stored && !isPersonalReference(stored.ref)) {
+          process.stderr.write(
+            `teams channel: pair confirmation skipped: ${entry.conversation_id} is a shared conversation\n`,
+          )
+        } else if (stored) {
           try {
             await sendActivityRaw(
               stored.ref,
@@ -722,6 +728,12 @@ const onEvent: ChannelEventSink = event => {
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 
+if (config.targetedMessages) {
+  process.stderr.write(
+    'teams channel: targeted messages ON (permission prompt and pairing code in shared conversations)\n',
+  )
+}
+
 const listener = startListener({
   config,
   adapter,
@@ -733,6 +745,7 @@ const listener = startListener({
   typingPump,
   outbox,
   deliveredMessages,
+  sendPairingTargeted: sendTargeted,
   sendPairingDm: async (ref, text) => {
     await sendActivityRaw(ref, text)
   },
