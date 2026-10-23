@@ -318,7 +318,7 @@ export function resolveSharePoint(
   // A Graph site id: hostname,site-guid,web-guid.
   const guid = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
   const label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
-  if (!new RegExp(`^${label}(?:\\.${label})+,${guid},${guid}$`).test(siteId)) {
+  if (!new RegExp(`^${label}(?:\\.${label})+,${guid},${guid}$`).test(siteId) || (siteId.split(',')[0] ?? '').length > 253) {
     process.stderr.write(
       'teams channel: TEAMS_SHAREPOINT_SITE_ID is not a Graph site id; SharePoint upload stays off\n',
     )

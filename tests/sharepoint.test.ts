@@ -120,9 +120,12 @@ describe('resolveSharePoint', () => {
     expect(resolveSharePoint({})).toBeNull()
     const id = 'contoso.sharepoint.com,11111111-2222-4333-8444-555555555555,66666666-7777-4888-9999-aaaaaaaaaaaa'
     expect(resolveSharePoint({ TEAMS_SHAREPOINT_SITE_ID: id })).toEqual({ siteId: id, folder: 'Teams bot files' })
+    const long253 = Array.from({ length: 4 }, () => 'a'.repeat(62)).join('.') + '.c'
+    expect(long253.length).toBe(253)
+    expect(resolveSharePoint({ TEAMS_SHAREPOINT_SITE_ID: long253 + ',' + id.split(',').slice(1).join(',') })).not.toBeNull()
     expect(resolveSharePoint({ TEAMS_SHAREPOINT_SITE_ID: 'a/b' })).toBeNull()
     const g = '11111111-2222-4333-8444-555555555555,66666666-7777-4888-9999-aaaaaaaaaaaa'
-    for (const bad of ['not-a-site-id', '..', 'contoso.sharepoint.com,1,2', 'contoso.sharepoint.com,' + 'x'.repeat(36) + ',' + 'y'.repeat(36), '-bad.sharepoint.com,' + g, 'bad-.sharepoint.com,' + g, 'contoso,' + g]) {
+    for (const bad of ['not-a-site-id', '..', 'contoso.sharepoint.com,1,2', 'contoso.sharepoint.com,' + 'x'.repeat(36) + ',' + 'y'.repeat(36), '-bad.sharepoint.com,' + g, 'bad-.sharepoint.com,' + g, 'contoso,' + g, Array.from({ length: 5 }, () => 'a'.repeat(60)).join('.') + '.com,' + g]) {
       expect(resolveSharePoint({ TEAMS_SHAREPOINT_SITE_ID: bad })).toBeNull()
     }
     expect(resolveSharePoint({ TEAMS_SHAREPOINT_SITE_ID: id, TEAMS_SHAREPOINT_FOLDER: 'x/../y' })).toBeNull()
