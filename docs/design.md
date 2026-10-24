@@ -110,6 +110,7 @@ environment winning. `.env` is chmod-0600 on every load.
 | `TEAMS_PLUGIN_BIND_HOST` | No | `127.0.0.1` | Loopback by default. |
 | `TEAMS_PLUGIN_PORT` | No | `3979` | Standard Bot Framework default. |
 | `TEAMS_BOT_ENDPOINT_URL` | No (recommended) | none | Public HTTPS URL on the Azure Bot resource. Diagnostics + status output, and the base of `send_file` download links (origin + `/files`); without it `send_file` is disabled. |
+| `TEAMS_PROACTIVE_CHANNELS` | No | empty | Comma-separated channel ids (no `;messageid=`, no wildcard) where the `post_to_channel` tool may open a new top-level post. The route is learned from an allowlisted user's message in the channel and kept in `channel-refs.json` (0600) in the state dir. |
 | `TEAMS_FILES_BASE_URL` | No | origin of `TEAMS_BOT_ENDPOINT_URL` + `/files` | Override for the `send_file` download-link base. https only. |
 | `TEAMS_UNMENTIONED_CONVERSATIONS` | No | empty | Comma-separated shared conversation ids (without `;messageid=`) or `*`, where allowlisted senders' messages are delivered without an @mention. Non-allowlisted senders are not paired from unmentioned messages. |
 | `TEAMS_STATE_DIR` | No | `~/.claude/channels/teams` | For multi-instance setups. |

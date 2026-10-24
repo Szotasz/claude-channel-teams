@@ -41,6 +41,15 @@ export function parsePlannerPlanIds(raw: string | undefined): ReadonlySet<string
   return ids
 }
 
+/** TEAMS_PROACTIVE_CHANNELS: explicit channel ids only; a '*' is dropped with a warning. */
+export function proactiveChannelsFrom(raw: string | undefined): ReadonlySet<string> {
+  const ids = parseIdList(raw)
+  if (ids.has('*')) {
+    process.stderr.write("teams channel: TEAMS_PROACTIVE_CHANNELS does not take '*' -- list channel ids; ignoring it\n")
+  }
+  return new Set([...ids].filter(id => id !== '*'))
+}
+
 export interface Config {
   /**
    * Shared conversations (channel or group chat) in which an allowlisted
@@ -50,6 +59,13 @@ export interface Config {
    * everywhere. From TEAMS_UNMENTIONED_CONVERSATIONS (comma-separated).
    */
   unmentionedConversations?: ReadonlySet<string>
+  /**
+   * Channel ids (the conversation id without ';messageid=...') where the
+   * post_to_channel tool may start a new top-level post. Empty (the default)
+   * disables the tool. From TEAMS_PROACTIVE_CHANNELS (comma-separated; no
+   * wildcard).
+   */
+  proactiveChannels?: ReadonlySet<string>
   /** Persistent state dir — credentials, allowlist, future inbox. Mode 0700. */
   stateDir: string
   /** Path to `<stateDir>/allowlist.json`. */
@@ -274,6 +290,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
     stateDir,
+    proactiveChannels: proactiveChannelsFrom(env.TEAMS_PROACTIVE_CHANNELS),
     allowlistFile: join(stateDir, 'allowlist.json'),
     pendingFile: join(stateDir, 'pending.json'),
     appId,
