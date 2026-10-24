@@ -95,7 +95,8 @@ export function createGraphTokenProvider(deps: {
   }
 }
 
-async function graph(
+/** Graph request helper shared with other Graph tools: Graph URLs only, no redirects, error codes filtered. */
+export async function graph(
   getToken: () => Promise<string>,
   fetchImpl: FetchFn | undefined,
   method: string,
