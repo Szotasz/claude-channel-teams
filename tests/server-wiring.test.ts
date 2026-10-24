@@ -71,4 +71,29 @@ describe('server.ts wiring', () => {
       expect(block(notify, 'meta: {')).toContain(spread)
     }
   })
+
+  test('#26 send_activity_notification is wired through handleSendActivity, and only listed and described when on', () => {
+    const body = block(server, "case 'send_activity_notification': {")
+    expect(body).toContain('await handleSendActivity(args, {')
+    expect(body).toContain('enabled: config.activityFeed,')
+    expect(body).toContain('assertAllowedConversation: id => replier.assertAllowedConversation(id),')
+    expect(body).toContain('teamIdFor: id => teamGroups.get(id),')
+    expect(body).toContain('isAllowed: id => allowlist.isAllowed(id),')
+    expect(body).toContain('limiter: activityLimiter,')
+    expect(body).toContain('getToken: () => graphToken.getToken(),')
+    expect(server.split('const activityLimiter = createActivityRateLimiter()').length).toBe(2)
+    expect(server.split('...activityTools(config.activityFeed),').length).toBe(2)
+    expect(server).not.toContain('ACTIVITY_TOOL')
+    const sentence = "send_activity_notification pings one person's Teams activity feed"
+    expect(server.split(sentence).length).toBe(2)
+    expect(server).not.toContain('send_activity_notification (when enabled)')
+    const cond = server.indexOf('...(config.activityFeed')
+    expect(cond).toBeGreaterThan(-1)
+    expect(server.indexOf('?', cond)).toBeLessThan(server.indexOf(sentence))
+    expect(server.indexOf(sentence)).toBeLessThan(server.indexOf(': []', cond))
+    expect(server.slice(cond, server.indexOf(sentence))).not.toContain(']')
+    // The sentence is the first entry of the branch taken when the flag is on: a negated, compared or widened
+    // condition, or swapped branches, do not match.
+    expect(server).toMatch(/\.\.\.\(config\.activityFeed\n\s*\? \[\n\s*"send_activity_notification pings one person's/)
+  })
 })

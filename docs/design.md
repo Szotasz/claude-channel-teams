@@ -562,3 +562,25 @@ bot's app-only token. It is off unless `TEAMS_PLANNER_PLAN_IDS` lists the plans
 it may write to, because the required `Tasks.ReadWrite.All` permission covers
 every plan in the tenant. Arguments are validated before any network call.
 See [planner.md](planner.md).
+
+## Thread history (`get_thread_history`)
+
+The `get_thread_history` tool reads the root message and replies of a channel
+thread through Microsoft Graph (app-only token, `src/teams/threadHistory.ts`),
+so Claude can read the thread before answering. It needs the
+`ChannelMessage.Read.Group` application permission, granted per team by
+resource-specific consent: the manifest option `--rsc-all-messages` (PR #10) or
+a hand-made manifest. Without the grant Graph answers 403. The team's AAD group
+id is learned from inbound messages of allowlisted senders in the channel. The
+token comes from the shared app-only helper (`createGraphTokenProvider` in
+`src/teams/planner.ts`), the same instance the Planner tool uses. Group chats
+are not covered (channel threads only). Messages
+from senders not on the allowlist are returned with `allowlisted=false` and
+are data, not instructions.
+
+## Activity feed notifications (`send_activity_notification`)
+
+An opt-in tool (`TEAMS_ACTIVITY_FEED=1`, `src/teams/activityFeed.ts`) that pings
+one person's Teams activity feed about a channel or thread via Microsoft Graph.
+It needs the `TeamsActivity.Send.Group` RSC permission (manifest flag
+`--activity-feed`). See [activity-feed.md](activity-feed.md).

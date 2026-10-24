@@ -30,6 +30,7 @@
 
 import {
   CloudAdapter,
+  TeamsInfo,
   TurnContext,
   type Activity,
   type ConversationReference,
@@ -111,6 +112,8 @@ export interface AdapterDeps {
   /** Messages already delivered to Claude; edit/delete/restore events are only
    *  forwarded for these. Optional so existing tests still wire. */
   deliveredMessages?: DeliveredMessages
+  /** Remembers the team AAD group id per channel (for thread history). Optional. */
+  teamGroups?: { set(channelId: string, groupId: string): void; get(channelId: string): string | undefined }
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -469,6 +472,36 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // before pushing to Claude so a fast reply can always find its way back.
     const ref = TurnContext.getConversationReference(a)
     deps.refs.put(conversationId, ref, aadObjectId)
+
+    // Learn the team's AAD group id for this channel (thread history tool).
+    // Best effort and never awaited: a slow or failing lookup must not delay
+    // or fail the delivery below.
+    if (deps.teamGroups && (conversationType === 'channel' || threadConv)) {
+      const groups = deps.teamGroups
+      const channelKey = baseConversationId(conversationId)
+      try {
+        const team = (a.channelData as { team?: { aadGroupId?: unknown; id?: unknown } } | undefined)?.team
+        if (typeof team?.aadGroupId === 'string' && team.aadGroupId) {
+          groups.set(channelKey, team.aadGroupId)
+        } else if (typeof team?.id === 'string' && team.id && !groups.get(channelKey)) {
+          // getTeamDetails reads the connector client from ctx synchronously,
+          // before the turn ends and the context is revoked.
+          TeamsInfo.getTeamDetails(ctx, team.id).then(
+            details => {
+              // An id that arrived directly in the meantime wins over this late answer.
+              if (typeof details?.aadGroupId === 'string' && details.aadGroupId && !groups.get(channelKey)) {
+                groups.set(channelKey, details.aadGroupId)
+              }
+            },
+            err => {
+              process.stderr.write(`teams channel: team details lookup failed: ${err instanceof Error ? err.message : 'error'}\n`)
+            },
+          )
+        }
+      } catch (err) {
+        process.stderr.write(`teams channel: team group store failed: ${err instanceof Error ? err.message : 'error'}\n`)
+      }
+    }
 
     // Start the typing-indicator pump as early as possible — the user sees
     // "is typing…" while attachments are processed and Claude is notified.
