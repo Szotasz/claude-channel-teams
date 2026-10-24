@@ -21,7 +21,7 @@
 
 import { chmodSync, mkdirSync, readFileSync } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { isAbsolute, join } from 'path'
 
 /** A comma-separated id list from an env var: trimmed, empty entries dropped. */
 export function parseIdList(raw: string | undefined): ReadonlySet<string> {
@@ -111,6 +111,16 @@ export interface Config {
    * wildcard).
    */
   proactiveChannels?: ReadonlySet<string>
+  /**
+   * Absolute path of an executable that decides, for each unmentioned message that
+   * would be delivered, whether it is for the bot (exit 0) or not (exit 1); see
+   * src/teams/unmentionedFilter.ts. From TEAMS_UNMENTIONED_FILTER_CMD. Unset = no filter.
+   */
+  unmentionedFilterCmd?: string
+  /** From TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS (default 10000). */
+  unmentionedFilterTimeoutMs?: number
+  /** Held messages kept per conversation. From TEAMS_UNMENTIONED_HISTORY_LIMIT (default 20). */
+  unmentionedHistoryLimit?: number
   /** Persistent state dir — credentials, allowlist, future inbox. Mode 0700. */
   stateDir: string
   /** Path to `<stateDir>/allowlist.json`. */
@@ -323,6 +333,16 @@ function required(env: NodeJS.ProcessEnv, key: string): string {
   return v.trim()
 }
 
+/** An optional positive integer; digits only, so '10abc' or '1e3' is an error, not 10 or 1. */
+function positiveInt(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+  const raw = env[key]?.trim()
+  if (!raw) return fallback
+  if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+    throw new Error(`teams channel: ${key} must be a positive integer (got ${raw})`)
+  }
+  return Number(raw)
+}
+
 /**
  * Load and validate the plugin config. Throws on any required-key miss.
  *
@@ -375,6 +395,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     )
   }
 
+  let unmentionedFilterCmd = env.TEAMS_UNMENTIONED_FILTER_CMD?.trim() || undefined
+  if (unmentionedFilterCmd !== undefined && !isAbsolute(unmentionedFilterCmd)) {
+    process.stderr.write(
+      'teams channel: TEAMS_UNMENTIONED_FILTER_CMD must be an absolute path; the unmentioned filter stays off\n',
+    )
+    unmentionedFilterCmd = undefined
+  }
+  const unmentionedFilterTimeoutMs = positiveInt(env, 'TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS', 10000)
+  const unmentionedHistoryLimit = positiveInt(env, 'TEAMS_UNMENTIONED_HISTORY_LIMIT', 20)
+
   let plannerPlanIds = parsePlannerPlanIds(env.TEAMS_PLANNER_PLAN_IDS)
   if (plannerPlanIds === null) {
     process.stderr.write(
@@ -398,6 +428,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
+    ...(unmentionedFilterCmd !== undefined ? { unmentionedFilterCmd } : {}),
+    unmentionedFilterTimeoutMs,
+    unmentionedHistoryLimit,
     stateDir,
     proactiveChannels: proactiveChannelsFrom(env.TEAMS_PROACTIVE_CHANNELS),
     allowlistFile: join(stateDir, 'allowlist.json'),
