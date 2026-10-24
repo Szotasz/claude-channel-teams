@@ -53,6 +53,7 @@ import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { createFileSender } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
+import { createInboundIds } from './teams/inboundIds.js'
 import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
@@ -727,6 +728,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 // ── Inbound → MCP notification sink ─────────────────────────────────────────
 
 const deliveredMessages = createDeliveredMessages()
+const inboundIds = createInboundIds()
 
 const onEvent: ChannelEventSink = event => {
   process.stderr.write(
@@ -765,6 +767,7 @@ const listener = startListener({
   typingPump,
   outbox,
   deliveredMessages,
+  inboundIds,
   sendPairingDm: async (ref, text) => {
     await sendActivityRaw(ref, text)
   },
