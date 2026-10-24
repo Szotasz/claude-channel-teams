@@ -12,7 +12,8 @@
 # Usage:
 #   make-teams-manifest.sh [--app-id <guid>] [--name "Marveen"] \
 #       [--env-file ~/.claude/channels/teams/.env] [--out ./teams-app.zip] \
-#       [--rsc-all-messages] [--command "<title>: <description>"]...
+#       [--rsc-all-messages] [--command "<title>: <description>"]... \
+#       [--prompt "<title>: <prompt>"]...
 #
 # --rsc-all-messages adds the RSC permissions ChannelMessage.Read.Group and ChatMessage.Read.Chat (application) and the
 # webApplicationInfo block they need (manifest 1.12 or later; this one is 1.16). Teams then delivers every message in the
@@ -29,6 +30,15 @@
 # which raises the manifest to version 1.29 (only when at least one --command is given). The commands arrive as targeted
 # messages that are visible only to the sender. An app that is already installed must be re-uploaded/upgraded in Teams for
 # the change to take effect.
+#
+# --prompt "<title>: <prompt>" declares a Teams prompt starter (repeatable, order kept). The value is split at the
+# first ": "; the title must be 1-128 bytes of valid UTF-8 without control characters or leading/trailing spaces, and
+# unique among all --command and --prompt titles (ASCII letters compared case-insensitively); the prompt is 1-4000
+# bytes of valid UTF-8 without control characters. --command and --prompt together allow at most 12 entries. Each
+# becomes a command { "title", "type": "prompt", "prompt", "description" } (description = the prompt text) in the
+# same commandLists entry as the --command entries; with --prompt alone that entry has the same scopes but no
+# triggers and no supportsTargetedMessages. Either option raises the manifest to version 1.29. Not tested in a
+# Teams tenant.
 set -euo pipefail
 
 APP_ID=""
@@ -40,6 +50,7 @@ ENV_FILE="${HOME}/.claude/channels/teams/.env"
 OUT="./teams-app.zip"
 RSC_ALL=0
 CMD_RAW=()
+PROMPT_RAW=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,6 +62,9 @@ while [ $# -gt 0 ]; do
     --command)
       [ $# -ge 2 ] || { echo "--command needs a value: '<title>: <description>'" >&2; exit 2; }
       CMD_RAW+=("$2"); shift 2 ;;
+    --prompt)
+      [ $# -ge 2 ] || { echo "--prompt needs a value: '<title>: <prompt>'" >&2; exit 2; }
+      PROMPT_RAW+=("$2"); shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -59,7 +73,7 @@ done
 # Validate every --command before anything is written. Byte semantics: LC_ALL=C.
 CMD_TITLES=()
 CMD_DESCS=()
-CMD_SEEN=" "
+CMD_SEEN=$'\n'
 validate_commands() {
   local LC_ALL=C
   local v t d key
@@ -90,9 +104,9 @@ validate_commands() {
     # Not ${t,,}: that needs bash 4, and macOS ships bash 3.2. The title is ASCII here.
     key="$(printf '%s' "$t" | tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz)"
     case "$CMD_SEEN" in
-      *" $key "*) echo "duplicate --command title: $t" >&2; exit 2 ;;
+      *$'\n'"$key"$'\n'*) echo "duplicate --command title: $t" >&2; exit 2 ;;
     esac
-    CMD_SEEN="$CMD_SEEN$key "
+    CMD_SEEN="$CMD_SEEN$key"$'\n'
     d="${d//\\/\\\\}"
     d="${d//\"/\\\"}"
     CMD_TITLES+=("$t")
@@ -100,6 +114,54 @@ validate_commands() {
   done
 }
 validate_commands
+
+# Validate every --prompt before anything is written. Byte semantics: LC_ALL=C.
+# A C1 control character (U+0080..U+009F) is the byte pair C2 80..C2 9F in UTF-8; [[:cntrl:]] sees only C0 and DEL.
+has_c1() { local LC_ALL=C; [[ "$1" == *$'\xc2'[$'\x80'-$'\x9f']* ]]; }
+PROMPT_TITLES=()
+PROMPT_TEXTS=()
+validate_prompts() {
+  local LC_ALL=C
+  local v t p key
+  if [ "${#PROMPT_RAW[@]}" -gt 0 ] && ! command -v iconv >/dev/null 2>&1; then
+    echo "--prompt needs iconv to check that each title and prompt is valid UTF-8" >&2; exit 2
+  fi
+  if [ $(( ${#CMD_RAW[@]} + ${#PROMPT_RAW[@]} )) -gt 12 ]; then
+    echo "too many --command and --prompt options (max 12 together)" >&2; exit 2
+  fi
+  for v in "${PROMPT_RAW[@]+"${PROMPT_RAW[@]}"}"; do
+    case "$v" in
+      *": "*) ;;
+      *) echo "invalid --prompt (expected '<title>: <prompt>'): $v" >&2; exit 2 ;;
+    esac
+    t="${v%%: *}"
+    p="${v#*: }"
+    if [ -z "$t" ] || [ "${#t}" -gt 128 ] || [[ "$t" == *[[:cntrl:]]* ]] || has_c1 "$t" || [[ "$t" == " "* ]] || [[ "$t" == *" " ]]; then
+      echo "invalid --prompt title: $v" >&2; exit 2
+    fi
+    if ! printf '%s' "$t" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+      echo "invalid --prompt title (not valid UTF-8): $v" >&2; exit 2
+    fi
+    if [ -z "$p" ] || [ "${#p}" -gt 4000 ] || [[ "$p" == *[[:cntrl:]]* ]] || has_c1 "$p"; then
+      echo "invalid --prompt prompt (control character or too long)" >&2; exit 2
+    fi
+    if ! printf '%s' "$p" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+      echo "invalid --prompt prompt (not valid UTF-8)" >&2; exit 2
+    fi
+    key="$(printf '%s' "$t" | tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz)"
+    case "$CMD_SEEN" in
+      *$'\n'"$key"$'\n'*) echo "duplicate --prompt title: $t" >&2; exit 2 ;;
+    esac
+    CMD_SEEN="$CMD_SEEN$key"$'\n'
+    t="${t//\\/\\\\}"
+    t="${t//\"/\\\"}"
+    p="${p//\\/\\\\}"
+    p="${p//\"/\\\"}"
+    PROMPT_TITLES+=("$t")
+    PROMPT_TEXTS+=("$p")
+  done
+}
+validate_prompts
 
 _fail() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -138,15 +200,23 @@ fi
 
 SCHEMA_VER="1.16"
 CMD_BLOCK=""
-if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
+if [ "${#CMD_TITLES[@]}" -gt 0 ] || [ "${#PROMPT_TITLES[@]}" -gt 0 ]; then
   SCHEMA_VER="1.29"
   CMD_ITEMS=""
-  for i in "${!CMD_TITLES[@]}"; do
+  # Only when non-empty: under set -u, bash before 4.4 treats an empty array as unbound.
+  [ "${#CMD_TITLES[@]}" -eq 0 ] || for i in "${!CMD_TITLES[@]}"; do
     [ -z "$CMD_ITEMS" ] || CMD_ITEMS="$CMD_ITEMS,"
     CMD_ITEMS="$CMD_ITEMS
             { \"title\": \"${CMD_TITLES[$i]}\", \"description\": \"${CMD_DESCS[$i]}\" }"
   done
-  CMD_BLOCK=",
+  # Only when non-empty: under set -u, bash before 4.4 treats an empty array as unbound.
+  [ "${#PROMPT_TITLES[@]}" -eq 0 ] || for i in "${!PROMPT_TITLES[@]}"; do
+    [ -z "$CMD_ITEMS" ] || CMD_ITEMS="$CMD_ITEMS,"
+    CMD_ITEMS="$CMD_ITEMS
+            { \"title\": \"${PROMPT_TITLES[$i]}\", \"type\": \"prompt\", \"prompt\": \"${PROMPT_TEXTS[$i]}\", \"description\": \"${PROMPT_TEXTS[$i]}\" }"
+  done
+  if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
+    CMD_BLOCK=",
       \"supportsTargetedMessages\": true,
       \"commandLists\": [
         {
@@ -156,6 +226,16 @@ if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
           ]
         }
       ]"
+  else
+    CMD_BLOCK=",
+      \"commandLists\": [
+        {
+          \"scopes\": [\"personal\", \"team\", \"groupChat\"],
+          \"commands\": [${CMD_ITEMS}
+          ]
+        }
+      ]"
+  fi
 fi
 
 # Minimal valid Teams manifest. `id` is the app's own GUID; reusing the bot App
@@ -230,4 +310,7 @@ if [ "$RSC_ALL" = 1 ]; then
 fi
 if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
   echo "COMMANDS: declares ${#CMD_TITLES[@]} slash command(s); the manifest is version 1.29. Re-upload or upgrade an already installed app."
+fi
+if [ "${#PROMPT_TITLES[@]}" -gt 0 ]; then
+  echo "PROMPTS: declares ${#PROMPT_TITLES[@]} prompt starter(s); the manifest is version 1.29. Re-upload or upgrade an already installed app."
 fi
