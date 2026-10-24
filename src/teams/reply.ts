@@ -19,6 +19,7 @@ import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
+import type { AckPlaceholders } from './ackPlaceholder.js'
 import { withSendRetry } from './sendRetry.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
 
@@ -138,6 +139,8 @@ export interface ReplyDeps {
   refs: ConversationRefStore
   /** Optional typing-indicator pump — stopped when a reply lands. */
   typingPump?: TypingPump
+  /** Optional acknowledgement store: a reply overwrites a pending acknowledgement. */
+  acks?: AckPlaceholders
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -180,6 +183,7 @@ export function createReplySender(deps: ReplyDeps) {
     // indicator clears even if the connector call throws — flapping
     // "is typing…" forever after a failure is worse than the failure itself.
     deps.typingPump?.stop(conversationId)
+    const ackId = await deps.acks?.take(conversationId)
     // `continueConversationAsync` rehydrates the conversation context using
     // the stored reference and our pinned credentials. The SDK takes care of
     // grabbing a fresh service-to-service token (cached by app id).
@@ -188,7 +192,7 @@ export function createReplySender(deps: ReplyDeps) {
       deps.config.appId,
       ref,
       async turnContext => {
-        const res = await withSendRetry('reply', () => turnContext.sendActivity({
+        const activity = {
           type: 'message',
           text,
           textFormat: 'markdown',
@@ -196,7 +200,19 @@ export function createReplySender(deps: ReplyDeps) {
             ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
             : {}),
           ...(entity ? { entities: [entity as { type: string }] } : {}),
-        }))
+        }
+        if (ackId) {
+          try {
+            await withSendRetry('reply', () => turnContext.updateActivity({ ...activity, id: ackId }))
+            sentId = ackId
+            return
+          } catch (err) {
+            process.stderr.write(
+              `teams channel: overwriting the acknowledgement failed (${err instanceof Error ? err.message : String(err)}); sending a new message\n`,
+            )
+          }
+        }
+        const res = await withSendRetry('reply', () => turnContext.sendActivity(activity))
         sentId = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
       },
     )
@@ -229,5 +245,20 @@ export function createReplySender(deps: ReplyDeps) {
     )
   }
 
-  return { sendReply, editReply, assertAllowedConversation }
+  /** Send the acknowledgement message and return its id (undefined when Teams gave none). */
+  async function sendAck(conversationId: string, text: string): Promise<string | undefined> {
+    const { ref } = assertAllowedConversation(conversationId)
+    let id: string | undefined
+    await deps.adapter.continueConversationAsync(
+      deps.config.appId,
+      ref,
+      async turnContext => {
+        const res = await withSendRetry('ack', () => turnContext.sendActivity({ type: 'message', text }))
+        id = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
+      },
+    )
+    return id
+  }
+
+  return { sendReply, editReply, assertAllowedConversation, sendAck }
 }

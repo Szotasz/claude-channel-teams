@@ -283,7 +283,7 @@ describe('reply.ts behaviour', () => {
 describe('wiring', () => {
   const src = (f: string) => readFileSync(join(import.meta.dir, '..', 'src', f), 'utf8')
   const count = (s: string, needle: string) => s.split(needle).length - 1
-  test('four wrapped calls', () => {
+  test('the wrapped calls', () => {
     const reply = src('teams/reply.ts')
     const sendFile = src('teams/sendFile.ts')
     const server = src('server.ts')
@@ -293,7 +293,10 @@ describe('wiring', () => {
     const raw = "withSendRetry('send', () => turnContext.sendActivity({ type: 'message', text }))"
     expect(count(server, raw)).toBe(1)
     expect(server).toContain("await turnContext.sendActivity({ type: 'typing' })")
-    expect(count(reply, 'withSendRetry(')).toBe(2)
+    // The acknowledgement (see ack-placeholder) adds its own send and the reply's overwrite of it.
+    expect(reply).toContain("withSendRetry('reply', () => turnContext.updateActivity({ ...activity, id: ackId }))")
+    expect(reply).toContain("withSendRetry('ack', () => turnContext.sendActivity({ type: 'message', text }))")
+    expect(count(reply, 'withSendRetry(')).toBe(4)
     expect(count(sendFile, 'withSendRetry(')).toBe(1)
     expect(count(server, 'withSendRetry(')).toBe(1)
   })

@@ -350,6 +350,9 @@ the card until the plugin can receive a card click as its own, marked event:
 otherwise a model-written button could post text in the name of the user who
 clicks it.
 
+With TEAMS_ACK_TEXT set, a reply can overwrite an acknowledgement the plugin
+sent while Claude was working; see docs/ack-placeholder.md.
+
 `reply` can also mark a message as AI-generated (`ai_generated`) and attach
 numbered source citations (`citations`, at most 20; name ≤ 80, abstract ≤ 160
 characters, optional http(s) url, ≤ 3 keywords of ≤ 28 characters, optional
