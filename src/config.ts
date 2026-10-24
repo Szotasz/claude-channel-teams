@@ -108,6 +108,17 @@ export interface Config {
    * see docs/planner.md.
    */
   plannerPlanIds: ReadonlySet<string>
+  /**
+   * Whether channel created / renamed / deleted / restored events are delivered to Claude.
+   * From TEAMS_CHANNEL_EVENTS ('1' or 'true'); see docs/channel-events.md.
+   */
+  channelEvents: boolean
+}
+
+/** True only when `raw`, trimmed and lower-cased, is '1' or 'true'. */
+export function parseFlag(raw: string | undefined): boolean {
+  const v = (raw ?? '').trim().toLowerCase()
+  return v === '1' || v === 'true'
 }
 
 /**
@@ -288,5 +299,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sendableFilesRoot,
     filesBaseUrl: resolveFilesBaseUrl(env),
     plannerPlanIds,
+    channelEvents: parseFlag(env.TEAMS_CHANNEL_EVENTS),
   })
 }
