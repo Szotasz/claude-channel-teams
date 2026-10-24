@@ -51,6 +51,7 @@ import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { createFileSender } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
+import { createCommandFilter, createHeldMessages } from './teams/unmentionedFilter.js'
 import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
@@ -692,6 +693,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
 const deliveredMessages = createDeliveredMessages()
 
+const unmentionedFilter = config.unmentionedFilterCmd
+  ? createCommandFilter(config.unmentionedFilterCmd, config.unmentionedFilterTimeoutMs ?? 10000)
+  : undefined
+const heldMessages = unmentionedFilter ? createHeldMessages(config.unmentionedHistoryLimit ?? 20) : undefined
+if (unmentionedFilter) {
+  process.stderr.write(
+    `teams channel: unmentioned filter on (timeout ${config.unmentionedFilterTimeoutMs ?? 10000} ms, ${config.unmentionedHistoryLimit ?? 20} held per conversation)\n`,
+  )
+}
+
 const onEvent: ChannelEventSink = event => {
   process.stderr.write(
     `teams channel: pushing channel event text=${JSON.stringify(event.text.slice(0, 60))}\n`,
@@ -728,6 +739,7 @@ const listener = startListener({
   typingPump,
   outbox,
   deliveredMessages,
+  ...(unmentionedFilter && heldMessages ? { unmentionedFilter, heldMessages } : {}),
   sendPairingDm: async (ref, text) => {
     await sendActivityRaw(ref, text)
   },

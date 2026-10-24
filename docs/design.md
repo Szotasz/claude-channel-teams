@@ -112,6 +112,9 @@ environment winning. `.env` is chmod-0600 on every load.
 | `TEAMS_BOT_ENDPOINT_URL` | No (recommended) | none | Public HTTPS URL on the Azure Bot resource. Diagnostics + status output, and the base of `send_file` download links (origin + `/files`); without it `send_file` is disabled. |
 | `TEAMS_FILES_BASE_URL` | No | origin of `TEAMS_BOT_ENDPOINT_URL` + `/files` | Override for the `send_file` download-link base. https only. |
 | `TEAMS_UNMENTIONED_CONVERSATIONS` | No | empty | Comma-separated shared conversation ids (without `;messageid=`) or `*`, where allowlisted senders' messages are delivered without an @mention. Non-allowlisted senders are not paired from unmentioned messages. |
+| `TEAMS_UNMENTIONED_FILTER_CMD` | No | none | Absolute path of an executable that decides, for each unmentioned message that would be delivered, whether it is for the bot. It gets one JSON line on stdin (`text`, `fromName`, `conversationId`, `conversationType`, `botName`); exit 0 delivers, exit 1 holds the message back, anything else (or the timeout) delivers and logs the reason. A held message is not delivered: the next delivered message in the same conversation carries it as context, oldest first. Held messages live in memory only; a restart drops them. A relative path is logged and the filter stays off. |
+| `TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS` | No | `10000` | How long the filter may take per message; then it is killed and the message is delivered. Positive integer. |
+| `TEAMS_UNMENTIONED_HISTORY_LIMIT` | No | `20` | Held messages kept per conversation (the oldest drops out). At most 200 conversations and 1000 characters per message are kept. Positive integer. |
 | `TEAMS_STATE_DIR` | No | `~/.claude/channels/teams` | For multi-instance setups. |
 | `TEAMS_ACCESS_MODE` | No | — | `static` pins access at boot, disables pairing. |
 
