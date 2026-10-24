@@ -55,6 +55,7 @@ import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
 import { userViewInvokeFrom } from './userViews.js'
 import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
 import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
+import { withHeldContext, type FilterDecision, type HeldMessages, type UnmentionedFilter } from './unmentionedFilter.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -243,6 +244,13 @@ export interface AdapterDeps {
   /** How long the meeting-info lookup after a meeting event may take, in milliseconds (default 5000).
    *  A lookup that takes longer is given up on. Injectable so tests can use a short one. */
   meetingInfoTimeoutMs?: number
+  /** Optional filter for unmentioned messages (TEAMS_UNMENTIONED_FILTER_CMD). Only used
+   *  together with heldMessages; without them every unmentioned message that passes the
+   *  gates is delivered, as before. */
+  unmentionedFilter?: UnmentionedFilter
+  /** Where the messages the filter holds back wait for the next delivered message in the
+   *  same conversation. */
+  heldMessages?: HeldMessages
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -422,6 +430,10 @@ async function respondWithCard(ctx: TurnContext, card: Record<string, unknown>) 
  * tokens, impractical to produce in tests).
  */
 export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promise<void> {
+  // Per conversation: the filter decision still running for the latest unmentioned message.
+  // A later message in that conversation waits for it, so a held message is always in the
+  // context of the message that follows it.
+  const filterTails = new Map<string, Promise<FilterDecision>>()
   // An Action.Execute invoke must always be answered (no answer = HTTP 501): every path of turn() that does not answer
   // it, the early drops and a throw included, gets 'Not allowed.' here.
   const handle = async function answeredTurn(ctx: InboundTurn) {
@@ -743,6 +755,10 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
               (e as { mentioned?: { id?: string } }).mentioned?.id === botId,
           )
         : false
+      if (mentioned && deps.unmentionedFilter && deps.heldMessages) {
+        const pendingDecision = filterTails.get(conversationId)
+        if (pendingDecision) await pendingDecision
+      }
       if (!mentioned) {
         const optOut = deps.config.unmentionedConversations
         const unmentionedOk = optOut !== undefined && (optOut.has('*') || optOut.has(baseConversationId(conversationId)))
@@ -760,6 +776,41 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
             `teams channel: ignore: unmentioned ${conversationType ?? 'group'} message from a non-allowlisted sender (convId=${conversationId.slice(0, 20)})\n`,
           )
           return
+        }
+        if (deps.unmentionedFilter && deps.heldMessages) {
+          const filter = deps.unmentionedFilter
+          const unmentionedText = typeof a.text === 'string' ? a.text.trim() : ''
+          const previous = filterTails.get(conversationId) ?? Promise.resolve<FilterDecision>({ verdict: 'deliver' })
+          const mine = previous
+            .then(() =>
+              filter({ text: unmentionedText, fromName, conversationId, conversationType, botName: a.recipient?.name }),
+            )
+            .catch((err): FilterDecision => ({
+              verdict: 'deliver',
+              reason: `filter threw: ${err instanceof Error ? err.message : String(err)}`,
+            }))
+          filterTails.set(conversationId, mine)
+          let decision: FilterDecision
+          try {
+            decision = await mine
+          } finally {
+            if (filterTails.get(conversationId) === mine) filterTails.delete(conversationId)
+          }
+          if (decision.reason) {
+            process.stderr.write(`teams channel: unmentioned filter failed (${decision.reason}); delivering\n`)
+          }
+          if (decision.verdict === 'hold') {
+            const attachmentCount = Array.isArray(a.attachments) ? a.attachments.length : 0
+            const heldText =
+              attachmentCount > 0
+                ? `${unmentionedText} [${attachmentCount} attachment(s), not downloaded]`.trim()
+                : unmentionedText
+            deps.heldMessages.hold(conversationId, fromName, heldText)
+            process.stderr.write(
+              `teams channel: held: the filter judged an unmentioned message not for the bot (convId=${conversationId.slice(0, 20)})\n`,
+            )
+            return
+          }
         }
       }
     }
@@ -932,6 +983,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       if (mentionNames.length >= MAX_MENTION_NAMES) break
     }
 
+    if (deps.heldMessages) text = withHeldContext(text, deps.heldMessages.take(conversationId))
     deps.onEvent({
       text,
       conversationId,

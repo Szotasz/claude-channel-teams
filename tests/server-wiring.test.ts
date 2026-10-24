@@ -132,4 +132,12 @@ describe('server.ts wiring', () => {
     const body = notify.slice(notify.indexOf('{') + 1)
     expect(firstStatement(body).startsWith('event = withInvisibleStripped(event)')).toBe(true)
   })
+
+  test('the unmentioned filter and its held-messages store are built from config and wired in as a pair', () => {
+    expect(server).toContain('createCommandFilter(config.unmentionedFilterCmd, config.unmentionedFilterTimeoutMs ?? 10000)')
+    expect(server).toContain('createHeldMessages(config.unmentionedHistoryLimit ?? 20)')
+    // The listener gets both or neither: a filter without the store (or vice versa) would silently do nothing.
+    const listener = block(server, 'const listener = startListener({')
+    expect(listener).toContain('...(unmentionedFilter && heldMessages ? { unmentionedFilter, heldMessages } : {}),')
+  })
 })
