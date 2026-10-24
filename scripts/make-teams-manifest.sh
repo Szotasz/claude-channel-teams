@@ -12,7 +12,7 @@
 # Usage:
 #   make-teams-manifest.sh [--app-id <guid>] [--name "Marveen"] \
 #       [--env-file ~/.claude/channels/teams/.env] [--out ./teams-app.zip] \
-#       [--rsc-all-messages]
+#       [--rsc-all-messages] [--command "<title>: <description>"]...
 #
 # --rsc-all-messages adds the RSC permissions ChannelMessage.Read.Group and ChatMessage.Read.Chat (application) and the
 # webApplicationInfo block they need (manifest 1.12 or later; this one is 1.16). Teams then delivers every message in the
@@ -21,6 +21,14 @@
 # already installed in a team must be upgraded there with the new permissions consented (Graph: upgrade the installation
 # with a consentedPermissionSet), otherwise the permission is not granted. On its own the plugin still acts only on
 # messages that @mention the bot (its mention gate); the permission is what a separate unmentioned-delivery option needs.
+#
+# --command "<title>: <description>" declares a Teams slash command (repeatable, order kept, max 12). The value is split at
+# the first ": "; one leading "/" on the title is dropped, the title must match [A-Za-z0-9][A-Za-z0-9_-]* (max 128 bytes) and
+# be unique (case-insensitive); the description is required, max 4000 bytes, without control characters. It adds
+# supportsTargetedMessages and one commandLists entry (personal, team, groupChat; triggers mention and slash) to the bot,
+# which raises the manifest to version 1.29 (only when at least one --command is given). The commands arrive as targeted
+# messages that are visible only to the sender. An app that is already installed must be re-uploaded/upgraded in Teams for
+# the change to take effect.
 set -euo pipefail
 
 APP_ID=""
@@ -31,6 +39,7 @@ APP_NAME=""
 ENV_FILE="${HOME}/.claude/channels/teams/.env"
 OUT="./teams-app.zip"
 RSC_ALL=0
+CMD_RAW=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,10 +48,58 @@ while [ $# -gt 0 ]; do
     --env-file) ENV_FILE="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --rsc-all-messages) RSC_ALL=1; shift ;;
+    --command)
+      [ $# -ge 2 ] || { echo "--command needs a value: '<title>: <description>'" >&2; exit 2; }
+      CMD_RAW+=("$2"); shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# Validate every --command before anything is written. Byte semantics: LC_ALL=C.
+CMD_TITLES=()
+CMD_DESCS=()
+CMD_SEEN=" "
+validate_commands() {
+  local LC_ALL=C
+  local v t d key
+  if [ "${#CMD_RAW[@]}" -gt 0 ] && ! command -v iconv >/dev/null 2>&1; then
+    echo "--command needs iconv to check that each description is valid UTF-8" >&2; exit 2
+  fi
+  if [ "${#CMD_RAW[@]}" -gt 12 ]; then
+    echo "too many --command options (max 12)" >&2; exit 2
+  fi
+  for v in "${CMD_RAW[@]+"${CMD_RAW[@]}"}"; do
+    case "$v" in
+      *": "*) ;;
+      *) echo "invalid --command (expected '<title>: <description>'): $v" >&2; exit 2 ;;
+    esac
+    t="${v%%: *}"
+    d="${v#*: }"
+    t="${t#/}"
+    if ! [[ "$t" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || [ "${#t}" -gt 128 ]; then
+      echo "invalid --command title: $v" >&2; exit 2
+    fi
+    if [ -z "$d" ] || [ "${#d}" -gt 4000 ] || [[ "$d" == *[[:cntrl:]]* ]]; then
+      echo "invalid --command description (control character or too long)" >&2; exit 2
+    fi
+    # The byte checks above run under LC_ALL=C, so they let any byte >= 0x80 through: the JSON must be UTF-8.
+    if ! printf '%s' "$d" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+      echo "invalid --command description (not valid UTF-8)" >&2; exit 2
+    fi
+    # Not ${t,,}: that needs bash 4, and macOS ships bash 3.2. The title is ASCII here.
+    key="$(printf '%s' "$t" | tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz)"
+    case "$CMD_SEEN" in
+      *" $key "*) echo "duplicate --command title: $t" >&2; exit 2 ;;
+    esac
+    CMD_SEEN="$CMD_SEEN$key "
+    d="${d//\\/\\\\}"
+    d="${d//\"/\\\"}"
+    CMD_TITLES+=("$t")
+    CMD_DESCS+=("$d")
+  done
+}
+validate_commands
 
 _fail() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -79,12 +136,34 @@ if [ "$RSC_ALL" = 1 ]; then
   }"
 fi
 
+SCHEMA_VER="1.16"
+CMD_BLOCK=""
+if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
+  SCHEMA_VER="1.29"
+  CMD_ITEMS=""
+  for i in "${!CMD_TITLES[@]}"; do
+    [ -z "$CMD_ITEMS" ] || CMD_ITEMS="$CMD_ITEMS,"
+    CMD_ITEMS="$CMD_ITEMS
+            { \"title\": \"${CMD_TITLES[$i]}\", \"description\": \"${CMD_DESCS[$i]}\" }"
+  done
+  CMD_BLOCK=",
+      \"supportsTargetedMessages\": true,
+      \"commandLists\": [
+        {
+          \"scopes\": [\"personal\", \"team\", \"groupChat\"],
+          \"triggers\": [\"mention\", \"slash\"],
+          \"commands\": [${CMD_ITEMS}
+          ]
+        }
+      ]"
+fi
+
 # Minimal valid Teams manifest. `id` is the app's own GUID; reusing the bot App
 # ID is allowed and keeps it one-value-simple for the owner.
 cat > "$WORK/manifest.json" <<JSON
 {
-  "\$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
-  "manifestVersion": "1.16",
+  "\$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v${SCHEMA_VER}/MicrosoftTeams.schema.json",
+  "manifestVersion": "${SCHEMA_VER}",
   "version": "1.0.0",
   "id": "${APP_ID}",
   "developer": {
@@ -102,7 +181,7 @@ cat > "$WORK/manifest.json" <<JSON
       "botId": "${APP_ID}",
       "scopes": ["personal", "team", "groupChat"],
       "supportsFiles": true,
-      "isNotificationOnly": false
+      "isNotificationOnly": false${CMD_BLOCK}
     }
   ],
   "permissions": ["identity", "messageTeamMembers"],
@@ -148,4 +227,7 @@ Upload it in Teams: Apps -> Manage your apps -> Upload a custom app -> pick this
 EOF
 if [ "$RSC_ALL" = 1 ]; then
   echo "RSC: requests ChannelMessage.Read.Group and ChatMessage.Read.Chat; the team or chat owner consents at install."
+fi
+if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
+  echo "COMMANDS: declares ${#CMD_TITLES[@]} slash command(s); the manifest is version 1.29. Re-upload or upgrade an already installed app."
 fi
