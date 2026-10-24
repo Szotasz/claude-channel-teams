@@ -222,11 +222,11 @@ function required(env: NodeJS.ProcessEnv, key: string): string {
 }
 
 /** An optional positive integer; digits only, so '10abc' or '1e3' is an error, not 10 or 1. */
-function positiveInt(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+function positiveInt(env: NodeJS.ProcessEnv, key: string, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
   const raw = env[key]?.trim()
   if (!raw) return fallback
-  if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
-    throw new Error(`teams channel: ${key} must be a positive integer (got ${raw})`)
+  if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) > max) {
+    throw new Error(`teams channel: ${key} must be a positive integer up to ${max} (got ${raw})`)
   }
   return Number(raw)
 }
@@ -290,7 +290,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     )
     unmentionedFilterCmd = undefined
   }
-  const unmentionedFilterTimeoutMs = positiveInt(env, 'TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS', 10000)
+  // A longer timer delay overflows and fires at once, so cap at the max signed 32-bit int.
+  const unmentionedFilterTimeoutMs = positiveInt(env, 'TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS', 10000, 2147483647)
   const unmentionedHistoryLimit = positiveInt(env, 'TEAMS_UNMENTIONED_HISTORY_LIMIT', 20)
 
   let plannerPlanIds = parsePlannerPlanIds(env.TEAMS_PLANNER_PLAN_IDS)
