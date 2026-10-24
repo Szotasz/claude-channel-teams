@@ -46,8 +46,10 @@ import { createCloudAdapter } from './teams/auth.js'
 import { startListener, type ChannelEventSink } from './teams/adapter.js'
 import { createReplySender } from './teams/reply.js'
 import { createConversationRefStore } from './teams/conversationRefs.js'
+import { createAckPlaceholders } from './teams/ackPlaceholder.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
+import { withSendRetry } from './teams/sendRetry.js'
 import { createFileSender } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createAllowlist } from './pairing/allowlist.js'
@@ -203,7 +205,10 @@ try {
 
 // ── Outbound reply path (used by both `reply` tool and pairing DM hook) ─────
 
-const replier = createReplySender({ config, adapter, allowlist, refs, typingPump })
+const acks = config.ackText
+  ? createAckPlaceholders({ delayMs: config.ackDelayMs, send: conversationId => replier.sendAck(conversationId, config.ackText!) })
+  : undefined
+const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, acks })
 
 const sendFile = createFileSender({
   config,
@@ -229,7 +234,7 @@ async function sendActivityRaw(
     config.appId,
     ref,
     async turnContext => {
-      await turnContext.sendActivity({ type: 'message', text })
+      await withSendRetry('send', () => turnContext.sendActivity({ type: 'message', text }))
     },
   )
 }
@@ -511,6 +516,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (typeof conversationId !== 'string' || conversationId.length === 0) {
           throw new Error('send_file requires a non-empty conversation_id string')
         }
+        acks?.cancel(conversationId)
         const path = typeof args.path === 'string' && args.path.length > 0 ? args.path : undefined
         const filename = typeof args.filename === 'string' && args.filename.length > 0 ? args.filename : undefined
         const mime = typeof args.mime === 'string' && args.mime.length > 0 ? args.mime : undefined
@@ -711,7 +717,11 @@ const onEvent: ChannelEventSink = event => {
         },
       },
     })
-    .then(() => process.stderr.write('teams channel: notify ok\n'))
+    .then(() => {
+      process.stderr.write('teams channel: notify ok\n')
+      // Only a message that reached Claude gets an acknowledgement.
+      if (acks && !event.messageEvent && event.mentioned !== false) acks.arm(event.conversationId)
+    })
     .catch(err => {
       // Notifications are fire-and-forget per the channels reference. We log
       // the failure but don't retry — Claude Code drops events silently when
@@ -756,6 +766,7 @@ async function shutdown(): Promise<void> {
   try {
     permission.clear()
     typingPump.stopAll()
+    acks?.stopAll()
     outbox.shutdown()
     await listener.stop()
   } catch (err) {
