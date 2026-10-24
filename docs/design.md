@@ -335,6 +335,17 @@ We point at Microsoft's documentation for these in
    optionally with `replyToId` when `reply_to` is set.
 6. Return the activity ID to Claude as the tool result.
 
+**Retries.** The Bot Framework SDK already retries 408 and 5xx answers (except 501 and 505), and 429 answers that
+carry a usable Retry-After header. The plugin retries only what the SDK does not: 412, and 429 without a usable
+Retry-After, for the reply, its edit, send_file and the pairing / permission messages (not the typing indicator). At
+most 3 attempts, exponential backoff with jitter (0.5-1 s, then 1-2 s), and no new attempt more than 10 s after the
+first (src/teams/sendRetry.ts).
+
+**Shutdown.** When the plugin shuts down (stdin closed, a signal, or the orphan watchdog), it waits up to 5 seconds
+for sends that are still in progress, including their retries, before it exits; with no send in progress it does not
+wait. The token request that precedes a send is not counted. A send still retrying after the 5 seconds is cut off, and
+the exit line says how many were; a second signal during the wait does not end it sooner.
+
 `reply` returns the sent message's id (`message_id`) so Claude can pass it to
 `edit_message`. It can also carry an Adaptive Card (version 1.0–1.5, at most
 28000 characters as JSON, https-only URLs and images), which is checked before

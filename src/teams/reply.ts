@@ -19,6 +19,7 @@ import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
+import { withSendRetry } from './sendRetry.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
 
 export type CitationInput = {
@@ -187,7 +188,7 @@ export function createReplySender(deps: ReplyDeps) {
       deps.config.appId,
       ref,
       async turnContext => {
-        const res = await turnContext.sendActivity({
+        const res = await withSendRetry('reply', () => turnContext.sendActivity({
           type: 'message',
           text,
           textFormat: 'markdown',
@@ -195,7 +196,7 @@ export function createReplySender(deps: ReplyDeps) {
             ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
             : {}),
           ...(entity ? { entities: [entity as { type: string }] } : {}),
-        })
+        }))
         sentId = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
       },
     )
@@ -220,7 +221,7 @@ export function createReplySender(deps: ReplyDeps) {
       deps.config.appId,
       ref,
       async turnContext => {
-        await turnContext.updateActivity({ type: 'message', id: messageId, text, textFormat: 'markdown' })
+        await withSendRetry('edit', () => turnContext.updateActivity({ type: 'message', id: messageId, text, textFormat: 'markdown' }))
       },
     )
     process.stderr.write(

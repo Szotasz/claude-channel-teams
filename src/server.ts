@@ -48,6 +48,7 @@ import { createReplySender } from './teams/reply.js'
 import { createConversationRefStore } from './teams/conversationRefs.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
+import { withSendRetry, sendTracker, SHUTDOWN_SEND_WAIT_MS } from './teams/sendRetry.js'
 import { createFileSender } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createAllowlist } from './pairing/allowlist.js'
@@ -229,7 +230,7 @@ async function sendActivityRaw(
     config.appId,
     ref,
     async turnContext => {
-      await turnContext.sendActivity({ type: 'message', text })
+      await withSendRetry('send', () => turnContext.sendActivity({ type: 'message', text }))
     },
   )
 }
@@ -760,6 +761,11 @@ async function shutdown(): Promise<void> {
     await listener.stop()
   } catch (err) {
     process.stderr.write(`teams channel: listener stop error: ${err}\n`)
+  }
+  // Let replies that are still being sent (including their retries) finish, up to a fixed cap.
+  const idle = await sendTracker.idle(SHUTDOWN_SEND_WAIT_MS)
+  if (!idle) {
+    process.stderr.write(`teams channel: exiting with ${sendTracker.inFlight()} send(s) still in progress after ${SHUTDOWN_SEND_WAIT_MS} ms\n`)
   }
   // Give MCP a moment to flush, then exit.
   setTimeout(() => process.exit(0), 500)

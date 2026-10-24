@@ -17,6 +17,7 @@ import { type CloudAdapter, type ConversationReference } from 'botbuilder'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { Outbox } from './outbox.js'
+import { withSendRetry } from './sendRetry.js'
 import { buildDownloadCardActivity } from './files.js'
 
 /** Max file size — matches the inbound cap. */
@@ -180,7 +181,7 @@ export function createFileSender(deps: FileSenderDeps) {
       deps.config.appId,
       ref,
       async turnContext => {
-        await turnContext.sendActivity(activity as any)
+        await withSendRetry('send_file', () => turnContext.sendActivity(activity as any))
       },
     )
 
