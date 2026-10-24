@@ -65,21 +65,29 @@ export function createCommandFilter(cmd: string, timeoutMs: number): Unmentioned
 }
 
 export interface HeldMessages {
-  hold(conversationId: string, fromName: string | undefined, text: string): void
-  /** Returns the held lines of this conversation, oldest first, and forgets them. */
-  take(conversationId: string): string[]
+  /** attachmentCount > 0 adds a note after the (truncated) text; the attachments themselves are not downloaded. */
+  hold(conversationId: string, fromName: string | undefined, text: string, attachmentCount?: number): void
+  /** A position in the order messages were held: take(id, upTo) returns only the ones held up to it. */
+  mark(): number
+  /** The held lines of this conversation held up to `upTo` (all of them when omitted), oldest first; those are
+   *  forgotten, later ones stay for the next message. */
+  take(conversationId: string, upTo?: number): string[]
 }
 
 export function createHeldMessages(limitPerConversation: number): HeldMessages {
-  const byConversation = new Map<string, string[]>()
+  const byConversation = new Map<string, Array<{ seq: number; line: string }>>()
+  let seq = 0
   return {
-    hold(conversationId, fromName, text) {
-      const body = text.length > HELD_MAX_CHARS ? `${text.slice(0, HELD_MAX_CHARS)}…` : text
-      const line = `${fromName && fromName.length > 0 ? fromName : 'Someone'}: ${body}`
+    hold(conversationId, fromName, text, attachmentCount = 0) {
+      const body = text.length > HELD_MAX_CHARS ? `${text.slice(0, HELD_MAX_CHARS - 1)}…` : text
+      const note = attachmentCount > 0 ? `[${attachmentCount} attachment(s), not downloaded]` : ''
+      const content = [body, note].filter(s => s.length > 0).join(' ')
+      const line = `${fromName && fromName.length > 0 ? fromName : 'Someone'}: ${content}`
+      seq += 1
       const list = byConversation.get(conversationId) ?? []
       // Re-insert, so the Map's first key is always the conversation held into longest ago.
       byConversation.delete(conversationId)
-      list.push(line)
+      list.push({ seq, line })
       while (list.length > limitPerConversation) list.shift()
       byConversation.set(conversationId, list)
       while (byConversation.size > HELD_MAX_CONVERSATIONS) {
@@ -88,10 +96,16 @@ export function createHeldMessages(limitPerConversation: number): HeldMessages {
         byConversation.delete(oldest)
       }
     },
-    take(conversationId) {
+    mark() {
+      return seq
+    },
+    take(conversationId, upTo = Number.POSITIVE_INFINITY) {
       const list = byConversation.get(conversationId) ?? []
-      byConversation.delete(conversationId)
-      return list
+      const taken = list.filter(e => e.seq <= upTo)
+      const rest = list.filter(e => e.seq > upTo)
+      if (rest.length > 0) byConversation.set(conversationId, rest)
+      else byConversation.delete(conversationId)
+      return taken.map(e => e.line)
     },
   }
 }
