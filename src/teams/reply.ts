@@ -19,6 +19,7 @@ import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
 import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
+import type { AckPlaceholders } from './ackPlaceholder.js'
 import { withSendRetry } from './sendRetry.js'
 import { isStreamClosedError, type StatusStreams } from './statusStream.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
@@ -144,6 +145,8 @@ export interface ReplyDeps {
   typingPump?: TypingPump
   /** Open status streams (TEAMS_STATUS_UPDATES). Optional so existing tests still wire. */
   statusStreams?: StatusStreams
+  /** Optional acknowledgement store: a reply overwrites a pending acknowledgement. */
+  acks?: AckPlaceholders
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -186,6 +189,7 @@ export function createReplySender(deps: ReplyDeps) {
     // indicator clears even if the connector call throws — flapping
     // "is typing…" forever after a failure is worse than the failure itself.
     deps.typingPump?.stop(conversationId)
+    const ackId = await deps.acks?.take(conversationId)
     // `continueConversationAsync` rehydrates the conversation context using
     // the stored reference and our pinned credentials. The SDK takes care of
     // grabbing a fresh service-to-service token (cached by app id).
@@ -210,6 +214,19 @@ export function createReplySender(deps: ReplyDeps) {
           // Streaming is 1:1 only: close the stream only if the conversation is still 1:1 now.
           const closes = stream && isPersonalReference(current) ? stream : undefined
           const streamEntity = closes ? { type: 'streaminfo', streamId: closes.streamId, streamType: 'final' } : undefined
+          // A reply that closes the status stream is that stream's final message: it cannot also overwrite the
+          // acknowledgement, which then stays as sent.
+          if (ackId && !streamEntity) {
+            try {
+              await withSendRetry('reply', () => turnContext.updateActivity({ ...activity, id: ackId }))
+              sentId = ackId
+              return
+            } catch (err) {
+              process.stderr.write(
+                `teams channel: overwriting the acknowledgement failed (${err instanceof Error ? err.message : String(err)}); sending a new message\n`,
+              )
+            }
+          }
           const closing = streamEntity
             ? { ...activity, entities: [...((activity as { entities?: unknown[] }).entities ?? []), streamEntity] }
             : activity
@@ -325,5 +342,20 @@ export function createReplySender(deps: ReplyDeps) {
     process.stderr.write(`teams channel: status update conv=${conversationId} len=${text.length}\n`)
   }
 
-  return { sendReply, editReply, react, assertAllowedConversation, sendStatus }
+  /** Send the acknowledgement message and return its id (undefined when Teams gave none). */
+  async function sendAck(conversationId: string, text: string): Promise<string | undefined> {
+    const { ref } = assertAllowedConversation(conversationId)
+    let id: string | undefined
+    await deps.adapter.continueConversationAsync(
+      deps.config.appId,
+      ref,
+      async turnContext => {
+        const res = await withSendRetry('ack', () => turnContext.sendActivity({ type: 'message', text }))
+        id = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
+      },
+    )
+    return id
+  }
+
+  return { sendReply, editReply, react, assertAllowedConversation, sendStatus, sendAck }
 }
