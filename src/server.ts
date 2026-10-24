@@ -72,6 +72,7 @@ import {
   validatePlannerArgs,
 } from './teams/planner.js'
 import { createMeetingStore, fetchTranscript, resolveTranscriptRequest, transcriptResultText, transcriptTools } from './teams/meetingTranscripts.js'
+import { channelTools, createChannel, validateCreateChannelArgs } from './teams/channels.js'
 import { MicrosoftAppCredentials } from 'botframework-connector'
 
 // Crash safety — without these the process can die silently on any
@@ -582,6 +583,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         ]
       : []),
     ...statusTools(config.statusUpdates),
+    ...channelTools(config.channelCreateTeams),
   ],
 }))
 
@@ -868,6 +870,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const m = resolveTranscriptRequest(args, meetingStore, config.meetingConversations)
         const t = await fetchTranscript(m, { getToken: () => graphToken.getToken() })
         return { content: [{ type: 'text', text: withInvisibleStripped({ text: transcriptResultText(m.title, t) }).text }] }
+      }
+
+      case 'create_channel': {
+        const input = validateCreateChannelArgs(args, config.channelCreateTeams)
+        const { channelId, webUrl } = await createChannel(input, { getToken: () => graphToken.getToken() })
+        return { content: [{ type: 'text', text: JSON.stringify({ channel_id: channelId, ...(webUrl ? { web_url: webUrl } : {}) }) }] }
       }
 
       default:

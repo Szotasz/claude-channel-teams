@@ -95,6 +95,21 @@ export function parseFlag(raw: string | undefined): boolean {
   return v === '1' || v === 'true'
 }
 
+/**
+ * Team ids (Microsoft 365 group ids, GUIDs) from an env var (comma-separated,
+ * like parseIdList), lower-cased. One bad entry makes the whole list invalid
+ * (null) so a typo cannot silently widen or shrink the allow-list.
+ */
+export function parseTeamIds(raw: string | undefined): ReadonlySet<string> | null {
+  const ids = parseIdList(raw)
+  const out = new Set<string>()
+  for (const id of ids) {
+    if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)) return null
+    out.add(id.toLowerCase())
+  }
+  return out
+}
+
 export interface Config {
   /**
    * Shared conversations (channel or group chat) in which an allowlisted
@@ -205,6 +220,12 @@ export interface Config {
    * it works only together with TEAMS_MEETING_EVENTS. See docs/meeting-transcripts.md.
    */
   meetingTranscripts: boolean
+  /**
+   * Teams (Microsoft 365 group ids) the `create_channel` tool may create
+   * channels in. Empty (the default) keeps the tool off. From
+   * TEAMS_CHANNEL_CREATE_TEAMS (comma-separated); see docs/create-channel.md.
+   */
+  channelCreateTeams: ReadonlySet<string>
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -395,6 +416,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     process.stderr.write('teams channel: TEAMS_ACK_DELAY_MS must be an integer from 0 to 10000; using 3000\n')
     ackDelayMs = 3000
   }
+  let channelCreateTeams = parseTeamIds(env.TEAMS_CHANNEL_CREATE_TEAMS)
+  if (channelCreateTeams === null) {
+    process.stderr.write('teams channel: TEAMS_CHANNEL_CREATE_TEAMS has an invalid team id; create_channel stays off\n')
+    channelCreateTeams = new Set()
+  }
 
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
@@ -421,5 +447,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     meetingEvents: parseFlag(env.TEAMS_MEETING_EVENTS),
     meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),
     meetingTranscripts: parseFlag(env.TEAMS_MEETING_TRANSCRIPTS),
+    channelCreateTeams,
   })
 }
