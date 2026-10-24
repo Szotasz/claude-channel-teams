@@ -364,6 +364,13 @@ entity (`additionalType: ["AIGeneratedContent"]`, `citation: [...]`); the text
 refers to a citation as `[1]`, `[2]`. Citations are validated before anything is
 sent and nothing is truncated.
 
+The `react` tool adds or removes the bot's own emoji reaction through the same
+gate: a PUT (or DELETE with `remove: true`) on
+`/v3/conversations/{id}/activities/{id}/reactions/{type}`, sent through the
+bot's connector client (about 2 changes per second). Inbound, a user's
+`messageReaction` from an allowlisted sender is forwarded as a `[Reaction]
+added: …` / `[Reaction] removed: …` channel event for the reacted-to message.
+
 ### Error paths
 
 | Condition | Behaviour |

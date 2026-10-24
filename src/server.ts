@@ -396,8 +396,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'Edit a message the bot previously sent on Teams. Useful for interim ' +
         'progress updates. Pass conversation_id and the message_id of a message ' +
-        'this bot sent. (Teams has no native bot reaction, so there is no react ' +
-        'tool; send a short reply instead if you need to acknowledge.)',
+        'this bot sent.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -412,6 +411,31 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string', description: 'New message text. Rendered as markdown.' },
         },
         required: ['conversation_id', 'message_id', 'text'],
+      },
+    },
+    {
+      name: 'react',
+      description:
+        'React on Microsoft Teams with the bot\'s own emoji, or take it back with remove: true. ' +
+        'reaction is a Teams reaction id: like, heart, 1f440_eyes (eyes), 2705_whiteheavycheckmark (check mark), ' +
+        'launch, 1f4cc_pushpin, or another id (lowercase letters, digits, underscore). ' +
+        'Use 1f440_eyes to show you started on a message and 2705_whiteheavycheckmark when done. ' +
+        'Teams allows about two reaction changes per second.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          conversation_id: {
+            type: 'string',
+            description: 'The conversation_id from the inbound <channel> tag. Pass through unchanged.',
+          },
+          message_id: {
+            type: 'string',
+            description: 'The message_id of the message to react to (from the inbound tag, or one this bot sent).',
+          },
+          reaction: { type: 'string' },
+          remove: { type: 'boolean' },
+        },
+        required: ['conversation_id', 'message_id', 'reaction'],
       },
     },
     // ── Operator-only tools ────────────────────────────────────────────────
@@ -596,6 +620,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         await replier.editReply(conversationId, messageId, text)
         return { content: [{ type: 'text', text: `edited (conv=${conversationId}, id=${messageId})` }] }
+      }
+
+      case 'react': {
+        const conversationId = args.conversation_id
+        const messageId = args.message_id
+        const reaction = args.reaction
+        const remove = args.remove === true
+        if (typeof conversationId !== 'string' || conversationId.length === 0) {
+          throw new Error('react requires a non-empty conversation_id string')
+        }
+        if (typeof messageId !== 'string' || messageId.length === 0) {
+          throw new Error('react requires a non-empty message_id string')
+        }
+        if (typeof reaction !== 'string' || reaction.length === 0) {
+          throw new Error('react requires a non-empty reaction string')
+        }
+        await replier.react(conversationId, messageId, reaction, remove)
+        return {
+          content: [{
+            type: 'text',
+            text: `${remove ? 'reaction removed' : 'reacted'} (conv=${conversationId}, id=${messageId}, type=${reaction})`,
+          }],
+        }
       }
 
       case 'list_pending': {
