@@ -45,6 +45,7 @@ import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
+import { withHeldContext, type FilterDecision, type HeldMessages, type UnmentionedFilter } from './unmentionedFilter.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -169,6 +170,13 @@ export interface AdapterDeps {
   /** Messages already delivered to Claude; edit/delete/restore events are only
    *  forwarded for these. Optional so existing tests still wire. */
   deliveredMessages?: DeliveredMessages
+  /** Optional filter for unmentioned messages (TEAMS_UNMENTIONED_FILTER_CMD). Only used
+   *  together with heldMessages; without them every unmentioned message that passes the
+   *  gates is delivered, as before. */
+  unmentionedFilter?: UnmentionedFilter
+  /** Where the messages the filter holds back wait for the next delivered message in the
+   *  same conversation. */
+  heldMessages?: HeldMessages
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -292,6 +300,10 @@ export function baseConversationId(conversationId: string): string {
  * tokens, impractical to produce in tests).
  */
 export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promise<void> {
+  // Per conversation: the filter decision still running for the latest unmentioned message.
+  // A later message in that conversation waits for it, so a held message is always in the
+  // context of the message that follows it.
+  const filterTails = new Map<string, Promise<FilterDecision>>()
   return async function turn(ctx: TurnContext) {
     const a = ctx.activity
     // Diagnostic: log every inbound so we know what arrived.
@@ -433,6 +445,10 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
               (e as { mentioned?: { id?: string } }).mentioned?.id === botId,
           )
         : false
+      if (mentioned && deps.unmentionedFilter && deps.heldMessages) {
+        const pendingDecision = filterTails.get(conversationId)
+        if (pendingDecision) await pendingDecision
+      }
       if (!mentioned) {
         const optOut = deps.config.unmentionedConversations
         const unmentionedOk = optOut !== undefined && (optOut.has('*') || optOut.has(baseConversationId(conversationId)))
@@ -451,8 +467,42 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
           )
           return
         }
+        if (deps.unmentionedFilter && deps.heldMessages) {
+          const filter = deps.unmentionedFilter
+          const unmentionedText = typeof a.text === 'string' ? a.text.trim() : ''
+          const previous = filterTails.get(conversationId) ?? Promise.resolve<FilterDecision>({ verdict: 'deliver' })
+          const mine = previous
+            .then(() =>
+              filter({ text: unmentionedText, fromName, conversationId, conversationType, botName: a.recipient?.name }),
+            )
+            .catch((err): FilterDecision => ({
+              verdict: 'deliver',
+              reason: `filter threw: ${err instanceof Error ? err.message : String(err)}`,
+            }))
+          filterTails.set(conversationId, mine)
+          let decision: FilterDecision
+          try {
+            decision = await mine
+          } finally {
+            if (filterTails.get(conversationId) === mine) filterTails.delete(conversationId)
+          }
+          if (decision.reason) {
+            process.stderr.write(`teams channel: unmentioned filter failed (${decision.reason}); delivering\n`)
+          }
+          if (decision.verdict === 'hold') {
+            const attachmentCount = Array.isArray(a.attachments) ? a.attachments.length : 0
+            deps.heldMessages.hold(conversationId, fromName, unmentionedText, attachmentCount)
+            process.stderr.write(
+              `teams channel: held: the filter judged an unmentioned message not for the bot (convId=${conversationId.slice(0, 20)})\n`,
+            )
+            return
+          }
+        }
       }
     }
+
+    // Messages held after this point arrived after this one; they wait for the next message.
+    const heldUpTo = deps.heldMessages?.mark()
 
     // Allowlist gate — the single most important application-level check.
     // A non-allowlisted sender enters the pairing path (Phase 3) if a
@@ -615,6 +665,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       if (mentionNames.length >= 20) break
     }
 
+    if (deps.heldMessages) text = withHeldContext(text, deps.heldMessages.take(conversationId, heldUpTo))
     deps.onEvent({
       text,
       conversationId,
