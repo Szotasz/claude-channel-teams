@@ -93,7 +93,7 @@ const holdAll: UnmentionedFilter = async () => ({ verdict: 'hold' })
 
 /** Captures everything written to stderr while fn runs; stderr is restored in a finally. */
 async function captureStderr(fn: () => Promise<void> | void): Promise<string> {
-  const original = process.stderr.write.bind(process.stderr)
+  const original = process.stderr.write
   let out = ''
   ;(process.stderr as any).write = (chunk: any, ...rest: any[]) => {
     out += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
@@ -139,7 +139,7 @@ describe('unmentioned filter', () => {
       })),
     )
     expect(stderr).toContain(
-      'teams channel: held: the filter judged an unmentioned message not for the bot (convId=',
+      `teams channel: held: the filter judged an unmentioned message not for the bot (convId=${CHAN1.slice(0, 20)})\n`,
     )
     expect(s.events.length).toBe(0)
     expect(typingStarts.length).toBe(0)
@@ -398,6 +398,14 @@ describe('unmentioned filter', () => {
     fresh.hold('c200', 'Adnan Khan', 'x')
     expect(fresh.take('c1')).toEqual([])
     expect(fresh.take('c0')).toEqual(['Adnan Khan: x', 'Adnan Khan: again'])
+  })
+
+  test('captureStderr puts the very same write function back, also when the body throws', async () => {
+    const before = process.stderr.write
+    await captureStderr(() => {})
+    expect(process.stderr.write).toBe(before)
+    await captureStderr(() => { throw new Error('x') }).catch(() => {})
+    expect(process.stderr.write).toBe(before)
   })
 
   test('withHeldContext with no held lines is the identity', () => {
