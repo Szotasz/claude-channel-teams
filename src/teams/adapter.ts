@@ -45,6 +45,8 @@ import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
+import type { InboundIds } from './inboundIds.js'
+import { makeEarlyAckTurn } from './earlyAck.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -111,6 +113,9 @@ export interface AdapterDeps {
   /** Messages already delivered to Claude; edit/delete/restore events are only
    *  forwarded for these. Optional so existing tests still wire. */
   deliveredMessages?: DeliveredMessages
+  /** Ids of inbound messages already received; a repeated delivery of the same message is dropped. Optional so
+   *  existing tests still wire. */
+  inboundIds?: InboundIds
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -233,8 +238,8 @@ export function baseConversationId(conversationId: string): string {
  * TurnContext — bypassing the JWT validator (which requires Microsoft-signed
  * tokens, impractical to produce in tests).
  */
-export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promise<void> {
-  return async function turn(ctx: TurnContext) {
+export function makeTurnHandler(deps: AdapterDeps): (ctx: Pick<TurnContext, 'activity'>) => Promise<void> {
+  const handle = async function turn(ctx: Pick<TurnContext, 'activity'>) {
     const a = ctx.activity
     // Diagnostic: log every inbound so we know what arrived.
     process.stderr.write(
@@ -547,6 +552,26 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       ...(mentioned !== undefined ? { mentioned } : {}),
     })
   }
+
+  return async function dedupedTurn(ctx: Pick<TurnContext, 'activity'>) {
+    const a = ctx.activity
+    const conversation = a.conversation?.id
+    const id = a.id
+    const seen =
+      deps.inboundIds && a.type === 'message' && typeof conversation === 'string' && conversation.length > 0 && typeof id === 'string' && id.length > 0
+        ? { store: deps.inboundIds, key: baseConversationId(conversation), id }
+        : undefined
+    if (seen && !seen.store.firstSeen(seen.key, seen.id)) {
+      process.stderr.write(`teams channel: drop — repeated delivery of message id=${seen.id.slice(0, 24)} conv=${seen.key.slice(0, 20)}\n`)
+      return
+    }
+    try {
+      await handle(ctx)
+    } catch (err) {
+      if (seen) seen.store.forget(seen.key, seen.id)
+      throw err
+    }
+  }
 }
 
 export interface RunningListener {
@@ -565,7 +590,7 @@ export interface RunningListener {
  */
 export function startListener(deps: AdapterDeps): RunningListener {
   const { config, adapter } = deps
-  const turn = makeTurnHandler(deps)
+  const turn = makeEarlyAckTurn(makeTurnHandler(deps))
 
   const server = Bun.serve({
     hostname: config.bindHost,
