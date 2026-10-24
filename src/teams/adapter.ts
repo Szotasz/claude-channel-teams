@@ -54,6 +54,7 @@ import type { DeliveredMessages } from './deliveredMessages.js'
 export type AttachmentHandler = (
   attachments: Attachment[],
   fromName: string,
+  messageText?: string,
 ) => Promise<{ annotations: string[] }>
 
 /**
@@ -492,7 +493,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     const rawAttachments = Array.isArray(a.attachments) ? (a.attachments as Attachment[]) : []
     if (deps.attachments && rawAttachments.length > 0) {
       try {
-        const { annotations } = await deps.attachments(rawAttachments, fromName)
+        const { annotations } = await deps.attachments(rawAttachments, fromName, rawText)
         if (annotations.length > 0) {
           text = text.length > 0 ? `${text}\n\n${annotations.join('\n')}` : annotations.join('\n')
         }

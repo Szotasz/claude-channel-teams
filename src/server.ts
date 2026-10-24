@@ -736,10 +736,11 @@ const listener = startListener({
   sendPairingDm: async (ref, text) => {
     await sendActivityRaw(ref, text)
   },
-  attachments: async (atts, fromName) =>
+  attachments: async (atts, fromName, messageText) =>
     processAttachments(atts, fromName, {
       baseDir: config.receivedFilesDir,
       getBearerToken: () => inlineImageCredentials.getToken(),
+      messageText,
     }),
 })
 

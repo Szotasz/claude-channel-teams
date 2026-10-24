@@ -14,7 +14,7 @@
  * works and the morning brief / scheduling cadence is UK-time aligned. On
  * filename collision we append "-1", "-2" before the extension.
  *
- * Two attachment shapes are handled:
+ * Three attachment shapes are handled:
  *
  *   1. SharePoint / OneDrive file attachments — contentType
  *      `application/vnd.microsoft.teams.file.download.info`. The `content`
@@ -24,6 +24,12 @@
  *      points at the bot framework's smba.trafficmanager.net endpoint and
  *      requires the bot's service-to-service token in the
  *      `Authorization: Bearer <token>` header.
+ *
+ *   3. `text/html` parts (forwarded messages, quoted replies, pasted tables)
+ *      and card attachments (adaptive, hero, thumbnail, o365connector) —
+ *      converted to plain text and inlined into the message. Nothing is
+ *      fetched; see richContent.ts. An HTML part that only repeats the
+ *      message's own text is ignored.
  *
  * Anything else is logged and skipped with an annotation so Hermes can tell
  * the user the bot ignored that bit.
@@ -37,6 +43,7 @@ import { mkdirSync, renameSync, statSync, writeFileSync, existsSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import type { Attachment } from 'botframework-schema'
+import { CARD_CONTENT_TYPES, capInline, cardToText, comparableHtml, comparableMessage, htmlToText, neutralizeMarkup } from './richContent.js'
 
 /** 50 MB cap per file. Anything larger is skipped with an annotation. */
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
@@ -90,6 +97,8 @@ export type AttachmentResult =
   | { kind: 'saved'; path: string; contentType: string; sizeBytes: number; originalName: string }
   | { kind: 'skipped'; reason: string; originalName: string }
   | { kind: 'failed'; reason: string; originalName: string }
+  | { kind: 'inline'; label: string; text: string; originalName: string }
+  | { kind: 'ignored'; reason: string; originalName: string }
 
 export interface ProcessAttachmentsDeps {
   /**
@@ -104,6 +113,10 @@ export interface ProcessAttachmentsDeps {
   fetchImpl?: typeof fetch
   /** Optional clock override for deterministic tests. Returns a Date. */
   now?: () => Date
+  /**
+   * The message's own text, used to drop an HTML part that only repeats it.
+   */
+  messageText?: string
 }
 
 /**
@@ -206,6 +219,8 @@ function formatBytes(n: number): string {
  *   [Attachment skipped: report.pdf — exceeds 50 MB limit]
  */
 export function formatAnnotation(result: AttachmentResult): string {
+  if (result.kind === 'inline') return `[${result.label}]\n${result.text}`
+  if (result.kind === 'ignored') return ''
   if (result.kind === 'saved') {
     return `[Attached: ${result.path} (${result.contentType}, ${formatBytes(result.sizeBytes)})]`
   }
@@ -377,6 +392,21 @@ export async function processOne(
     }
   }
 
+  if (att.contentType === 'text/html') {
+    const html = typeof att.content === 'string' ? att.content : ''
+    const text = htmlToText(html)
+    // A pasted image or a plain message often carries an HTML copy of the same text: drop it then.
+    const comparable = comparableHtml(html)
+    const own = comparableMessage(deps.messageText ?? '')
+    if (!comparable || comparable === own) return { kind: 'ignored', reason: 'html repeats the message text', originalName: declaredName }
+    return { kind: 'inline', label: 'HTML content', text: capInline(neutralizeMarkup(text)), originalName: declaredName }
+  }
+  if (typeof att.contentType === 'string' && CARD_CONTENT_TYPES.has(att.contentType)) {
+    const text = cardToText(att.contentType, att.content)
+    if (!text) return { kind: 'skipped', reason: 'card with no text', originalName: declaredName }
+    return { kind: 'inline', label: 'Card content', text: capInline(neutralizeMarkup(text)), originalName: declaredName }
+  }
+
   // Unknown shape — log and skip with an annotation so Hermes can tell the
   // user the bot ignored that bit.
   return {
@@ -413,6 +443,14 @@ export async function processAttachments(
       process.stderr.write(
         `teams channel: attachment ${result.kind} — ${result.originalName}: ${result.reason}\n`,
       )
+    } else if (result.kind === 'inline') {
+      process.stderr.write(
+        `teams channel: attachment inlined — ${result.originalName} (${result.label}, ${result.text.length} chars)\n`,
+      )
+    } else if (result.kind === 'ignored') {
+      process.stderr.write(
+        `teams channel: attachment ignored — ${result.originalName}: ${result.reason}\n`,
+      )
     } else {
       process.stderr.write(
         `teams channel: attachment saved — ${result.path} (${formatBytes(result.sizeBytes)})\n`,
@@ -420,7 +458,7 @@ export async function processAttachments(
     }
     results.push(result)
   }
-  return { annotations: results.map(formatAnnotation), results }
+  return { annotations: results.map(formatAnnotation).filter((a) => a.length > 0), results }
 }
 
 /**
