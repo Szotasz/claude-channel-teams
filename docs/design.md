@@ -323,6 +323,8 @@ We point at Microsoft's documentation for these in
 
 **Edit / delete / restore events.** `messageUpdate` (`editMessage`, `undeleteMessage`) and `messageDelete` (`softDeleteMessage`) activities are forwarded as channel events with `message_event="edited" | "restored" | "deleted"` and the id of the affected message. The delivered-message rule: the plugin keeps a bounded in-memory record (500 ids per conversation, 1000 conversations) of messages it delivered, with their sender. An update is forwarded only if that record has the message (keeps the @mention gate meaningful), the sender is the original sender and is still allowlisted. Anything else is dropped; these events never pair and never send anything to Teams.
 
+**Repeated deliveries.** Teams may deliver the same activity again (for example when a turn takes longer than 15 seconds). A message whose id was already received in the same conversation is dropped before anything else happens. The id is noted on arrival, so a repeat that comes while the first is still being processed is dropped too, and it is forgotten again if the turn fails, so a retry that arrives after the failure still goes through (at most 500 ids per conversation and 1000 conversations). Edit, delete and restore events are not filtered.
+
 ### Outbound (Claude → Teams)
 
 1. Claude calls `reply` tool with `{ conversation_id, text, reply_to? }`.
