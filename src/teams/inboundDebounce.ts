@@ -80,7 +80,8 @@ export function createInboundDebouncer(opts: {
 
   const windowMs = opts.windowMs
   const maxWaitMs = opts.maxWaitMs ?? 3 * windowMs
-  const now = opts.now ?? Date.now
+  // A monotonic clock: a wall clock set back (NTP step, manual change) must not stretch the cap.
+  const now = opts.now ?? (() => performance.now())
   // Insertion order is the order the keys were first buffered; flushAll walks it.
   const buffers = new Map<string, KeyBuffer>()
 

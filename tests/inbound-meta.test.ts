@@ -258,6 +258,11 @@ describe('inbound meta', () => {
     const empty = channelEventMeta({ ...base, merged: { count: 2, messageIds: ['"', '<>'] } })
     expect(empty.merged_count).toBe('2')
     expect('merged_message_ids' in empty).toBe(false)
+    // Only whole ids fit the 1000-character cap: no half id, no trailing comma; one id is cut to 200 characters.
+    const long = channelEventMeta({ ...base, merged: { count: 6, messageIds: Array(6).fill('a'.repeat(199)) } })
+    expect(long.merged_message_ids).toBe(Array(5).fill('a'.repeat(199)).join(','))
+    const huge = channelEventMeta({ ...base, merged: { count: 2, messageIds: ['b'.repeat(250), 'm2'] } })
+    expect(huge.merged_message_ids).toBe('b'.repeat(200) + ',m2')
     // No merged message: neither key exists.
     const plain = channelEventMeta(base)
     expect(plain.merged_count).toBeUndefined()

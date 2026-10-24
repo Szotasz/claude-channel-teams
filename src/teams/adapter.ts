@@ -123,10 +123,17 @@ export function threadIdFromConversationId(conversationId: string): string | und
 }
 
 /** merged_count, and merged_message_ids built from the ids that survive metaText one by one (an id that sanitises
- *  to nothing is left out, and the key is omitted when none is left), capped at 1000 characters. */
+ *  to nothing is left out, and the key is omitted when none is left), whole ids only, at most 1000 characters. */
 function mergedMeta(merged: { count: number; messageIds: string[] }): Record<string, string> {
   const ids = merged.messageIds.map(id => metaText(id, 200)).filter((id): id is string => id !== undefined)
-  return { merged_count: String(merged.count), ...(ids.length > 0 ? { merged_message_ids: ids.join(',').slice(0, 1000) } : {}) }
+  // Whole ids only: the next id goes in only if the joined value stays within 1000 characters.
+  let joined = ''
+  for (const id of ids) {
+    const next = joined === '' ? id : `${joined},${id}`
+    if (next.length > 1000) break
+    joined = next
+  }
+  return { merged_count: String(merged.count), ...(joined !== '' ? { merged_message_ids: joined } : {}) }
 }
 
 /** The meta of the channel notification for one event. Keys are snake_case: Claude Code drops a key that is not [A-Za-z0-9_]+. */

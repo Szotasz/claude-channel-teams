@@ -604,5 +604,8 @@ and the channel notification):
 - The channel tag reports what happened: `merged_count` and
   `merged_message_ids` (at most 20 ids, the earliest ones, sanitised like every
   other meta value).
-- `flushAll()` runs first on shutdown, so nothing buffered is lost when the
-  process stops.
+- On shutdown `stop()` runs first: it delivers whatever is held and lets every
+  later message (one still in flight in the listener) straight through, so
+  nothing buffered is lost when the process stops.
+- The three-window cap is measured on a monotonic clock, so a wall clock that
+  is set back does not stretch it.

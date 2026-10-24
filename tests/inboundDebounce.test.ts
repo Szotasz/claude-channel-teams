@@ -7,7 +7,7 @@
  * the timers that came due, in time order, and nothing beyond.
  */
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, setSystemTime, test } from 'bun:test'
 
 import { createInboundDebouncer } from '../src/teams/inboundDebounce'
 import type { ChannelEventSink } from '../src/teams/adapter'
@@ -338,5 +338,26 @@ describe('inbound debounce', () => {
     expect(() => debouncer.flushAll()).not.toThrow()
     expect(delivered).toEqual([other])
     expect(debouncer.pending()).toBe(0)
+  })
+})
+
+describe('inbound debounce clock', () => {
+  test('B13 without an injected clock the cap uses a monotonic clock, not the wall clock', () => {
+    // The wall clock jumps back a minute between two fragments; the cap (3 x 10 ms here) must still hold.
+    const delivered: Ev[] = []
+    const base = Date.parse('2026-10-24T12:00:00.000Z')
+    try {
+      setSystemTime(new Date(base))
+      const debouncer = createInboundDebouncer({ windowMs: 10, deliver: event => delivered.push(event), setTimer: () => 0, clearTimer: () => {} })
+      debouncer.push(fragment({ text: 'a' }))
+      setSystemTime(new Date(base - 60_000))
+      const until = performance.now() + 40
+      while (performance.now() < until) { /* let the monotonic clock pass the 30 ms cap */ }
+      debouncer.push(fragment({ text: 'b' }))
+      expect(delivered.length).toBe(1)
+      expect(delivered[0]!.text).toBe('a\nb')
+    } finally {
+      setSystemTime()
+    }
   })
 })
