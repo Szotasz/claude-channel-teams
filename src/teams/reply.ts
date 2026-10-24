@@ -20,6 +20,7 @@ import type { Config } from '../config.js'
 import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
 import { isStreamClosedError, type StatusStreams } from './statusStream.js'
+import { feedbackChannelData } from './feedback.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
 
 export type CitationInput = {
@@ -140,6 +141,8 @@ export interface ReplyDeps {
   typingPump?: TypingPump
   /** Open status streams (TEAMS_STATUS_UPDATES). Optional so existing tests still wire. */
   statusStreams?: StatusStreams
+  /** Thumbs up / down buttons on every reply (TEAMS_FEEDBACK). Optional so existing tests still wire. */
+  feedback?: boolean
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -202,6 +205,7 @@ export function createReplySender(deps: ReplyDeps) {
               ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: card }] }
               : {}),
             ...(entity ? { entities: [entity as { type: string }] } : {}),
+            ...(deps.feedback ? { channelData: feedbackChannelData() } : {}),
           }
           // Streaming is 1:1 only: close the stream only if the conversation is still 1:1 now.
           const closes = stream && isPersonalReference(current) ? stream : undefined

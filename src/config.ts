@@ -119,6 +119,11 @@ export interface Config {
    * TEAMS_STATUS_UPDATES ('1' or 'true'); see docs/status-updates.md.
    */
   statusUpdates: boolean
+  /**
+   * Whether replies carry Teams' thumbs up / down buttons and clicks are
+   * delivered. From TEAMS_FEEDBACK ('1' or 'true'); see docs/feedback.md.
+   */
+  feedback: boolean
 }
 
 /**
@@ -300,5 +305,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     filesBaseUrl: resolveFilesBaseUrl(env),
     plannerPlanIds,
     statusUpdates: parseFlag(env.TEAMS_STATUS_UPDATES),
+    feedback: parseFlag(env.TEAMS_FEEDBACK),
   })
 }
