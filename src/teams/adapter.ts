@@ -491,11 +491,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
           }
           if (decision.verdict === 'hold') {
             const attachmentCount = Array.isArray(a.attachments) ? a.attachments.length : 0
-            const heldText =
-              attachmentCount > 0
-                ? `${unmentionedText} [${attachmentCount} attachment(s), not downloaded]`.trim()
-                : unmentionedText
-            deps.heldMessages.hold(conversationId, fromName, heldText)
+            deps.heldMessages.hold(conversationId, fromName, unmentionedText, attachmentCount)
             process.stderr.write(
               `teams channel: held: the filter judged an unmentioned message not for the bot (convId=${conversationId.slice(0, 20)})\n`,
             )
@@ -504,6 +500,9 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
         }
       }
     }
+
+    // Messages held after this point arrived after this one; they wait for the next message.
+    const heldUpTo = deps.heldMessages?.mark()
 
     // Allowlist gate — the single most important application-level check.
     // A non-allowlisted sender enters the pairing path (Phase 3) if a
@@ -666,7 +665,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       if (mentionNames.length >= 20) break
     }
 
-    if (deps.heldMessages) text = withHeldContext(text, deps.heldMessages.take(conversationId))
+    if (deps.heldMessages) text = withHeldContext(text, deps.heldMessages.take(conversationId, heldUpTo))
     deps.onEvent({
       text,
       conversationId,
