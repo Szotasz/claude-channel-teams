@@ -51,6 +51,7 @@ import { createChannelRefStore } from './teams/channelRefs.js'
 import { createChannelPoster } from './teams/channelPost.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
+import { withSendRetry } from './teams/sendRetry.js'
 import { createFileSender } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createInboundIds } from './teams/inboundIds.js'
@@ -238,7 +239,7 @@ async function sendActivityRaw(
     config.appId,
     ref,
     async turnContext => {
-      await turnContext.sendActivity({ type: 'message', text })
+      await withSendRetry('send', () => turnContext.sendActivity({ type: 'message', text }))
     },
   )
 }
