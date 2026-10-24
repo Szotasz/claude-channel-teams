@@ -40,6 +40,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
+import { join } from 'path'
 
 import { loadConfig } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
@@ -99,7 +100,10 @@ if (process.env.TEAMS_PLUGIN_AUDIT_FILE) {
 const allowlist = createAllowlist(config.allowlistFile)
 const pending = createPendingStore(config.pendingFile)
 const adapter = createCloudAdapter(config)
-const refs = createConversationRefStore()
+const refs = createConversationRefStore({
+  file: join(config.stateDir, 'conversation-refs.json'),
+  isAllowed: (aad) => allowlist.isAllowed(aad),
+})
 
 // Ensure the received-files base directory exists at boot. A permission
 // problem here should fail loud rather than first surface mid-message.
