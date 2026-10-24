@@ -562,3 +562,5 @@ bot's app-only token. It is off unless `TEAMS_PLANNER_PLAN_IDS` lists the plans
 it may write to, because the required `Tasks.ReadWrite.All` permission covers
 every plan in the tenant. Arguments are validated before any network call.
 See [planner.md](planner.md).
+
+With TEAMS_CHANNEL_CREATE_TEAMS set, Claude can also create a standard channel in an allowed team (`create_channel`); see docs/create-channel.md.

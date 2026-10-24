@@ -41,6 +41,21 @@ export function parsePlannerPlanIds(raw: string | undefined): ReadonlySet<string
   return ids
 }
 
+/**
+ * Team ids (Microsoft 365 group ids, GUIDs) from an env var (comma-separated,
+ * like parseIdList), lower-cased. One bad entry makes the whole list invalid
+ * (null) so a typo cannot silently widen or shrink the allow-list.
+ */
+export function parseTeamIds(raw: string | undefined): ReadonlySet<string> | null {
+  const ids = parseIdList(raw)
+  const out = new Set<string>()
+  for (const id of ids) {
+    if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)) return null
+    out.add(id.toLowerCase())
+  }
+  return out
+}
+
 export interface Config {
   /**
    * Shared conversations (channel or group chat) in which an allowlisted
@@ -108,6 +123,12 @@ export interface Config {
    * see docs/planner.md.
    */
   plannerPlanIds: ReadonlySet<string>
+  /**
+   * Teams (Microsoft 365 group ids) the `create_channel` tool may create
+   * channels in. Empty (the default) keeps the tool off. From
+   * TEAMS_CHANNEL_CREATE_TEAMS (comma-separated); see docs/create-channel.md.
+   */
+  channelCreateTeams: ReadonlySet<string>
 }
 
 /**
@@ -271,6 +292,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     plannerPlanIds = new Set()
   }
 
+  let channelCreateTeams = parseTeamIds(env.TEAMS_CHANNEL_CREATE_TEAMS)
+  if (channelCreateTeams === null) {
+    process.stderr.write('teams channel: TEAMS_CHANNEL_CREATE_TEAMS has an invalid team id; create_channel stays off\n')
+    channelCreateTeams = new Set()
+  }
+
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
     stateDir,
@@ -288,5 +315,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sendableFilesRoot,
     filesBaseUrl: resolveFilesBaseUrl(env),
     plannerPlanIds,
+    channelCreateTeams,
   })
 }

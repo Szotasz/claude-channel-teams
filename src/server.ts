@@ -60,6 +60,7 @@ import {
   plannerTools,
   validatePlannerArgs,
 } from './teams/planner.js'
+import { channelTools, createChannel, validateCreateChannelArgs } from './teams/channels.js'
 import { MicrosoftAppCredentials } from 'botframework-connector'
 
 // Crash safety — without these the process can die silently on any
@@ -461,6 +462,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     ...plannerTools(config.plannerPlanIds),
+    ...channelTools(config.channelCreateTeams),
   ],
 }))
 
@@ -667,6 +669,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const input = validatePlannerArgs(args, config.plannerPlanIds)
         const { taskId } = await createPlannerTask(input, { getToken: () => graphToken.getToken() })
         return { content: [{ type: 'text', text: JSON.stringify({ task_id: taskId }) }] }
+      }
+
+      case 'create_channel': {
+        const input = validateCreateChannelArgs(args, config.channelCreateTeams)
+        const { channelId, webUrl } = await createChannel(input, { getToken: () => graphToken.getToken() })
+        return { content: [{ type: 'text', text: JSON.stringify({ channel_id: channelId, ...(webUrl ? { web_url: webUrl } : {}) }) }] }
       }
 
       default:
