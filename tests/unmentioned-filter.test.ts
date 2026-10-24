@@ -91,6 +91,22 @@ const chan2 = (o: Partial<Activity> = {}) =>
 
 const holdAll: UnmentionedFilter = async () => ({ verdict: 'hold' })
 
+/** Captures everything written to stderr while fn runs; stderr is restored in a finally. */
+async function captureStderr(fn: () => Promise<void> | void): Promise<string> {
+  const original = process.stderr.write.bind(process.stderr)
+  let out = ''
+  ;(process.stderr as any).write = (chunk: any, ...rest: any[]) => {
+    out += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
+    return true
+  }
+  try {
+    await fn()
+  } finally {
+    ;(process.stderr as any).write = original
+  }
+  return out
+}
+
 describe('unmentioned filter', () => {
   test('no filter deps: unmentioned message is delivered with its text unchanged', async () => {
     const s = setup(new Set(['*']))
@@ -116,10 +132,15 @@ describe('unmentioned filter', () => {
       attachments: async (...a: any[]) => { attachmentCalls.push(a); return { annotations: [] } },
     })
     const firstText = 'see this file'
-    await s.run(makeActivity({
-      text: firstText,
-      attachments: [{ contentType: 'text/html', content: 'x' }] as any,
-    }))
+    const stderr = await captureStderr(() =>
+      s.run(makeActivity({
+        text: firstText,
+        attachments: [{ contentType: 'text/html', content: 'x' }] as any,
+      })),
+    )
+    expect(stderr).toContain(
+      'teams channel: held: the filter judged an unmentioned message not for the bot (convId=',
+    )
     expect(s.events.length).toBe(0)
     expect(typingStarts.length).toBe(0)
     expect(attachmentCalls.length).toBe(0)
@@ -153,9 +174,10 @@ describe('unmentioned filter', () => {
       unmentionedFilter: async () => ({ verdict: 'deliver', reason: 'exit code 3' }),
       heldMessages: createHeldMessages(20),
     })
-    await s.run(makeActivity())
+    const stderr = await captureStderr(() => s.run(makeActivity()))
     expect(s.events.length).toBe(1)
     expect(s.events[0].text).toBe('hello there')
+    expect(stderr).toContain('teams channel: unmentioned filter failed (exit code 3); delivering\n')
   })
 
   test('a filter that throws still delivers', async () => {
@@ -163,9 +185,10 @@ describe('unmentioned filter', () => {
       unmentionedFilter: async () => { throw new Error('boom') },
       heldMessages: createHeldMessages(20),
     })
-    await s.run(makeActivity())
+    const stderr = await captureStderr(() => s.run(makeActivity()))
     expect(s.events.length).toBe(1)
     expect(s.events[0].text).toBe('hello there')
+    expect(stderr).toContain('teams channel: unmentioned filter failed (filter threw: ')
   })
 
   test('the filter is never called for a mentioned, a 1:1, a non-allowlisted, or a non-opted-in message', async () => {
@@ -184,6 +207,17 @@ describe('unmentioned filter', () => {
     const other = setup(new Set(['19:other@thread.tacv2']), { unmentionedFilter: filter, heldMessages: held })
     await other.run(makeActivity())
     expect(seen.length).toBe(0)
+  })
+
+  test('edit, delete and restore events never reach the filter', async () => {
+    let calls = 0
+    const spy: UnmentionedFilter = async () => { calls++; return { verdict: 'hold' } }
+    const s = setup(new Set(['*']), { unmentionedFilter: spy, heldMessages: createHeldMessages(20) })
+    // Built like tests/message-edit-events.test.ts builds them, on CHAN1 and without a mention.
+    await s.run(makeActivity({ type: 'messageUpdate', channelData: { eventType: 'editMessage' }, text: 'new text' }))
+    await s.run(makeActivity({ type: 'messageDelete', channelData: { eventType: 'softDeleteMessage' }, text: undefined }))
+    await s.run(makeActivity({ type: 'messageUpdate', channelData: { eventType: 'undeleteMessage' }, text: 'restored text' }))
+    expect(calls).toBe(0)
   })
 
   test('two held messages ride along oldest-first, and are taken once', async () => {
@@ -426,7 +460,7 @@ describe('unmentioned filter', () => {
     }
   })
 
-  test('loadConfig reads the unmentioned-filter variables from process.env', () => {
+  test('loadConfig reads the unmentioned-filter variables from process.env', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cct-ufilter-cfg-'))
     const keys = [
       'TEAMS_BOT_APP_ID',
@@ -465,13 +499,25 @@ describe('unmentioned filter', () => {
       expect(cfg.unmentionedFilterCmd).toBe('/usr/local/bin/f')
 
       apply({ TEAMS_UNMENTIONED_FILTER_CMD: 'relative/f' })
-      cfg = loadConfig()
+      const cmdStderr = await captureStderr(() => {
+        cfg = loadConfig()
+      })
       expect(cfg.unmentionedFilterCmd).toBeUndefined()
+      expect(cmdStderr).toContain(
+        'teams channel: TEAMS_UNMENTIONED_FILTER_CMD must be an absolute path; the unmentioned filter stays off\n',
+      )
 
       for (const bad of ['0', 'abc', '10abc', '1e3']) {
         apply({ TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS: bad })
         expect(() => loadConfig()).toThrow(/TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS must be a positive integer/)
       }
+
+      apply({ TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS: '2147483647' })
+      cfg = loadConfig()
+      expect(cfg.unmentionedFilterTimeoutMs).toBe(2147483647)
+
+      apply({ TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS: '2147483648' })
+      expect(() => loadConfig()).toThrow(/TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS must be a positive integer up to 2147483647/)
 
       apply({ TEAMS_UNMENTIONED_HISTORY_LIMIT: '0' })
       expect(() => loadConfig()).toThrow(/TEAMS_UNMENTIONED_HISTORY_LIMIT must be a positive integer/)
