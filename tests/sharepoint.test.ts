@@ -6,7 +6,7 @@ import { join } from 'path'
 import { resolveSharePoint } from '../src/config'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
-import { createFileSender, isSharedConversationRef } from '../src/teams/sendFile'
+import { createFileSender, isSharedConversationRef, sendFileResultText } from '../src/teams/sendFile'
 import { createSharePointUploader } from '../src/teams/sharepoint'
 
 const json = (status: number, body: unknown) =>
@@ -204,6 +204,7 @@ describe('sendFile with SharePoint', () => {
     expect(sp.calls).toBe(0)
     expect(h.minted()).toBe(1)
     expect(r.token).toBeString()
+    expect(r.sharePointFallback).toBeUndefined()
   })
 
   test('failure falls back to the download link', async () => {
@@ -212,6 +213,17 @@ describe('sendFile with SharePoint', () => {
     const r = await h.sendFile({ conversationId: 'c3', content: Buffer.from('x'), filename: 'r.pdf' })
     expect(h.minted()).toBe(1)
     expect(r.token).toBeString()
+    expect(r.sharePointFallback).toBe(true)
+    expect(sendFileResultText('c3', r)).toStartWith('sent file as a download link because the SharePoint upload failed (conv=c3, ')
+  })
+
+  test('the send_file answer names the target it really used', () => {
+    expect(sendFileResultText('c1', { webUrl: 'https://x/y', filename: 'a.pdf', sizeBytes: 3 }))
+      .toBe('sent file to SharePoint (conv=c1, filename=a.pdf, size=3)')
+    expect(sendFileResultText('c2', { token: 'abcdefghij', filename: 'a.pdf', sizeBytes: 3 }))
+      .toBe('sent file (conv=c2, filename=a.pdf, size=3, token=abcdefgh…)')
+    expect(sendFileResultText('c3', { token: 'abcdefghij', filename: 'a.pdf', sizeBytes: 3, sharePointFallback: true }))
+      .toBe('sent file as a download link because the SharePoint upload failed (conv=c3, filename=a.pdf, size=3, token=abcdefgh…)')
   })
 
   test('a card that fails to post after a successful upload is an error, not a second card', async () => {
