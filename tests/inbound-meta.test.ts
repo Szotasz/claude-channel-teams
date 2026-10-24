@@ -189,4 +189,17 @@ describe('inbound meta', () => {
     } as any)
     expect(long.mentions).toEqual(['x'.repeat(150)])
   })
+
+  test('M12 invisible-character counts surface as meta keys only when set', () => {
+    const base = {
+      text: 'hello', conversationId: 'conv-abc', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'Adnan Khan',
+    }
+    const meta = channelEventMeta({ ...base, invisible: { tag: 2, zwsp: 0, bidi: 1, bom: 0 } })
+    expect(meta.invisible_tag).toBe('2')
+    expect(meta.invisible_bidi).toBe('1')
+    expect(meta.invisible_zwsp).toBeUndefined()
+    expect(meta.invisible_bom).toBeUndefined()
+    const without = channelEventMeta(base)
+    for (const key of Object.keys(without)) expect(key.startsWith('invisible_')).toBe(false)
+  })
 })

@@ -54,6 +54,7 @@ import { createOutbox } from './teams/outbox.js'
 import { createFileSender } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createInboundIds } from './teams/inboundIds.js'
+import { withInvisibleStripped } from './teams/invisibleChars.js'
 import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
@@ -731,6 +732,11 @@ const deliveredMessages = createDeliveredMessages()
 const inboundIds = createInboundIds()
 
 const onEvent: ChannelEventSink = event => {
+  // Strip invisible Unicode characters (hidden tag-character payloads, bidi
+  // controls, zero-width spaces, BOM) before the text reaches the model. The
+  // dedupe above already saw the raw text; everything downstream gets the
+  // cleaned text plus removal counts in the meta.
+  event = withInvisibleStripped(event)
   process.stderr.write(
     `teams channel: pushing channel event text=${JSON.stringify(event.text.slice(0, 60))}\n`,
   )

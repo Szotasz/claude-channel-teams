@@ -47,6 +47,7 @@ import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
 import type { InboundIds } from './inboundIds.js'
+import { invisibleMeta } from './invisibleChars.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -88,6 +89,8 @@ export type ChannelEventSink = (event: {
   replyToId?: string
   /** Display names of the people @mentioned in the message, the bot itself excluded. */
   mentions?: string[]
+  /** Set by withInvisibleStripped when invisible characters were removed from `text`. */
+  invisible?: { tag: number; zwsp: number; bidi: number; bom: number }
 }) => void
 
 // Meta values end up as attributes of the <channel> tag. Team, channel and user names are set by people
@@ -132,6 +135,7 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.threadId !== undefined ? { thread_id: event.threadId } : {}),
     ...(event.replyToId !== undefined ? { reply_to_id: event.replyToId } : {}),
     ...(event.mentions !== undefined ? { mentions: event.mentions.join(', ') } : {}),
+    ...(event.invisible ? invisibleMeta(event.invisible) : {}),
   }
 }
 
