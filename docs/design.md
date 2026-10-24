@@ -113,6 +113,7 @@ environment winning. `.env` is chmod-0600 on every load.
 | `TEAMS_PROACTIVE_CHANNELS` | No | empty | Comma-separated channel ids (no `;messageid=`, no wildcard) where the `post_to_channel` tool may open a new top-level post. The route is learned from an allowlisted user's message in the channel and kept in `channel-refs.json` (0600) in the state dir. |
 | `TEAMS_FILES_BASE_URL` | No | origin of `TEAMS_BOT_ENDPOINT_URL` + `/files` | Override for the `send_file` download-link base. https only. |
 | `TEAMS_UNMENTIONED_CONVERSATIONS` | No | empty | Comma-separated shared conversation ids (without `;messageid=`) or `*`, where allowlisted senders' messages are delivered without an @mention. Non-allowlisted senders are not paired from unmentioned messages. |
+| `TEAMS_INBOUND_DEBOUNCE_MS` | No | `0` (off) | Inbound debounce window in milliseconds (recommended `1500`) — see [Inbound debounce (opt-in)](#inbound-debounce-opt-in). A whole number, capped at 10000; anything else turns debouncing off with one stderr line. |
 | `TEAMS_STATE_DIR` | No | `~/.claude/channels/teams` | For multi-instance setups. |
 | `TEAMS_ACCESS_MODE` | No | — | `static` pins access at boot, disables pairing. |
 
@@ -576,3 +577,32 @@ bot's app-only token. It is off unless `TEAMS_PLANNER_PLAN_IDS` lists the plans
 it may write to, because the required `Tasks.ReadWrite.All` permission covers
 every plan in the tenant. Arguments are validated before any network call.
 See [planner.md](planner.md).
+
+## Inbound debounce (opt-in)
+
+People on a phone often send one request as two or three quick messages ("look
+at this" + a link + "urgent"). Delivered straight away, the first fragment alone
+starts a full agent turn on half a request. Claude Code already batches messages
+that arrive WHILE the agent is busy; `TEAMS_INBOUND_DEBOUNCE_MS` closes the gap
+for the opening fragments. It is off by default (`0`); `1500` is the
+recommended window.
+
+How it works (`src/teams/inboundDebounce.ts`, inserted between the turn handler
+and the channel notification):
+
+- Messages from one sender (`aadObjectId`, case-insensitive) in one
+  conversation are held for the window; each new fragment re-arms it, so a burst
+  lands as one event. A merged message waits at most three windows from the
+  first fragment, so a steady trickle still gets through.
+- The merged event is the LAST message (its `message_id`, `ts`, thread and
+  reply context are the ones to answer) with the texts joined by newlines in
+  arrival order. Buffers are per sender + conversation, so two people writing
+  at once never mix.
+- Never held back: edits / deletes / restores, messages with attachments, and
+  slash commands. Each flushes what that sender has pending and then goes
+  through unchanged, so order is preserved.
+- The channel tag reports what happened: `merged_count` and
+  `merged_message_ids` (at most 20 ids, the earliest ones, sanitised like every
+  other meta value).
+- `flushAll()` runs first on shutdown, so nothing buffered is lost when the
+  process stops.

@@ -50,6 +50,30 @@ export function proactiveChannelsFrom(raw: string | undefined): ReadonlySet<stri
   return new Set([...ids].filter(id => id !== '*'))
 }
 
+/** Ceiling for TEAMS_INBOUND_DEBOUNCE_MS — a typo must not swallow a minute of traffic. */
+export const MAX_INBOUND_DEBOUNCE_MS = 10000
+
+/**
+ * TEAMS_INBOUND_DEBOUNCE_MS — how long the inbound debouncer
+ * (src/teams/inboundDebounce.ts) holds a message while more fragments from the
+ * same sender may arrive. Unset / empty / invalid → 0, i.e. debouncing off and
+ * every message delivered as its own event. A whole number of milliseconds is
+ * capped at MAX_INBOUND_DEBOUNCE_MS; anything else draws one warning line and
+ * turns the feature off rather than guessing.
+ */
+export function parseInboundDebounceMs(
+  raw: string | undefined,
+  warn: (m: string) => void = m => process.stderr.write(`${m}\n`),
+): number {
+  const value = raw?.trim() ?? ''
+  if (value.length === 0) return 0
+  if (!/^\d+$/.test(value)) {
+    warn('teams channel: TEAMS_INBOUND_DEBOUNCE_MS must be a whole number of milliseconds; debouncing is off')
+    return 0
+  }
+  return Math.min(Number.parseInt(value, 10), MAX_INBOUND_DEBOUNCE_MS)
+}
+
 export interface Config {
   /**
    * Shared conversations (channel or group chat) in which an allowlisted
@@ -84,6 +108,13 @@ export interface Config {
   bindHost: string
   /** Port for the local HTTP listener. */
   port: number
+  /**
+   * Inbound debounce window in milliseconds (see src/teams/inboundDebounce.ts):
+   * quick successive messages from one sender are merged into one event.
+   * 0 (the default) delivers every message immediately. From
+   * TEAMS_INBOUND_DEBOUNCE_MS, capped at 10000.
+   */
+  inboundDebounceMs: number
   /**
    * Where downloaded Teams attachments are saved. Configurable via the
    * `RECEIVED_FILES_DIR` env var. Defaults to `<stateDir>/files/received-files`
@@ -299,6 +330,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tenantId,
     bindHost,
     port,
+    inboundDebounceMs: parseInboundDebounceMs(env.TEAMS_INBOUND_DEBOUNCE_MS),
     receivedFilesDir,
     outboxDir,
     outboxTtlSeconds,

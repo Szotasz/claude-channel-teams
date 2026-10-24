@@ -91,6 +91,10 @@ export type ChannelEventSink = (event: {
   mentions?: string[]
   /** Set by withInvisibleStripped when invisible characters were removed from `text`. */
   invisible?: { tag: number; zwsp: number; bidi: number; bom: number }
+  /** True when the inbound activity carried attachments (their notes are already in `text`). */
+  hasAttachments?: boolean
+  /** Set by the inbound debouncer when several quick messages were merged into this one. */
+  merged?: { count: number; messageIds: string[] }
 }) => void
 
 // Meta values end up as attributes of the <channel> tag. Team, channel and user names are set by people
@@ -137,6 +141,8 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.threadId !== undefined ? { thread_id: event.threadId } : {}),
     ...(event.replyToId !== undefined ? { reply_to_id: event.replyToId } : {}),
     ...(event.mentions !== undefined ? { mentions: event.mentions.join(', ') } : {}),
+    ...(event.merged ? { merged_count: String(event.merged.count),
+      ...(event.merged.messageIds.length > 0 ? { merged_message_ids: metaText(event.merged.messageIds.join(','), 1000)! } : {}) } : {}),
     ...(event.invisible ? invisibleMeta(event.invisible) : {}),
   }
 }
@@ -642,6 +648,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       fromName,
       messageId,
       ts,
+      ...(rawAttachments.length > 0 ? { hasAttachments: true } : {}),
       ...(mentioned !== undefined ? { mentioned } : {}),
       isGroup: isGroupContext,
       teamId: metaText(team?.id),
