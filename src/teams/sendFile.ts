@@ -100,6 +100,20 @@ export interface SendFileResult {
   webUrl?: string
   filename: string
   sizeBytes: number
+  /** The SharePoint upload was tried and failed, so a download link went out instead. */
+  sharePointFallback?: true
+}
+
+/** The send_file tool's answer to Claude. A SharePoint upload that failed and fell back to a download link says so,
+ *  so the agent does not report a SharePoint file that is not there. */
+export function sendFileResultText(conversationId: string, result: SendFileResult): string {
+  if (result.webUrl) {
+    return `sent file to SharePoint (conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes})`
+  }
+  const sent = `conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes}, token=${(result.token ?? '').slice(0, 8)}…`
+  return result.sharePointFallback
+    ? `sent file as a download link because the SharePoint upload failed (${sent})`
+    : `sent file (${sent})`
 }
 
 function guessMime(filename: string): string {
@@ -181,6 +195,7 @@ export function createFileSender(deps: FileSenderDeps) {
     // shouldn't leave a token sitting on disk.
     const { ref } = assertAllowedConversation(input.conversationId)
 
+    let sharePointFailed = false
     if (deps.sharePoint && isSharedConversationRef(ref)) {
       // Only the upload falls back: a failure to post the card after a successful upload is a send error, not a reason
       // to post a second card.
@@ -188,6 +203,7 @@ export function createFileSender(deps: FileSenderDeps) {
       try {
         uploaded = await deps.sharePoint.upload(filename, content)
       } catch (err) {
+        sharePointFailed = true
         process.stderr.write(
           `teams channel: SharePoint upload failed (${err instanceof Error ? err.message : String(err)}); sending a download link instead\n`,
         )
@@ -248,6 +264,7 @@ export function createFileSender(deps: FileSenderDeps) {
       token: minted.token,
       filename: minted.filename,
       sizeBytes: minted.sizeBytes,
+      ...(sharePointFailed ? { sharePointFallback: true as const } : {}),
     }
   }
 

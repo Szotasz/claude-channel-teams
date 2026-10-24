@@ -56,7 +56,7 @@ import { createAckPlaceholders } from './teams/ackPlaceholder.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { withSendRetry, sendTracker, SHUTDOWN_SEND_WAIT_MS } from './teams/sendRetry.js'
-import { createFileSender } from './teams/sendFile.js'
+import { createFileSender, sendFileResultText } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createInboundIds } from './teams/inboundIds.js'
 import { createInboundDebouncer } from './teams/inboundDebounce.js'
@@ -705,9 +705,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           content: [
             {
               type: 'text',
-              text: result.webUrl
-                ? `sent file to SharePoint (conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes})`
-                : `sent file (conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes}, token=${result.token!.slice(0, 8)}…)`,
+              text: sendFileResultText(conversationId, result),
             },
           ],
         }
