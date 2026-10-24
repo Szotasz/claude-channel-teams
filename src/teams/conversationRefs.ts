@@ -44,6 +44,8 @@ interface StoredRef {
   aadObjectId: string
   /** Last time we saw an inbound from this conversation (ms epoch). */
   lastSeen: number
+  /** A chat the bot opened (dm_member) that the user has not written in yet: never the permission-relay target. */
+  botOpened?: boolean
 }
 
 /** A 1:1 chat with the bot. Shared conversations (team channels, group chats) are not personal. */
@@ -86,10 +88,10 @@ export function storedReference(ref: Partial<ConversationReference>): Partial<Co
 
 export interface ConversationRefStore {
   /**
-   * `opts.lastSeen` overrides the recency stamp. A chat the BOT opened (dm_member) is stored with 0: it is
-   * not activity from that user, and recency picks the permission-relay target.
+   * `opts.botOpened` marks a chat the BOT opened (dm_member): it is not activity from that user, so it must never
+   * become the permission-relay target. An inbound put (no opts) clears the mark.
    */
-  put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string, opts?: { lastSeen?: number }): void
+  put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string, opts?: { botOpened?: boolean }): void
   get(conversationId: string): StoredRef | undefined
   size(): number
   /**
@@ -224,7 +226,7 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
       kept.push([
         e.conversationId,
         // A file written before this version may hold full references; keep only the fields needed to send.
-        { ref: storedReference(e.ref), aadObjectId: String(e.aadObjectId).toLowerCase(), lastSeen: Math.min(e.lastSeen, now()) },
+        { ref: storedReference(e.ref), aadObjectId: String(e.aadObjectId).toLowerCase(), lastSeen: Math.min(e.lastSeen, now()), ...(e.botOpened === true ? { botOpened: true } : {}) },
       ])
     }
     // Newest first; a conversation listed twice keeps its most recent entry.
@@ -273,7 +275,8 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
       store.set(conversationId, {
         ref,
         aadObjectId: aadObjectId.toLowerCase(),
-        lastSeen: opts?.lastSeen ?? now(),
+        lastSeen: now(),
+        ...(opts?.botOpened === true ? { botOpened: true } : {}),
       })
       while (store.size > maxEntries) {
         let oldestId: string | undefined
@@ -299,8 +302,8 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
       return mostRecent(() => true)
     },
     mostRecentPersonalConversationId(): string | undefined {
-      // lastSeen 0 = a chat the bot opened and the user never wrote in: never the permission-relay target.
-      return mostRecent(stored => stored.lastSeen > 0 && isPersonalReference(stored.ref))
+      // A chat the bot opened and the user never wrote in is never the permission-relay target.
+      return mostRecent(stored => stored.botOpened !== true && isPersonalReference(stored.ref))
     },
     personalConversationIdFor(aadObjectId: string): string | undefined {
       const target = aadObjectId.trim().toLowerCase()

@@ -65,10 +65,10 @@ describe('dm_member', () => {
    * createConversationAsync arguments and runs the callback with a context
    * whose conversation id is 'a:new-1' and whose sendActivity returns 'm-1'.
    */
-  function setup(opts: { failWith?: unknown; sendFailsWith?: unknown } = {}) {
+  function setup(opts: { failWith?: unknown; sendFailsWith?: unknown; refs?: ReturnType<typeof createConversationRefStore> } = {}) {
     const allowlist = createAllowlist(join(dir, 'allowlist.json'))
     allowlist.addEntry(USER_ID)
-    const refs = createConversationRefStore()
+    const refs = opts.refs ?? createConversationRefStore()
     const calls: any[] = []
     const sends: any[] = []
     const adapter = {
@@ -194,6 +194,42 @@ describe('dm_member', () => {
     expect(calls.length).toBe(1)
     expect(refs.personalConversationIdFor(USER_ID)).toBe('a:new-1')
     expect(refs.mostRecentPersonalConversationId()).toBe('a:op')
+  })
+
+  test('a full store keeps the chat it just opened (the bot mark does not age it out)', async () => {
+    const refs = createConversationRefStore({ maxEntries: 2 })
+    const { dm } = setup({ refs })
+    refs.put('a:op', personalRef('a:op', OTHER_ID), OTHER_ID)
+    refs.put('c:seed', channelRef('c:seed', USER_ID), USER_ID)
+    await new Promise(resolve => setTimeout(resolve, 5))
+    await dm.dmMember(USER_ID, 'hello')
+    expect(refs.get('a:new-1')).toBeDefined()
+    expect(refs.personalConversationIdFor(USER_ID)).toBe('a:new-1')
+    expect(refs.size()).toBe(2)
+  })
+
+  test('the bot mark survives a reload from file, and the user writing in the chat clears it', async () => {
+    const file = join(dir, 'refs.json')
+    const refs = createConversationRefStore({ file })
+    const { dm } = setup({ refs })
+    refs.put('c:seed', channelRef('c:seed', USER_ID), USER_ID)
+    await dm.dmMember(USER_ID, 'hello')
+    const reloaded = createConversationRefStore({ file })
+    expect(reloaded.personalConversationIdFor(USER_ID)).toBe('a:new-1')
+    expect(reloaded.mostRecentPersonalConversationId()).toBeUndefined()
+    // The user's first message in the chat stores the real reference without the mark.
+    reloaded.put('a:new-1', personalRef('a:new-1', USER_ID), USER_ID)
+    expect(reloaded.mostRecentPersonalConversationId()).toBe('a:new-1')
+  })
+
+  test('a 403 from the first send (after the chat was opened) passes through unchanged', async () => {
+    const sendErr = Object.assign(new Error('Forbidden'), { statusCode: 403 })
+    const { dm, refs, calls } = setup({ sendFailsWith: sendErr })
+    refs.put('c:seed', channelRef('c:seed', USER_ID), USER_ID)
+    const got = await dm.dmMember(USER_ID, 'hello').then(() => undefined, (e: unknown) => e)
+    expect(got).toBe(sendErr)
+    expect(calls.length).toBe(1)
+    expect(refs.get('a:new-1')).toBeDefined()
   })
 
   test('the new chat is stored even when the first send into it fails', async () => {

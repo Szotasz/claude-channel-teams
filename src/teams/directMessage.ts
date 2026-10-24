@@ -116,6 +116,7 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
 
     let newId: string | undefined
     let messageId: string | undefined
+    let callbackStarted = false
     try {
       await deps.adapter.createConversationAsync(
         deps.config.appId,
@@ -132,6 +133,7 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
           channelData: { tenant: { id: deps.config.tenantId } },
         } as ConversationParameters,
         async ctx => {
+          callbackStarted = true
           const convId = ctx.activity.conversation?.id
           if (typeof convId !== 'string' || convId.length === 0) {
             throw new Error('dm_member: Teams returned no conversation id for the new 1:1 chat')
@@ -155,9 +157,10 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
           // Store the route BEFORE sending: a failed first send must not leave
           // the chat unaddressable, or the next dm_member would try to open a
           // second one (and `reply` could never reach the user either).
-          // lastSeen 0: the bot opened this chat, the user was not active in it. A fresh stamp would make it
-          // the most recent 1:1 chat, and the permission relay would send the next tool approval to this user.
-          deps.refs.put(convId, ref, id, { lastSeen: 0 })
+          // botOpened: the user was not active in this chat. Without the mark it would be the most recent 1:1 chat,
+          // and the permission relay would send the next tool approval to this user. The recency stamp stays
+          // normal, so a full store does not evict the chat it just opened.
+          deps.refs.put(convId, ref, id, { botOpened: true })
           const res = await withSendRetry('dm', () =>
             ctx.sendActivity({ type: 'message', text, textFormat: 'markdown' }),
           )
@@ -165,11 +168,10 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
         },
       )
     } catch (err) {
-      // Only the conversation-creation call is translated: a 403 there means
-      // Teams refused the chat itself, not a transient send problem. No retry
-      // either — user-side state (blocked bot, missing install) does not clear
-      // on a second attempt.
-      if ((err as { statusCode?: unknown })?.statusCode === 403) {
+      // Only a 403 from OPENING the chat is translated: Teams refused the chat itself, and user-side state
+      // (blocked bot, missing install) does not clear on a retry. botbuilder runs the callback only after
+      // createConversation succeeded, so an error from inside it (the first send) passes through unchanged.
+      if (!callbackStarted && (err as { statusCode?: unknown })?.statusCode === 403) {
         if (mentionsMessageWritesBlocked(err)) throw new BotBlockedError(err)
         throw new PersonalInstallMissingError(err)
       }
