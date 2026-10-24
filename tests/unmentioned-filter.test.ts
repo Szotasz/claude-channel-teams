@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, writeFileSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
@@ -245,14 +245,18 @@ describe('unmentioned filter', () => {
 
   test('createCommandFilter kills a filter that runs past the timeout', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cct-ufilter-'))
-    const pidFile = join(dir, 'pid')
-    const slow = join(dir, 'slow.sh')
-    writeFileSync(slow, `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 5\n`, { mode: 0o755 })
-    const d = await createCommandFilter(slow, 500)({ text: 'x', conversationId: 'c1' })
-    expect(d).toEqual({ verdict: 'deliver', reason: 'timed out after 500 ms' })
-    const pid = Number(readFileSync(pidFile, 'utf8').trim())
-    await new Promise(r => setTimeout(r, 200))
-    expect(() => process.kill(pid, 0)).toThrow()
+    try {
+      const pidFile = join(dir, 'pid')
+      const slow = join(dir, 'slow.sh')
+      writeFileSync(slow, `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 5\n`, { mode: 0o755 })
+      const d = await createCommandFilter(slow, 500)({ text: 'x', conversationId: 'c1' })
+      expect(d).toEqual({ verdict: 'deliver', reason: 'timed out after 500 ms' })
+      const pid = Number(readFileSync(pidFile, 'utf8').trim())
+      await new Promise(r => setTimeout(r, 200))
+      expect(() => process.kill(pid, 0)).toThrow()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test('a mentioned message waits for the pending filter decision of an earlier unmentioned one', async () => {
@@ -270,6 +274,43 @@ describe('unmentioned filter', () => {
     expect(s.events[0].text).toContain('Adnan Khan: a')
   })
 
+  test('a message held while an earlier one waits for its attachments is not shown as earlier context', async () => {
+    const filter: UnmentionedFilter = async input =>
+      input.text === 'a' ? { verdict: 'deliver' } : { verdict: 'hold' }
+    let releaseAttachments!: () => void
+    const attachments = () =>
+      new Promise<{ annotations: string[] }>(res => {
+        releaseAttachments = () => res({ annotations: [] })
+      })
+    const s = setup(new Set(['*']), { unmentionedFilter: filter, heldMessages: createHeldMessages(20), attachments })
+    const runA = s.run(makeActivity({ text: 'a', attachments: [{ contentType: 'text/html', content: 'x' }] as any }))
+    await new Promise(r => setTimeout(r, 20))
+    // 'b' arrives while 'a' is still waiting for its attachment download — held by the filter.
+    await s.run(makeActivity({ id: 'msg-2', text: 'b' }))
+    releaseAttachments()
+    await runA
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].text).toBe('a')
+    // 'b' waited for the NEXT message; it must not be glued onto 'a' retroactively.
+    await s.run(mentionedActivity({ id: 'm3', text: '<at>Bot</at> c' }))
+    expect(s.events.length).toBe(2)
+    expect(s.events[1].text).toBe(
+      '[Earlier messages in this conversation that were not addressed to you, oldest first]\nAdnan Khan: b\n[End of earlier messages]\n\nc',
+    )
+  })
+
+  test('a held message rides along with a later unmentioned message the filter lets through', async () => {
+    const filter: UnmentionedFilter = async input =>
+      input.text === 'a' ? { verdict: 'hold' } : { verdict: 'deliver' }
+    const s = setup(new Set(['*']), { unmentionedFilter: filter, heldMessages: createHeldMessages(20) })
+    await s.run(makeActivity({ text: 'a' }))
+    await s.run(makeActivity({ id: 'msg-2', text: 'b' }))
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].text).toBe(
+      '[Earlier messages in this conversation that were not addressed to you, oldest first]\nAdnan Khan: a\n[End of earlier messages]\n\nb',
+    )
+  })
+
   test('createHeldMessages keeps only the last N lines of a conversation, oldest first', () => {
     const held = createHeldMessages(3)
     for (const t of ['1', '2', '3', '4', '5']) held.hold('c', 'Adnan Khan', t)
@@ -281,12 +322,34 @@ describe('unmentioned filter', () => {
     const held = createHeldMessages(20)
     const long = 'x'.repeat(1500)
     held.hold('c', 'Adnan Khan', long)
-    expect(held.take('c')).toEqual([`Adnan Khan: ${'x'.repeat(1000)}…`])
+    const [line] = held.take('c')
+    expect(line).toBe(`Adnan Khan: ${'x'.repeat(999)}…`)
+    expect(line.slice('Adnan Khan: '.length)).toHaveLength(1000)
     held.hold('c', undefined, 'hi')
     expect(held.take('c')).toEqual(['Someone: hi'])
     // The adapter passes '' for a sender without a name (a.from?.name ?? '').
     held.hold('c', '', 'hi')
     expect(held.take('c')).toEqual(['Someone: hi'])
+  })
+
+  test('createHeldMessages puts the attachment note after the truncated text', () => {
+    const held = createHeldMessages(20)
+    held.hold('c', 'Adnan Khan', 'x'.repeat(1500), 2)
+    expect(held.take('c')).toEqual([`Adnan Khan: ${'x'.repeat(999)}… [2 attachment(s), not downloaded]`])
+    held.hold('c', 'Adnan Khan', '', 1)
+    expect(held.take('c')).toEqual(['Adnan Khan: [1 attachment(s), not downloaded]'])
+    held.hold('c', 'Adnan Khan', 'hi', 0)
+    expect(held.take('c')).toEqual(['Adnan Khan: hi'])
+  })
+
+  test('createHeldMessages take(id, upTo) leaves the later ones', () => {
+    const held = createHeldMessages(20)
+    held.hold('c', 'Adnan Khan', 'a')
+    const m = held.mark()
+    held.hold('c', 'Adnan Khan', 'b')
+    expect(held.take('c', m)).toEqual(['Adnan Khan: a'])
+    expect(held.take('c')).toEqual(['Adnan Khan: b'])
+    expect(held.take('c')).toEqual([])
   })
 
   test('createHeldMessages caps the conversation count; re-holding moves a conversation to the back', () => {
@@ -309,54 +372,58 @@ describe('unmentioned filter', () => {
 
   test('createCommandFilter: exit codes, signals, timeouts, spawn errors and stdin', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cct-ufilter-'))
-    const write = (name: string, body: string) => {
-      const p = join(dir, name)
-      writeFileSync(p, body, { mode: 0o755 })
-      return p
+    try {
+      const write = (name: string, body: string) => {
+        const p = join(dir, name)
+        writeFileSync(p, body, { mode: 0o755 })
+        return p
+      }
+      const input: UnmentionedFilterInput = {
+        text: 'hi',
+        fromName: 'Adnan Khan',
+        conversationId: 'c1',
+        conversationType: 'channel',
+        botName: 'Bot',
+      }
+      const run = (cmd: string, timeoutMs = 5000) => createCommandFilter(cmd, timeoutMs)(input)
+
+      const d0 = await run(write('exit0.sh', '#!/bin/sh\nexit 0\n'))
+      expect(d0.verdict).toBe('deliver')
+      expect('reason' in d0).toBe(false)
+
+      expect(await run(write('exit1.sh', '#!/bin/sh\nexit 1\n'))).toEqual({ verdict: 'hold' })
+
+      const d3 = await run(write('exit3.sh', '#!/bin/sh\nexit 3\n'))
+      expect(d3.verdict).toBe('deliver')
+      expect(d3.reason).toBe('exit code 3')
+
+      const dkill = await run(write('kill.sh', '#!/bin/sh\nkill -9 $$\n'))
+      expect(dkill.verdict).toBe('deliver')
+      expect(dkill.reason).toBe('killed by SIGKILL')
+
+      const startedAt = Date.now()
+      const dtimed = await run(write('sleep.sh', '#!/bin/sh\nsleep 5\n'), 200)
+      expect(dtimed.verdict).toBe('deliver')
+      expect(dtimed.reason).toBe('timed out after 200 ms')
+      expect(Date.now() - startedAt).toBeLessThan(2000)
+
+      const dmissing = await run(join(dir, 'does-not-exist'))
+      expect(dmissing.verdict).toBe('deliver')
+      expect(dmissing.reason?.startsWith('spawn failed')).toBe(true)
+
+      const inJson = join(dir, 'in.json')
+      const dcat = await run(write('cat.sh', `#!/bin/sh\ncat > ${JSON.stringify(inJson)}\nexit 1\n`))
+      expect(dcat.verdict).toBe('hold')
+      expect(JSON.parse(readFileSync(inJson, 'utf8'))).toEqual(input)
+
+      const dbig = await createCommandFilter(write('noread.sh', '#!/bin/sh\nexit 1\n'), 5000)({
+        text: 'x'.repeat(300000),
+        conversationId: 'c1',
+      })
+      expect(dbig.verdict).toBe('hold')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
-    const input: UnmentionedFilterInput = {
-      text: 'hi',
-      fromName: 'Adnan Khan',
-      conversationId: 'c1',
-      conversationType: 'channel',
-      botName: 'Bot',
-    }
-    const run = (cmd: string, timeoutMs = 5000) => createCommandFilter(cmd, timeoutMs)(input)
-
-    const d0 = await run(write('exit0.sh', '#!/bin/sh\nexit 0\n'))
-    expect(d0.verdict).toBe('deliver')
-    expect('reason' in d0).toBe(false)
-
-    expect(await run(write('exit1.sh', '#!/bin/sh\nexit 1\n'))).toEqual({ verdict: 'hold' })
-
-    const d3 = await run(write('exit3.sh', '#!/bin/sh\nexit 3\n'))
-    expect(d3.verdict).toBe('deliver')
-    expect(d3.reason).toBe('exit code 3')
-
-    const dkill = await run(write('kill.sh', '#!/bin/sh\nkill -9 $$\n'))
-    expect(dkill.verdict).toBe('deliver')
-    expect(dkill.reason).toBe('killed by SIGKILL')
-
-    const startedAt = Date.now()
-    const dtimed = await run(write('sleep.sh', '#!/bin/sh\nsleep 5\n'), 200)
-    expect(dtimed.verdict).toBe('deliver')
-    expect(dtimed.reason).toBe('timed out after 200 ms')
-    expect(Date.now() - startedAt).toBeLessThan(2000)
-
-    const dmissing = await run(join(dir, 'does-not-exist'))
-    expect(dmissing.verdict).toBe('deliver')
-    expect(dmissing.reason?.startsWith('spawn failed')).toBe(true)
-
-    const inJson = join(dir, 'in.json')
-    const dcat = await run(write('cat.sh', `#!/bin/sh\ncat > ${JSON.stringify(inJson)}\nexit 1\n`))
-    expect(dcat.verdict).toBe('hold')
-    expect(JSON.parse(readFileSync(inJson, 'utf8'))).toEqual(input)
-
-    const dbig = await createCommandFilter(write('noread.sh', '#!/bin/sh\nexit 1\n'), 5000)({
-      text: 'x'.repeat(300000),
-      conversationId: 'c1',
-    })
-    expect(dbig.verdict).toBe('hold')
   })
 
   test('loadConfig reads the unmentioned-filter variables from process.env', () => {
@@ -414,6 +481,7 @@ describe('unmentioned filter', () => {
       expect(cfg.unmentionedHistoryLimit).toBe(5)
     } finally {
       for (const k of keys) set(k, saved[k])
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })
