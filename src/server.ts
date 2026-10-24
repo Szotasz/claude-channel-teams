@@ -48,6 +48,7 @@ import { createReplySender } from './teams/reply.js'
 import { createConversationRefStore } from './teams/conversationRefs.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
+import { withSendRetry } from './teams/sendRetry.js'
 import { createFileSender } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createAllowlist } from './pairing/allowlist.js'
@@ -229,7 +230,7 @@ async function sendActivityRaw(
     config.appId,
     ref,
     async turnContext => {
-      await turnContext.sendActivity({ type: 'message', text })
+      await withSendRetry('send', () => turnContext.sendActivity({ type: 'message', text }))
     },
   )
 }
