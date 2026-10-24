@@ -289,6 +289,11 @@ export interface Config {
    * delivered. From TEAMS_FEEDBACK ('1' or 'true'); see docs/feedback.md.
    */
   feedback: boolean
+  /**
+   * Whether channel created / renamed / deleted / restored events are delivered to Claude.
+   * From TEAMS_CHANNEL_EVENTS ('1' or 'true'); see docs/channel-events.md.
+   */
+  channelEvents: boolean
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -586,5 +591,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     timeZone: resolveTimeZone(env),
     activityFeed: env.TEAMS_ACTIVITY_FEED === '1',
     feedback: parseFlag(env.TEAMS_FEEDBACK),
+    channelEvents: parseFlag(env.TEAMS_CHANNEL_EVENTS),
   })
 }
