@@ -10,7 +10,8 @@
  * bot answer after a restart. They are re-checked against the allowlist on
  * load (and the existing outbound gate still checks every send), and a
  * reference whose serviceUrl is not the Teams service host is never loaded.
- * Without `file` the store is in-memory only.
+ * Without `file` the store is in-memory only. Only the fields needed to send are written (no display names),
+ * and a file that is a symlink, not a regular file, or another user's is ignored with one stderr line.
  *
  * We also track which AAD ObjectID originally seeded each reference. The
  * outbound gate (`assertAllowedConversation`) uses this mapping to refuse
@@ -20,7 +21,18 @@
  */
 
 import type { ConversationReference } from 'botbuilder'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'fs'
 import { randomBytes } from 'crypto'
 import { dirname } from 'path'
 import { isAllowedInlineImageHost } from './attachments.js'
@@ -46,6 +58,32 @@ export function isPersonalReference(ref: Partial<ConversationReference> | undefi
   return true
 }
 
+/** The fields of a reference that are needed to send; no display names or other keys. */
+export function storedReference(ref: Partial<ConversationReference>): Partial<ConversationReference> {
+  const out: Record<string, unknown> = {}
+  const r = (ref ?? {}) as Record<string, any>
+  for (const k of ['activityId', 'channelId', 'locale', 'serviceUrl']) {
+    if (typeof r[k] === 'string') out[k] = r[k]
+  }
+  const conv = r.conversation
+  if (conv && typeof conv === 'object' && typeof conv.id === 'string') {
+    const c: Record<string, unknown> = { id: conv.id }
+    if (typeof conv.conversationType === 'string') c.conversationType = conv.conversationType
+    if (typeof conv.tenantId === 'string') c.tenantId = conv.tenantId
+    if (typeof conv.isGroup === 'boolean') c.isGroup = conv.isGroup
+    out.conversation = c
+  }
+  const bot = r.bot
+  if (bot && typeof bot === 'object' && typeof bot.id === 'string') out.bot = { id: bot.id }
+  const user = r.user
+  if (user && typeof user === 'object' && typeof user.id === 'string') {
+    const u: Record<string, unknown> = { id: user.id }
+    if (typeof user.aadObjectId === 'string') u.aadObjectId = user.aadObjectId
+    out.user = u
+  }
+  return out as Partial<ConversationReference>
+}
+
 export interface ConversationRefStore {
   put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string): void
   get(conversationId: string): StoredRef | undefined
@@ -69,6 +107,8 @@ export interface RefStoreOptions {
   now?: () => number
   /** Keep at most this many references, the most recently seen ones (default 1000). */
   maxEntries?: number
+  /** Owner check override for tests (default: process.getuid). */
+  uid?: () => number | undefined
 }
 
 function errMsg(err: unknown): string {
@@ -104,11 +144,40 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
   const maxEntries = opts.maxEntries ?? 1000
   const file = opts.file
 
-  function load(path: string): void {
-    if (!existsSync(path)) return
+  /** Loads the file; returns its text when it was parsed (so the caller can rewrite it), else undefined. */
+  function load(path: string): string | undefined {
+    let fd: number
+    try {
+      // O_NONBLOCK: opening a FIFO here must not hang startup before the regular-file check below.
+      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') return undefined
+      process.stderr.write(`teams channel: conversation-refs file cannot be opened (${err?.code === 'ELOOP' ? 'a symlink' : errMsg(err)}), starting empty\n`)
+      return undefined
+    }
+    let text: string
+    try {
+      const st = fstatSync(fd)
+      if (!st.isFile()) {
+        process.stderr.write('teams channel: conversation-refs file is not a regular file, starting empty\n')
+        return undefined
+      }
+      const me = (opts.uid ?? (() => (typeof process.getuid === 'function' ? process.getuid() : undefined)))()
+      if (me !== undefined && st.uid !== me) {
+        process.stderr.write('teams channel: conversation-refs file belongs to another user, starting empty\n')
+        return undefined
+      }
+      text = readFileSync(fd, 'utf8')
+    } catch (err) {
+      process.stderr.write(`teams channel: conversation-refs file cannot be read (${errMsg(err)}), starting empty\n`)
+      return undefined
+    } finally {
+      // A failing close must not crash startup either.
+      try { closeSync(fd) } catch {}
+    }
     let entries: unknown[]
     try {
-      const parsed = JSON.parse(readFileSync(path, 'utf8'))
+      const parsed = JSON.parse(text)
       if (!parsed || typeof parsed !== 'object' || parsed.version !== 1 || !Array.isArray(parsed.refs)) {
         throw new Error('unexpected format')
       }
@@ -117,7 +186,7 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
       process.stderr.write(
         `teams channel: conversation-refs file unreadable, starting empty (${errMsg(err)})\n`,
       )
-      return
+      return undefined
     }
     let dropped = 0
     const kept: Array<[string, StoredRef]> = []
@@ -136,7 +205,8 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
       }
       kept.push([
         e.conversationId,
-        { ref: e.ref, aadObjectId: String(e.aadObjectId).toLowerCase(), lastSeen: e.lastSeen },
+        // A file written before this version may hold full references; keep only the fields needed to send.
+        { ref: storedReference(e.ref), aadObjectId: String(e.aadObjectId).toLowerCase(), lastSeen: Math.min(e.lastSeen, now()) },
       ])
     }
     // Newest first; a conversation listed twice keeps its most recent entry.
@@ -148,16 +218,19 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
     if (dropped > 0) {
       process.stderr.write(`teams channel: dropped ${dropped} stored conversation reference(s) on load\n`)
     }
+    return text
   }
 
-  function save(path: string): void {
+  function save(path: string, unlessSameAs?: string): void {
     let tmp: string | undefined
     try {
+      const refs = [...store].map(([conversationId, s]) => ({ conversationId, ...s, ref: storedReference(s.ref) }))
+      const content = JSON.stringify({ version: 1, refs })
+      if (content === unlessSameAs) return
       const dir = dirname(path)
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
       tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`
-      const refs = [...store].map(([conversationId, s]) => ({ conversationId, ...s }))
-      writeFileSync(tmp, JSON.stringify({ version: 1, refs }), { mode: 0o600 })
+      writeFileSync(tmp, content, { mode: 0o600 })
       renameSync(tmp, path)
     } catch (err) {
       if (tmp) {
@@ -167,7 +240,12 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
     }
   }
 
-  if (file) load(file)
+  if (file) {
+    // Rewrite a parsed file at once when its content changes (fields an earlier version kept, dropped entries), so
+    // nothing that is not needed to send stays on disk. A refused or unparseable file is left alone.
+    const original = load(file)
+    if (original !== undefined) save(file, original)
+  }
 
   return {
     put(conversationId, ref, aadObjectId) {

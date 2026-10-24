@@ -87,8 +87,7 @@ describe('conversation refs persistence', () => {
     expect(createConversationRefStore({ file }).size()).toBe(0)
   })
 
-  test('P9 write failure does not throw', () => {
-    if (process.getuid?.() === 0) return
+  test.skipIf(process.getuid?.() === 0)('P9 write failure does not throw', () => {
     const ro = join(dir, 'ro')
     mkdirSync(ro)
     chmodSync(ro, 0o500)
