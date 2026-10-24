@@ -41,6 +41,12 @@ export function parsePlannerPlanIds(raw: string | undefined): ReadonlySet<string
   return ids
 }
 
+/** A boolean env flag: true only for '1' or 'true' (trimmed, case-insensitive). */
+export function parseFlag(raw: string | undefined): boolean {
+  const v = (raw ?? '').trim().toLowerCase()
+  return v === '1' || v === 'true'
+}
+
 export interface Config {
   /**
    * Shared conversations (channel or group chat) in which an allowlisted
@@ -108,6 +114,16 @@ export interface Config {
    * see docs/planner.md.
    */
   plannerPlanIds: ReadonlySet<string>
+  /**
+   * Whether the status_update tool is offered (1:1 chats only). From
+   * TEAMS_STATUS_UPDATES ('1' or 'true'); see docs/status-updates.md.
+   */
+  statusUpdates: boolean
+  /**
+   * Whether replies carry Teams' thumbs up / down buttons and clicks are
+   * delivered. From TEAMS_FEEDBACK ('1' or 'true'); see docs/feedback.md.
+   */
+  feedback: boolean
 }
 
 /**
@@ -288,5 +304,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sendableFilesRoot,
     filesBaseUrl: resolveFilesBaseUrl(env),
     plannerPlanIds,
+    statusUpdates: parseFlag(env.TEAMS_STATUS_UPDATES),
+    feedback: parseFlag(env.TEAMS_FEEDBACK),
   })
 }

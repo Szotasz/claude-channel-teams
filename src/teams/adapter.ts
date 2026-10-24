@@ -35,6 +35,7 @@ import {
   type ConversationReference,
 } from 'botbuilder'
 import type { Attachment } from 'botframework-schema'
+import { isFeedbackInvoke, parseFeedback, feedbackEventText } from './feedback.js'
 import type { Config } from '../config.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { PendingStore } from '../pairing/pair.js'
@@ -73,6 +74,8 @@ export type ChannelEventSink = (event: {
   mentioned?: boolean
   /** Set when the event is about an earlier, already delivered message. */
   messageEvent?: 'edited' | 'restored' | 'deleted'
+  /** Set when the event is a feedback click on an earlier bot message (message_id). */
+  feedback?: 'like' | 'dislike'
 }) => void
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
@@ -82,6 +85,8 @@ export type PairingDmSender = (
 ) => Promise<void>
 
 export interface AdapterDeps {
+  /** Whether feedback clicks are delivered (TEAMS_FEEDBACK). Optional so existing tests still wire. */
+  feedback?: boolean
   config: Config
   adapter: CloudAdapter
   allowlist: Allowlist
@@ -248,6 +253,35 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
       : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
       : undefined
+    if (isFeedbackInvoke(a)) {
+      // Teams waits for an answer to every feedback click, also one we do not deliver.
+      await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200 } } as Partial<Activity>)
+      if (!deps.feedback) return
+      const fbAad = a.from?.aadObjectId?.toLowerCase()
+      const fbTenant = a.conversation?.tenantId
+      const fbConversation = a.conversation?.id
+      // A click is about one bot message: without it there is nothing to rate.
+      const fbMessageId = typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : undefined
+      if (!fbAad || !fbConversation || !fbMessageId) return
+      if (deps.config.tenantId && fbTenant && fbTenant.toLowerCase() !== deps.config.tenantId.toLowerCase()) return
+      if (!deps.allowlist.isAllowed(fbAad)) {
+        process.stderr.write(`teams channel: drop feedback from a sender not on the allowlist (${fbAad})\n`)
+        return
+      }
+      const parsed = parseFeedback(a.value)
+      if (!parsed) return
+      deps.onEvent({
+        text: feedbackEventText(parsed),
+        conversationId: fbConversation,
+        aadObjectId: fbAad,
+        tenantId: fbTenant ?? deps.config.tenantId,
+        fromName: a.from?.name ?? '',
+        messageId: fbMessageId,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        feedback: parsed.reaction,
+      })
+      return
+    }
     if (a.type !== 'message' && !messageEvent) return
 
     const aadObjectIdRaw = a.from?.aadObjectId
