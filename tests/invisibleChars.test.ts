@@ -70,6 +70,16 @@ describe('invisible character stripping', () => {
     expect(r.counts).toEqual({ tag: 3, zwsp: 0, bidi: 0, bom: 0 })
   })
 
+  test('I4d a flag with tag digits, and one with seven tag characters (the upper bound), are kept whole', () => {
+    const withDigits = '\u{1F3F4}\u{E0075}\u{E0073}\u{E0030}\u{E0031}\u{E007F}'
+    const seven = '\u{1F3F4}' + '\u{E0061}'.repeat(7) + '\u{E007F}'
+    for (const flag of [withDigits, seven]) {
+      const r = stripInvisible(flag)
+      expect(r.text).toBe(flag)
+      expect(r.counts).toEqual({ tag: 0, zwsp: 0, bidi: 0, bom: 0 })
+    }
+  })
+
   test('I5 ZWJ sequences, ZWNJ and variation selectors are kept identical', () => {
     const family = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}'
     const input = `${family} says na\u{200C}ive \u{2764}\u{FE0F}`
