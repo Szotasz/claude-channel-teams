@@ -764,8 +764,9 @@ const onEvent: ChannelEventSink = event => {
 // Opt-in (TEAMS_INBOUND_DEBOUNCE_MS): the listener pushes into the debouncer
 // and it delivers to onEvent, so quick successive fragments from one sender
 // arrive as one event instead of the first one starting a turn on half a
-// request. With the window at 0 this is a pass-through. flushAll() runs first
-// on shutdown, so nothing buffered is lost.
+// request. With the window at 0 this is a pass-through. stop() runs first on
+// shutdown: it delivers what is held and lets every later message (one still in
+// flight in the listener) straight through, so nothing buffered is lost.
 const inboundDebouncer = createInboundDebouncer({ windowMs: config.inboundDebounceMs, deliver: onEvent })
 
 // ── Boot ────────────────────────────────────────────────────────────────────
@@ -805,7 +806,7 @@ async function shutdown(): Promise<void> {
   shuttingDown = true
   process.stderr.write('teams channel: shutting down\n')
   try {
-    inboundDebouncer.flushAll()
+    inboundDebouncer.stop()
     permission.clear()
     typingPump.stopAll()
     outbox.shutdown()

@@ -273,4 +273,70 @@ describe('inbound debounce', () => {
     expect(merged.merged!.messageIds.length).toBe(20)
     expect(merged.merged!.messageIds).not.toContain('m21') // has an id, but sits past the 20-id cap
   })
+
+  test('B9 a slash command hidden behind an invisible character is still a command', () => {
+    const { delivered, debouncer } = makeHarness({ windowMs: 1500 })
+    const a = fragment({ text: 'a' })
+    const cmd = fragment({ text: '\u{200B}/status' })
+    debouncer.push(a)
+    debouncer.push(cmd)
+    expect(delivered).toEqual([a, cmd]) // the held fragment first, then the command, unchanged
+    expect(debouncer.pending()).toBe(0)
+  })
+
+  test('B10 stop() flushes, and every later message goes straight through', () => {
+    const { clock, delivered, debouncer } = makeHarness({ windowMs: 1500 })
+    const a = fragment({ text: 'a' })
+    debouncer.push(a)
+    debouncer.stop()
+    expect(delivered).toEqual([a])
+    const late = fragment({ text: 'late' })
+    debouncer.push(late) // arrives while the listener is still stopping
+    expect(delivered).toEqual([a, late])
+    expect(debouncer.pending()).toBe(0)
+    expect(clock.live()).toBe(0)
+  })
+
+  test('B11 a fragment that comes after the cap flushes at once, without waiting for a timer', () => {
+    // A clock whose timers never fire: the event loop is late, as it can be under load.
+    let t = 0
+    const delivered: Ev[] = []
+    const debouncer = createInboundDebouncer({
+      windowMs: 1500,
+      deliver: event => delivered.push(event),
+      now: () => t,
+      setTimer: () => 0,
+      clearTimer: () => {},
+    })
+    debouncer.push(fragment({ text: 'a' }))
+    t = 1000
+    debouncer.push(fragment({ text: 'b' }))
+    expect(delivered.length).toBe(0)
+    t = 4600 // past the 3 x 1500 ms cap counted from the first fragment
+    debouncer.push(fragment({ text: 'c' }))
+    expect(delivered.length).toBe(1)
+    expect(delivered[0]!.text).toBe('a\nb\nc')
+    expect(debouncer.pending()).toBe(0)
+  })
+
+  test('B12 a delivery that throws for one sender does not stop the flush of the others', () => {
+    const delivered: Ev[] = []
+    const clock = fakeClock()
+    const debouncer = createInboundDebouncer({
+      windowMs: 1500,
+      deliver: event => {
+        if (event.text === 'boom') throw new Error('notify failed')
+        delivered.push(event)
+      },
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    })
+    debouncer.push(fragment({ text: 'boom', aadObjectId: 'aad-1' }))
+    const other = fragment({ text: 'ok', aadObjectId: 'aad-2' })
+    debouncer.push(other)
+    expect(() => debouncer.flushAll()).not.toThrow()
+    expect(delivered).toEqual([other])
+    expect(debouncer.pending()).toBe(0)
+  })
 })

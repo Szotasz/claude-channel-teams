@@ -253,6 +253,11 @@ describe('inbound meta', () => {
     expect(dirty.merged_message_ids).toBe(metaText('m"1,m<2'))
     expect(dirty.merged_message_ids).toBe('m 1,m 2')
     expect(dirty.merged_message_ids).not.toContain('"')
+    // An id that sanitises to nothing is left out; when none is left, the key is omitted (never undefined or ',').
+    expect(channelEventMeta({ ...base, merged: { count: 2, messageIds: ['"', 'm2'] } }).merged_message_ids).toBe('m2')
+    const empty = channelEventMeta({ ...base, merged: { count: 2, messageIds: ['"', '<>'] } })
+    expect(empty.merged_count).toBe('2')
+    expect('merged_message_ids' in empty).toBe(false)
     // No merged message: neither key exists.
     const plain = channelEventMeta(base)
     expect(plain.merged_count).toBeUndefined()

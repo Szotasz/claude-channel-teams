@@ -21,6 +21,7 @@
  */
 
 import type { ChannelEventSink } from './adapter.js'
+import { stripInvisible } from './invisibleChars.js'
 
 type Ev = Parameters<ChannelEventSink>[0]
 
@@ -34,7 +35,9 @@ function isImmediate(event: Ev): boolean {
   return (
     event.messageEvent !== undefined ||
     event.hasAttachments === true ||
-    event.text.trimStart().startsWith('/')
+    // Read the command the way the model will see it: onEvent strips invisible characters after this, so a
+    // zero-width character in front of the slash must not turn a command into a held fragment.
+    stripInvisible(event.text).text.trimStart().startsWith('/')
   )
 }
 
@@ -56,7 +59,7 @@ export function createInboundDebouncer(opts: {
   now?: () => number
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (handle: unknown) => void
-}): { push(event: Ev): void; flushAll(): void; pending(): number } {
+}): { push(event: Ev): void; flushAll(): void; stop(): void; pending(): number } {
   const deliver = opts.deliver
   const maxMergedIds = opts.maxMergedIds ?? 20
   const setTimer = opts.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
@@ -68,6 +71,7 @@ export function createInboundDebouncer(opts: {
         deliver(event)
       },
       flushAll() {},
+      stop() {},
       pending() {
         return 0
       },
@@ -104,13 +108,27 @@ export function createInboundDebouncer(opts: {
     })
   }
 
+  // After stop() (shutdown) nothing is held any more: a message that was still in flight in the listener goes straight
+  // through instead of waiting for a timer that will not fire before the process exits.
+  let stopped = false
+
+  // A flush that throws (the notification could not be built) must neither escape a timer callback nor stop the
+  // flush of the other senders.
+  function safeFlush(key: string): void {
+    try {
+      flushKey(key)
+    } catch (err) {
+      process.stderr.write(`teams channel: inbound debounce flush failed: ${err instanceof Error ? err.message : String(err)}\n`)
+    }
+  }
+
   return {
     push(event) {
       const key = bufferKey(event)
-      if (isImmediate(event)) {
+      if (stopped || isImmediate(event)) {
         // What is already pending for this sender goes first, the urgent one
-        // right behind it.
-        flushKey(key)
+        // right behind it. A pending burst that fails to go out must not take the urgent one with it.
+        safeFlush(key)
         deliver(event)
         return
       }
@@ -123,11 +141,20 @@ export function createInboundDebouncer(opts: {
       clearTimer(buffered.timer)
       // The window resets with every fragment, but a merged message never waits
       // longer than maxWaitMs counted from the first one.
-      const delay = Math.max(0, Math.min(windowMs, buffered.firstAt + maxWaitMs - now()))
-      buffered.timer = setTimer(() => flushKey(key), delay)
+      const remaining = buffered.firstAt + maxWaitMs - now()
+      if (remaining <= 0) {
+        // Past the cap already (a late event loop): hand the burst over now instead of queueing another timer.
+        safeFlush(key)
+        return
+      }
+      buffered.timer = setTimer(() => safeFlush(key), Math.min(windowMs, remaining))
     },
     flushAll() {
-      for (const key of [...buffers.keys()]) flushKey(key)
+      for (const key of [...buffers.keys()]) safeFlush(key)
+    },
+    stop() {
+      stopped = true
+      for (const key of [...buffers.keys()]) safeFlush(key)
     },
     pending() {
       let count = 0

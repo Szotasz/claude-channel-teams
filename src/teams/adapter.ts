@@ -122,6 +122,13 @@ export function threadIdFromConversationId(conversationId: string): string | und
   return metaText(end < 0 ? rest : rest.slice(0, end))
 }
 
+/** merged_count, and merged_message_ids built from the ids that survive metaText one by one (an id that sanitises
+ *  to nothing is left out, and the key is omitted when none is left), capped at 1000 characters. */
+function mergedMeta(merged: { count: number; messageIds: string[] }): Record<string, string> {
+  const ids = merged.messageIds.map(id => metaText(id, 200)).filter((id): id is string => id !== undefined)
+  return { merged_count: String(merged.count), ...(ids.length > 0 ? { merged_message_ids: ids.join(',').slice(0, 1000) } : {}) }
+}
+
 /** The meta of the channel notification for one event. Keys are snake_case: Claude Code drops a key that is not [A-Za-z0-9_]+. */
 export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record<string, string> {
   return {
@@ -141,8 +148,7 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.threadId !== undefined ? { thread_id: event.threadId } : {}),
     ...(event.replyToId !== undefined ? { reply_to_id: event.replyToId } : {}),
     ...(event.mentions !== undefined ? { mentions: event.mentions.join(', ') } : {}),
-    ...(event.merged ? { merged_count: String(event.merged.count),
-      ...(event.merged.messageIds.length > 0 ? { merged_message_ids: metaText(event.merged.messageIds.join(','), 1000)! } : {}) } : {}),
+    ...(event.merged ? mergedMeta(event.merged) : {}),
     ...(event.invisible ? invisibleMeta(event.invisible) : {}),
   }
 }

@@ -103,8 +103,8 @@ describe('server.ts wiring', () => {
   test('shutdown flushes whatever the debouncer is holding before anything else is torn down', () => {
     const shutdown = block(server, 'async function shutdown(): Promise<void> {')
     const tryBody = shutdown.slice(shutdown.indexOf('try {') + 'try {'.length)
-    expect(firstStatement(tryBody).startsWith('inboundDebouncer.flushAll()')).toBe(true)
-    expect(shutdown.indexOf('inboundDebouncer.flushAll()')).toBeLessThan(shutdown.indexOf('permission.clear()'))
+    expect(firstStatement(tryBody).startsWith('inboundDebouncer.stop()')).toBe(true)
+    expect(shutdown.indexOf('inboundDebouncer.stop()')).toBeLessThan(shutdown.indexOf('permission.clear()'))
   })
 
   test('the onEvent block still begins with the invisible-character strip line', () => {
