@@ -85,7 +85,11 @@ export function storedReference(ref: Partial<ConversationReference>): Partial<Co
 }
 
 export interface ConversationRefStore {
-  put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string): void
+  /**
+   * `opts.lastSeen` overrides the recency stamp. A chat the BOT opened (dm_member) is stored with 0: it is
+   * not activity from that user, and recency picks the permission-relay target.
+   */
+  put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string, opts?: { lastSeen?: number }): void
   get(conversationId: string): StoredRef | undefined
   size(): number
   /**
@@ -96,6 +100,20 @@ export interface ConversationRefStore {
   mostRecentConversationId(): string | undefined
   /** Like mostRecentConversationId(), but only over 1:1 chats (isPersonalReference). */
   mostRecentPersonalConversationId(): string | undefined
+  /**
+   * The conversation id of the most recently seen 1:1 chat with the given
+   * AAD Object ID (compared lowercase on both sides), or undefined when the
+   * bot has never seen a personal chat with that user. Used by `dm_member`
+   * to reuse an existing 1:1 conversation instead of opening a new one.
+   */
+  personalConversationIdFor(aadObjectId: string): string | undefined
+  /**
+   * The serviceUrl of the most recently seen stored reference. Every reference
+   * in the store was validated against the Teams service host on the way in,
+   * so any of them works as the endpoint for opening a new conversation.
+   * undefined when the store is empty — the connector then has no route.
+   */
+  serviceUrlHint(): string | undefined
 }
 
 export interface RefStoreOptions {
@@ -248,14 +266,14 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
   }
 
   return {
-    put(conversationId, ref, aadObjectId) {
+    put(conversationId, ref, aadObjectId, opts) {
       // We index by conversation.id because that's what Claude will pass
       // back via the reply tool. Lowercase the AAD ID at storage time so
       // the outbound gate's compare is symmetric with the inbound store.
       store.set(conversationId, {
         ref,
         aadObjectId: aadObjectId.toLowerCase(),
-        lastSeen: now(),
+        lastSeen: opts?.lastSeen ?? now(),
       })
       while (store.size > maxEntries) {
         let oldestId: string | undefined
@@ -281,7 +299,23 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
       return mostRecent(() => true)
     },
     mostRecentPersonalConversationId(): string | undefined {
-      return mostRecent(stored => isPersonalReference(stored.ref))
+      // lastSeen 0 = a chat the bot opened and the user never wrote in: never the permission-relay target.
+      return mostRecent(stored => stored.lastSeen > 0 && isPersonalReference(stored.ref))
+    },
+    personalConversationIdFor(aadObjectId: string): string | undefined {
+      const target = aadObjectId.trim().toLowerCase()
+      return mostRecent(
+        stored =>
+          isPersonalReference(stored.ref) && stored.aadObjectId.trim().toLowerCase() === target,
+      )
+    },
+    serviceUrlHint(): string | undefined {
+      const hasUrl = (stored: StoredRef) =>
+        typeof stored.ref.serviceUrl === 'string' && stored.ref.serviceUrl.length > 0
+      const id = mostRecent(hasUrl)
+      if (id === undefined) return undefined
+      const url = store.get(id)?.ref.serviceUrl
+      return typeof url === 'string' && url.length > 0 ? url : undefined
     },
   }
 }

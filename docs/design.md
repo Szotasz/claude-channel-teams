@@ -372,6 +372,21 @@ entity (`additionalType: ["AIGeneratedContent"]`, `citation: [...]`); the text
 refers to a citation as `[1]`, `[2]`. Citations are validated before anything is
 sent and nothing is truncated.
 
+`dm_member` sends a 1:1 message to a person instead of a conversation: Claude
+passes an Entra object id (the `aad_object_id` from `list_access` or an inbound
+message) and only allowlisted ids are accepted. When the bot already has a 1:1
+chat with that user it is reused through the normal `reply` path; otherwise the
+plugin asks the Bot Connector to open one, using the Entra object id as the
+member (that works in personal scope only) on the service URL of the most
+recently seen reference. The app must already be installed for that user: a 403
+is translated into an explanatory error that distinguishes a blocked or removed
+bot from a missing personal install. The new chat is stored in the conversation
+ref store before the first send, so `reply` works right away and the user's
+first answer updates the stored reference. The plugin never installs the app
+proactively: that would need `TeamsAppInstallation.ReadWriteSelfForUser.All`
+with admin consent and an app published to the catalog, so the user is asked to
+open the bot in Teams once instead.
+
 ### Error paths
 
 | Condition | Behaviour |

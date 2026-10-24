@@ -49,6 +49,7 @@ import { createReplySender } from './teams/reply.js'
 import { createConversationRefStore } from './teams/conversationRefs.js'
 import { createChannelRefStore } from './teams/channelRefs.js'
 import { createChannelPoster } from './teams/channelPost.js'
+import { createDirectMessenger } from './teams/directMessage.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { withSendRetry } from './teams/sendRetry.js'
@@ -214,6 +215,7 @@ try {
 
 const replier = createReplySender({ config, adapter, allowlist, refs, typingPump })
 const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
+const directMessenger = createDirectMessenger({ config, adapter, allowlist, refs, replier })
 
 const sendFile = createFileSender({
   config,
@@ -352,6 +354,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['conversation_id', 'text'],
+      },
+    },
+    {
+      name: 'dm_member',
+      description:
+        'Send a 1:1 Teams message to an allowlisted user by their Entra object id ' +
+        '(the aad_object_id from list_access or an inbound message), even if they never wrote to the bot 1:1. ' +
+        'Opens the chat if needed; the app must already be installed for that user (otherwise an explanatory error). ' +
+        'Text is markdown. Returns the conversation_id (usable with reply) and the message_id.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          aad_object_id: {
+            type: 'string',
+            description: 'Entra object id of an allowlisted user.',
+          },
+          text: { type: 'string', description: 'Message text (markdown).' },
+        },
+        required: ['aad_object_id', 'text'],
       },
     },
     {
@@ -530,6 +551,26 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             {
               type: 'text',
               text: id ? `sent (conv=${conversationId}, message_id=${id})` : `sent (conv=${conversationId})`,
+            },
+          ],
+        }
+      }
+
+      case 'dm_member': {
+        const aadObjectId = args.aad_object_id
+        const text = args.text
+        if (typeof aadObjectId !== 'string' || aadObjectId.length === 0) {
+          throw new Error('dm_member requires a non-empty aad_object_id string')
+        }
+        if (typeof text !== 'string' || text.length === 0) {
+          throw new Error('dm_member requires a non-empty text string')
+        }
+        const r = await directMessenger.dmMember(aadObjectId, text)
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `sent (conv=${r.conversationId}${r.messageId ? `, message_id=${r.messageId}` : ''}, new_chat=${r.created})`,
             },
           ],
         }
