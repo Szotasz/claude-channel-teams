@@ -41,6 +41,7 @@ import type { PendingStore } from '../pairing/pair.js'
 import type { PermissionRelay } from '../permission/relay.js'
 import { PERMISSION_REPLY_RE } from '../permission/relay.js'
 import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
+import { channelEventFrom, channelEventText } from './channelEvents.js'
 import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
@@ -73,6 +74,8 @@ export type ChannelEventSink = (event: {
   mentioned?: boolean
   /** Set when the event is about an earlier, already delivered message. */
   messageEvent?: 'edited' | 'restored' | 'deleted'
+  /** Set when the event is a channel change in a team (not a message). */
+  channelEvent?: { kind: 'created' | 'renamed' | 'deleted' | 'restored'; channelId: string; channelName?: string; teamId?: string }
 }) => void
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
@@ -83,6 +86,8 @@ export type PairingDmSender = (
 
 export interface AdapterDeps {
   config: Config
+  /** Whether channel events are delivered (TEAMS_CHANNEL_EVENTS). Optional so existing tests still wire. */
+  channelEvents?: boolean
   adapter: CloudAdapter
   allowlist: Allowlist
   refs: ConversationRefStore
@@ -233,6 +238,10 @@ export function baseConversationId(conversationId: string): string {
  * TurnContext — bypassing the JWT validator (which requires Microsoft-signed
  * tokens, impractical to produce in tests).
  */
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
 export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promise<void> {
   return async function turn(ctx: TurnContext) {
     const a = ctx.activity
@@ -248,6 +257,30 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
       : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
       : undefined
+    const channelEvent = channelEventFrom(a)
+    if (channelEvent) {
+      if (!deps.channelEvents) return
+      const evTenant = a.conversation?.tenantId ?? (isObject(a.channelData) && isObject(a.channelData.tenant) && typeof a.channelData.tenant.id === 'string' ? a.channelData.tenant.id : undefined)
+      if (deps.config.tenantId && evTenant && evTenant.toLowerCase() !== deps.config.tenantId.toLowerCase()) return
+      const evConversation = a.conversation?.id
+      if (!evConversation) return
+      deps.onEvent({
+        text: channelEventText(channelEvent),
+        conversationId: evConversation,
+        // Empty on purpose: elsewhere aad_object_id is an allowlisted sender, and whoever changed the channel is not checked.
+        aadObjectId: '',
+        tenantId: evTenant ?? deps.config.tenantId,
+        fromName: '',
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        channelEvent: {
+          kind: channelEvent.kind,
+          channelId: channelEvent.channelId,
+          ...(channelEvent.channelName ? { channelName: channelEvent.channelName } : {}),
+          ...(channelEvent.teamId ? { teamId: channelEvent.teamId } : {}),
+        },
+      })
+      return
+    }
     if (a.type !== 'message' && !messageEvent) return
 
     const aadObjectIdRaw = a.from?.aadObjectId

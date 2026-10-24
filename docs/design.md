@@ -321,7 +321,7 @@ We point at Microsoft's documentation for these in
    members are trusted with permission verdicts.)
 10. Otherwise emit `notifications/claude/channel`.
 
-**Edit / delete / restore events.** `messageUpdate` (`editMessage`, `undeleteMessage`) and `messageDelete` (`softDeleteMessage`) activities are forwarded as channel events with `message_event="edited" | "restored" | "deleted"` and the id of the affected message. The delivered-message rule: the plugin keeps a bounded in-memory record (500 ids per conversation, 1000 conversations) of messages it delivered, with their sender. An update is forwarded only if that record has the message (keeps the @mention gate meaningful), the sender is the original sender and is still allowlisted. Anything else is dropped; these events never pair and never send anything to Teams.
+**Edit / delete / restore events.** `messageUpdate` (`editMessage`, `undeleteMessage`) and `messageDelete` (`softDeleteMessage`) activities are forwarded as channel events with `message_event="edited" | "restored" | "deleted"` and the id of the affected message. The delivered-message rule: the plugin keeps a bounded in-memory record (500 ids per conversation, 1000 conversations) of messages it delivered, with their sender. An update is forwarded only if that record has the message (keeps the @mention gate meaningful), the sender is the original sender and is still allowlisted. Anything else is dropped; these events never pair and never send anything to Teams. With TEAMS_CHANNEL_EVENTS, channel created / renamed / deleted / restored events are delivered too; see docs/channel-events.md.
 
 ### Outbound (Claude → Teams)
 
