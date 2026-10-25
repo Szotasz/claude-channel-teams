@@ -39,4 +39,17 @@ This covers scheduled meetings in a private chat (the chats where the app is ins
 administrator would grant `OnlineMeetingTranscript.Read.All` with an application access policy, which this plugin
 does not set up.
 
+## Known prerequisite: an application access policy
+
+Microsoft's Graph reference for both calls the tool makes,
+[List transcripts](https://learn.microsoft.com/en-us/graph/api/onlinemeeting-list-transcripts) and
+[Get callTranscript](https://learn.microsoft.com/en-us/graph/api/calltranscript-get), says that to use application
+permissions, a tenant administrator must create an application access policy and grant it to a user. The same pages
+describe `OnlineMeetingTranscript.Read.Chat` as resource-specific consent and do not say whether that path needs the
+policy too. Plan for it: a Teams administrator creates a policy with the bot's app id (`New-CsApplicationAccessPolicy`
+in Teams PowerShell) and grants it to the meeting organizers, as described in
+[Configure an application access policy](https://learn.microsoft.com/en-us/graph/cloud-communication-online-meeting-application-access-policy).
+That page notes that a policy change can take up to 30 minutes to reach Graph. If the policy is missing and Graph
+answers 403, the tool returns the `not allowed to read this transcript: ...` message above.
+
 Not measured against a live Teams tenant, including whether the tenant also requires an application access policy for the chat-scoped permission.
