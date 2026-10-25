@@ -113,14 +113,14 @@ describe('meetingEventText', () => {
   })
 })
 
-function setup(meetingEvents?: boolean) {
+function setup(meetingEvents?: boolean, tenantId: string = TENANT_ID) {
   const dir = mkdtempSync(join(tmpdir(), 'cct-meeting-'))
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(USER)
   const events: any[] = []
   const config = {
     stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p',
-    appType: 'SingleTenant', tenantId: TENANT_ID, bindHost: '127.0.0.1', port: 0,
+    appType: 'SingleTenant', tenantId, bindHost: '127.0.0.1', port: 0,
     receivedFilesDir: '/tmp/unused',
   }
   const turn = makeTurnHandler({
@@ -256,6 +256,35 @@ describe('meeting events in the turn handler', () => {
     }))
     expect(s.events.length).toBe(1)
     expect(s.events[0].tenantId).toBe(TENANT_ID)
+  })
+
+  test('E14 any one tenant that disagrees drops the event', async () => {
+    const foreign = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const cases: Array<[unknown, string]> = [[TENANT_ID, foreign], [foreign, TENANT_ID], [5, foreign]]
+    for (const [convTenant, dataTenant] of cases) {
+      const s = setup(true)
+      await s.run(meetingActivity({
+        conversation: { id: CONVERSATION_ID, tenantId: convTenant },
+        channelData: { tenant: { id: dataTenant }, meeting: { id: 'MEETING-ID' } },
+      }))
+      expect(s.events.length).toBe(0)
+    }
+  })
+
+  test('E15 the tenant comparison ignores case', async () => {
+    const pinned = 'abcdef00-0000-4000-8000-0000000000aa'
+    const s = setup(true, pinned)
+    await s.run(meetingActivity({
+      conversation: { id: CONVERSATION_ID, tenantId: pinned.toUpperCase() },
+      channelData: { tenant: { id: pinned.toUpperCase() }, meeting: { id: 'MEETING-ID' } },
+    }))
+    expect(s.events.length).toBe(1)
+    const upperPinned = setup(true, pinned.toUpperCase())
+    await upperPinned.run(meetingActivity({
+      conversation: { id: CONVERSATION_ID, tenantId: pinned },
+      channelData: { tenant: { id: pinned }, meeting: { id: 'MEETING-ID' } },
+    }))
+    expect(upperPinned.events.length).toBe(1)
   })
 
   test('E11 an empty or array conversation id is dropped', async () => {
