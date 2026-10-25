@@ -240,6 +240,9 @@ export interface AdapterDeps {
   meetingStore?: MeetingStore
   /** Looks up a meeting's Graph id and organizer; defaults to TeamsInfo.getMeetingInfo. Injectable for tests. */
   getMeetingInfo?: (ctx: TurnContext, meetingId: string) => Promise<unknown>
+  /** How long the meeting-info lookup after a meeting event may take, in milliseconds (default 5000).
+   *  A lookup that takes longer is given up on. Injectable so tests can use a short one. */
+  meetingInfoTimeoutMs?: number
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -510,14 +513,31 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         },
       })
       // Remember the meeting's Graph id and organizer so get_meeting_transcript can find its transcript later. A failed
-      // lookup must not affect the delivered event.
+      // lookup must not affect the delivered event, and a hanging one must not hold the turn open.
       if (deps.meetingStore && meetingId !== undefined && meeting.meetingId !== undefined) {
+        let timedOut = false
+        let stopTimer = (): void => {}
         try {
-          const info = await (deps.getMeetingInfo ?? ((c: TurnContext, id: string) => TeamsInfo.getMeetingInfo(c, id)))(ctx, meeting.meetingId)
-          const m = meetingFromInfo(info)
-          if (m) deps.meetingStore.put(meetingId, { ...m, conversationId: evConversation, ...(evTenant ? { tenantId: evTenant } : {}) })
-          else process.stderr.write('teams channel: meeting info without a usable Graph id or organizer\n')
+          // Inside the try, so a lookup that throws synchronously is a failed lookup too.
+          const lookup = (deps.getMeetingInfo ?? ((c: TurnContext, id: string) => TeamsInfo.getMeetingInfo(c, id)))(ctx, meeting.meetingId)
+          const info = await new Promise<unknown>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              timedOut = true
+              process.stderr.write('teams channel: meeting info lookup timed out\n')
+              resolve(undefined)
+            }, deps.meetingInfoTimeoutMs ?? 5000)
+            stopTimer = () => clearTimeout(timer)
+            lookup.then(resolve, reject)
+          })
+          stopTimer()
+          // A result (or a rejection) that arrives after the timeout is ignored.
+          if (!timedOut) {
+            const m = meetingFromInfo(info)
+            if (m) deps.meetingStore.put(meetingId, { ...m, conversationId: evConversation, ...(evTenant ? { tenantId: evTenant } : {}) })
+            else process.stderr.write('teams channel: meeting info without a usable Graph id or organizer\n')
+          }
         } catch {
+          stopTimer()
           process.stderr.write('teams channel: meeting info lookup failed\n')
         }
       }

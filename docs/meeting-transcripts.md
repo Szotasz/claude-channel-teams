@@ -2,8 +2,9 @@
 
 With `TEAMS_MEETING_TRANSCRIPTS=1` (or `true`) Claude gets a `get_meeting_transcript` tool. It takes the
 `meeting_id` of a `meeting_event` tag (see [meeting-events.md](meeting-events.md)) and returns the newest transcript
-of that meeting as plain text: one line per cue, `<v Speaker Name>` cues become `Speaker Name: <text>`, and the
-result is capped at 60000 characters (`[transcript truncated]` marks a cut).
+of that meeting as plain text: one line per cue, `<v Speaker Name>` cues become `Speaker Name: <text>`. The
+transcript text is at most 60000 characters (`MAX_TRANSCRIPT_CHARS`) including the `[transcript truncated]` notice
+that marks a cut, and one header line of at most about 300 characters comes before it.
 
 This is off by default. It needs all of:
 

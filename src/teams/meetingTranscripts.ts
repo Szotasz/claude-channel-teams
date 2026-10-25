@@ -26,17 +26,65 @@ export interface MeetingStore {
 
 export const MAX_STORED_MEETINGS = 200
 
+export const GRAPH_MEETING_ID_RE = /^[A-Za-z0-9+/=_-]{1,1024}$/
+export const GUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** The one cleaner every text the tool returns goes through: each control and bidi character becomes one space. */
+export function cleanOutputText(s: string): string {
+  return s
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]/g, ' ')
+    .replace(/ +/g, ' ')
+    .trim()
+}
+
+/** A meeting title for output: no quotes or angle brackets (it lands in a quoted header line), no control or bidi characters, at most 200 characters. */
+export function cleanTitle(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const cleaned = cleanOutputText(value.replace(/["<>]/g, ' ')).slice(0, 200).trim()
+  return cleaned === '' ? undefined : cleaned
+}
+
 type FileShape = { version: 1; entries: Record<string, StoredMeeting> }
 
+/** The file is state written by an older run: read it back field by field, drop what is not a stored meeting any more. */
 function readEntries(path: string): Record<string, StoredMeeting> {
+  const out: Record<string, StoredMeeting> = Object.create(null)
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<FileShape>
-    if (parsed?.version !== 1 || !parsed.entries || typeof parsed.entries !== 'object') return {}
-    return parsed.entries
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
   } catch {
-    return {}
+    return out
   }
+  if (!isObject(parsed) || parsed.version !== 1 || !isObject(parsed.entries)) return out
+  const raw = parsed.entries
+  for (const key of Object.keys(raw)) {
+    if (key.length < 1 || key.length > 300) continue
+    const v = raw[key]
+    if (!isObject(v)) continue
+    if (typeof v.graphMeetingId !== 'string' || !GRAPH_MEETING_ID_RE.test(v.graphMeetingId)) continue
+    if (typeof v.organizerId !== 'string' || !GUID_RE.test(v.organizerId)) continue
+    if (typeof v.conversationId !== 'string' || v.conversationId === '') continue
+    if (typeof v.savedAt !== 'string') continue
+    if (v.tenantId !== undefined && typeof v.tenantId !== 'string') continue
+    if (v.title !== undefined && typeof v.title !== 'string') continue
+    out[key] = {
+      graphMeetingId: v.graphMeetingId,
+      organizerId: v.organizerId,
+      conversationId: v.conversationId,
+      ...(v.tenantId !== undefined ? { tenantId: v.tenantId } : {}),
+      ...(v.title !== undefined ? { title: v.title } : {}),
+      savedAt: v.savedAt,
+    }
+  }
+  return out
 }
+
+// An errno-style code (ENOENT, EACCES, …) is safe to show; the error text itself can carry the store path.
+const SAVE_ERROR_CODE_RE = /^[A-Z][A-Z0-9_]{0,31}$/
 
 export function createMeetingStore(path: string, max = MAX_STORED_MEETINGS): MeetingStore {
   return {
@@ -50,17 +98,16 @@ export function createMeetingStore(path: string, max = MAX_STORED_MEETINGS): Mee
         entries[meetingId] = { ...m, savedAt: new Date().toISOString() }
         const ids = Object.keys(entries)
         if (ids.length > max) {
-          // Keep the newest `max` by savedAt; on a tie the entry just put counts as the newest.
-          const keep = new Set(
-            ids.sort((a, b) => {
+          // Keep the entry just put and the newest `max - 1` others by savedAt, so a clock set back (or a savedAt
+          // in the future in the file) cannot push the new entry out.
+          const others = ids
+            .filter(id => id !== meetingId)
+            .sort((a, b) => {
               const sa = entries[a]!.savedAt
               const sb = entries[b]!.savedAt
-              if (sa !== sb) return sa < sb ? -1 : 1
-              if (a === meetingId) return 1
-              if (b === meetingId) return -1
-              return 0
-            }).slice(ids.length - max),
-          )
+              return sa === sb ? 0 : sa < sb ? -1 : 1
+            })
+          const keep = new Set([meetingId, ...others.slice(others.length - Math.max(0, max - 1))])
           for (const id of ids) if (!keep.has(id)) delete entries[id]
         }
         const tmp = `${path}.tmp`
@@ -69,17 +116,12 @@ export function createMeetingStore(path: string, max = MAX_STORED_MEETINGS): Mee
         chmodSync(tmp, 0o600)
         renameSync(tmp, path)
       } catch (err) {
-        process.stderr.write(`teams channel: meeting store save failed: ${err}\n`)
+        const c = (err as { code?: unknown } | undefined | null)?.code
+        const code = typeof c === 'string' && SAVE_ERROR_CODE_RE.test(c) ? c : 'error'
+        process.stderr.write(`teams channel: meeting store save failed (${code})\n`)
       }
     },
   }
-}
-
-export const GRAPH_MEETING_ID_RE = /^[A-Za-z0-9+/=_-]{1,1024}$/
-export const GUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
-
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
 /**
@@ -98,10 +140,7 @@ export function meetingFromInfo(
     organizer !== undefined && typeof organizer.aadObjectId === 'string' ? organizer.aadObjectId : undefined
   if (graphMeetingId === undefined || !GRAPH_MEETING_ID_RE.test(graphMeetingId)) return undefined
   if (organizerAad === undefined || !GUID_RE.test(organizerAad)) return undefined
-  const title =
-    details !== undefined && typeof details.title === 'string' && details.title !== ''
-      ? details.title.slice(0, 200)
-      : undefined
+  const title = details !== undefined ? cleanTitle(details.title) : undefined
   return {
     graphMeetingId,
     organizerId: organizerAad.toLowerCase(),
@@ -111,37 +150,69 @@ export function meetingFromInfo(
 
 export const MAX_TRANSCRIPT_CHARS = 60000
 
+const NOTICE = '\n[transcript truncated]'
+
+/** A line that separates WebVTT blocks: nothing in it but spaces and tabs. */
+const isBlank = (line: string): boolean => /^[ \t]*$/.test(line)
+
+/** A NOTE / STYLE / REGION block header: the whole block is metadata, never payload. */
+const META_BLOCK_RE = /^(?:NOTE|STYLE|REGION)(?:$|[ \t])/
+
+/** A cue timing line; cue settings may follow the end time. */
+const TIMING_RE = /^\S+[ \t]+-->[ \t]+\S+/
+
+/** `<v Ann>Hello</v>`, also with classes (`<v.loud Ann>`) and without the closing tag. */
+const VOICE_RE = /^<v(?:\.[^\s>]+)*\s+([^>]*)>([\s\S]*?)(?:<\/v>)?$/
+
 /**
- * WebVTT to plain text: drop the header, NOTE lines, cue ids and timing lines,
- * turn `<v Speaker>text</v>` into `Speaker: text`, strip any other tag and any
- * control / bidi character, and cap the result.
+ * WebVTT to plain text: parse it as cue blocks, drop the header, NOTE / STYLE /
+ * REGION blocks, cue ids and timing lines, turn `<v Speaker>text</v>` into
+ * `Speaker: text`, strip any other tag and any control / bidi character, and
+ * cap the result. The truncation notice is inside the cap, so the result is
+ * never longer than `max` characters.
  */
 export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
-  const lines = vtt.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  const blocks: string[][] = []
+  let block: string[] = []
+  for (const line of vtt.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')) {
+    if (isBlank(line)) {
+      // Several blank lines in a row are one separator.
+      if (block.length > 0) blocks.push(block)
+      block = []
+    } else {
+      block.push(line)
+    }
+  }
+  if (block.length > 0) blocks.push(block)
+
   const out: string[] = []
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!
-    if (i === 0 && line.startsWith('WEBVTT')) continue
-    if (line === '') continue
-    if (line.includes('-->')) continue
-    if (line.startsWith('NOTE')) continue
-    // A cue id is a line of its own right above a timing line.
-    const next = i + 1 < lines.length ? lines[i + 1] : undefined
-    if (next !== undefined && next.includes('-->')) continue
-    const m = /^<v\s+([^>]*)>(.*?)(?:<\/v>)?$/.exec(line)
-    out.push(m ? `${m[1]!.trim()}: ${m[2] ?? ''}` : line)
+  for (let i = 0; i < blocks.length; i++) {
+    const lines = blocks[i]!
+    const first = lines[0]!
+    if (i === 0 && first.startsWith('WEBVTT')) continue
+    if (META_BLOCK_RE.test(first)) continue
+    const at = lines.findIndex(l => TIMING_RE.test(l))
+    if (at < 0) continue
+    const payload = lines.slice(at + 1).join(' ')
+    const m = VOICE_RE.exec(payload)
+    if (m) {
+      const speaker = cleanOutputText(m[1]!)
+      out.push(speaker === '' ? (m[2] ?? '') : `${speaker}: ${m[2] ?? ''}`)
+    } else {
+      out.push(payload)
+    }
   }
   const text = out
-    .map(l =>
-      l
-        .replace(/<[^>]*>/g, '')
-        .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
-        .replace(/ +/g, ' ')
-        .trim(),
-    )
+    .map(l => cleanOutputText(l.replace(/<[^>]*>/g, '')))
     .filter(l => l !== '')
     .join('\n')
-  if (text.length > max) return `${text.slice(0, max)}\n[transcript truncated]`
+  if (text.length > max) {
+    // The notice is part of the bound, and a lone high surrogate at the cut is dropped.
+    let cut = text.slice(0, Math.max(0, max - NOTICE.length))
+    const last = cut.charCodeAt(cut.length - 1)
+    if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1)
+    return cut + NOTICE
+  }
   return text
 }
 
@@ -195,6 +266,15 @@ async function errorFor(res: Response, code?: string): Promise<TranscriptError> 
   return new TranscriptError(`Graph HTTP ${res.status}${c ? ' ' + c : ''}`)
 }
 
+const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
+
+/** A createdDateTime counts only when it is a full ISO instant with an offset that Date.parse understands. */
+function isoInstant(v: unknown): { text: string; ms: number } | undefined {
+  if (typeof v !== 'string' || !ISO_INSTANT_RE.test(v)) return undefined
+  const ms = Date.parse(v)
+  return Number.isFinite(ms) ? { text: v, ms } : undefined
+}
+
 export async function fetchTranscript(
   m: Pick<StoredMeeting, 'graphMeetingId' | 'organizerId'>,
   deps: { getToken: () => Promise<string>; fetch?: typeof fetch },
@@ -222,12 +302,13 @@ export async function fetchTranscript(
   }
   const items = isObject(json) && Array.isArray(json.value) ? json.value : undefined
   if (items === undefined) throw new TranscriptError('Graph returned an invalid response')
-  let newest: { id: string; createdDateTime?: string } | undefined
+  let newest: { id: string; at?: { text: string; ms: number } } | undefined
   for (const item of items) {
-    if (!isObject(item) || typeof item.id !== 'string' || item.id === '') continue
-    const created = typeof item.createdDateTime === 'string' ? item.createdDateTime : undefined
-    if (newest === undefined || (created ?? '') > (newest.createdDateTime ?? '')) {
-      newest = { id: item.id, ...(created !== undefined ? { createdDateTime: created } : {}) }
+    if (!isObject(item) || typeof item.id !== 'string' || item.id === '' || !GRAPH_MEETING_ID_RE.test(item.id)) continue
+    const at = isoInstant(item.createdDateTime)
+    // An item without a valid timestamp counts as older than every item with one; the first one seen wins ties.
+    if (newest === undefined || (at !== undefined && (newest.at === undefined || at.ms > newest.at.ms))) {
+      newest = { id: item.id, ...(at !== undefined ? { at } : {}) }
     }
   }
   if (newest === undefined) {
@@ -248,10 +329,16 @@ export async function fetchTranscript(
     }
   }
   if (res.status !== 200) throw await errorFor(res, errCode)
-  const body = await res.text()
+  let body: string
+  try {
+    body = await res.text()
+  } catch {
+    throw new TranscriptError('Graph request failed (network error)')
+  }
+  const at = newest.at
   return {
     text: vttToText(body),
-    ...(newest.createdDateTime !== undefined ? { createdDateTime: newest.createdDateTime } : {}),
+    ...(at !== undefined ? { createdDateTime: at.text } : {}),
   }
 }
 
