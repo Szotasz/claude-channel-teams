@@ -52,6 +52,7 @@ import { makeEarlyAckTurn } from './earlyAck.js'
 import { cardActionFrom, cardActionText } from './cardAction.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
 import { userViewInvokeFrom } from './userViews.js'
+import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -100,6 +101,8 @@ export type ChannelEventSink = (event: {
   /** Set by the inbound debouncer when several quick messages were merged into this one. */
   merged?: { count: number; messageIds: string[] }
   cardAction?: { kind: 'execute' | 'submit'; verb?: string }
+  /** Set when the event is a Teams meeting start or end (not a message). Values are already cleaned. */
+  meetingEvent?: { kind: 'started' | 'ended'; title?: string; meetingType?: string; meetingId?: string; time?: string }
 }) => void
 
 // The most mention names one event carries.
@@ -122,6 +125,8 @@ export function metaText(value: unknown, max = 200): string | undefined {
   const cleaned = stripInvisible(bounded).text.trim()
   return cleaned === '' ? undefined : cleaned
 }
+
+function isPlainObject(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null && !Array.isArray(v) }
 
 export function threadIdFromConversationId(conversationId: string): string | undefined {
   const marker = ';messageid='
@@ -168,6 +173,15 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.mentions !== undefined ? { mentions: event.mentions.join(', ') } : {}),
     ...(event.merged ? mergedMeta(event.merged) : {}),
     ...(event.invisible ? invisibleMeta(event.invisible) : {}),
+    ...(event.meetingEvent
+      ? {
+          meeting_event: event.meetingEvent.kind,
+          ...(event.meetingEvent.title !== undefined ? { meeting_title: event.meetingEvent.title } : {}),
+          ...(event.meetingEvent.meetingType !== undefined ? { meeting_type: event.meetingEvent.meetingType } : {}),
+          ...(event.meetingEvent.meetingId !== undefined ? { meeting_id: event.meetingEvent.meetingId } : {}),
+          ...(event.meetingEvent.time !== undefined ? { meeting_time: event.meetingEvent.time } : {}),
+        }
+      : {}),
   }
 }
 
@@ -216,6 +230,9 @@ export interface AdapterDeps {
   knownUsers?: { set(aadObjectId: string, mri: string): void }
   /** User-specific views; a refresh invoke with the reserved verb is answered from here. Optional for tests. */
   userViews?: { cardFor(viewId: string, aadObjectId: string): Record<string, unknown> | undefined }
+  /** Whether meeting start / end events are delivered (TEAMS_MEETING_EVENTS). Optional so existing
+   *  tests still wire. */
+  meetingEvents?: boolean
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -428,6 +445,47 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
       : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
       : undefined
+    // Meeting start / end (an 'event' activity, delivered only with the RSC
+    // meeting permissions and TEAMS_MEETING_EVENTS). Runs before the message
+    // path: there is no sender to allowlist and no mention to strip.
+    const meeting = meetingEventFrom(a)
+    if (meeting !== undefined) {
+      if (!deps.meetingEvents) return
+      if (meeting === null) {
+        process.stderr.write('teams channel: drop — meeting event without a value object\n')
+        return
+      }
+      const evTenant = a.conversation?.tenantId ?? (isPlainObject(a.channelData) && isPlainObject(a.channelData.tenant) && typeof a.channelData.tenant.id === 'string' ? a.channelData.tenant.id : undefined)
+      if (deps.config.tenantId && evTenant && evTenant.toLowerCase() !== deps.config.tenantId.toLowerCase()) {
+        process.stderr.write('teams channel: drop — meeting event from another tenant\n')
+        return
+      }
+      const evConversation = a.conversation?.id
+      if (!evConversation) {
+        process.stderr.write('teams channel: drop — meeting event without conversation.id\n')
+        return
+      }
+      const title = metaText(meeting.title)
+      const meetingType = metaText(meeting.meetingType, 40)
+      const meetingId = metaText(meeting.meetingId, 300)
+      deps.onEvent({
+        text: meetingEventText({ kind: meeting.kind, title }),
+        conversationId: evConversation,
+        // Empty on purpose: elsewhere aad_object_id is an allowlisted sender, and a meeting event has none.
+        aadObjectId: '',
+        tenantId: evTenant ?? deps.config.tenantId,
+        fromName: '',
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        meetingEvent: {
+          kind: meeting.kind,
+          ...(title !== undefined ? { title } : {}),
+          ...(meetingType !== undefined ? { meetingType } : {}),
+          ...(meetingId !== undefined ? { meetingId } : {}),
+          ...(meeting.time !== undefined ? { time: meeting.time } : {}),
+        },
+      })
+      return
+    }
     if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card) return
     const answerInvoke = (message: string) => answer(invoke, c => respondToCardInvoke(c, message))
 

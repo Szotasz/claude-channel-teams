@@ -189,6 +189,11 @@ export interface Config {
   ackText: string | undefined
   /** From TEAMS_ACK_DELAY_MS (0-10000, default 3000). */
   ackDelayMs: number
+  /**
+   * Whether meeting start / end events are delivered to Claude.
+   * From TEAMS_MEETING_EVENTS ('1' or 'true'); see docs/meeting-events.md.
+   */
+  meetingEvents: boolean
 }
 
 /**
@@ -387,5 +392,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     statusUpdates: parseFlag(env.TEAMS_STATUS_UPDATES),
     ackText,
     ackDelayMs,
+    meetingEvents: parseFlag(env.TEAMS_MEETING_EVENTS),
   })
 }

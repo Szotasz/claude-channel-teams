@@ -12,7 +12,7 @@
 # Usage:
 #   make-teams-manifest.sh [--app-id <guid>] [--name "Marveen"] \
 #       [--env-file ~/.claude/channels/teams/.env] [--out ./teams-app.zip] \
-#       [--rsc-all-messages] [--command "<title>: <description>"]... \
+#       [--rsc-all-messages] [--rsc-meeting-events] [--command "<title>: <description>"]... \
 #       [--prompt "<title>: <prompt>"]...
 #
 # --rsc-all-messages adds the RSC permissions ChannelMessage.Read.Group and ChatMessage.Read.Chat (application) and the
@@ -22,6 +22,12 @@
 # already installed in a team must be upgraded there with the new permissions consented (Graph: upgrade the installation
 # with a consentedPermissionSet), otherwise the permission is not granted. On its own the plugin still acts only on
 # messages that @mention the bot (its mention gate); the permission is what a separate unmentioned-delivery option needs.
+#
+# --rsc-meeting-events adds the RSC permissions OnlineMeeting.ReadBasic.Chat and ChannelMeeting.ReadBasic.Group
+# (application) and the webApplicationInfo block. Teams then sends the bot meeting start and end events for
+# scheduled and channel meetings in the chats and teams where the app is installed; the plugin delivers them only
+# with TEAMS_MEETING_EVENTS (see docs/meeting-events.md). A chat member or meeting organizer consents at install; an
+# installed app must be upgraded with the new permissions. Not tested in a Teams tenant.
 #
 # --command "<title>: <description>" declares a Teams slash command (repeatable, order kept, max 12). The value is split at
 # the first ": "; one leading "/" on the title is dropped, the title must match [A-Za-z0-9][A-Za-z0-9_-]* (max 128 bytes) and
@@ -49,6 +55,7 @@ APP_NAME=""
 ENV_FILE="${HOME}/.claude/channels/teams/.env"
 OUT="./teams-app.zip"
 RSC_ALL=0
+RSC_MEETING=0
 CMD_RAW=()
 PROMPT_RAW=()
 
@@ -59,6 +66,7 @@ while [ $# -gt 0 ]; do
     --env-file) ENV_FILE="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --rsc-all-messages) RSC_ALL=1; shift ;;
+    --rsc-meeting-events) RSC_MEETING=1; shift ;;
     --command)
       [ $# -ge 2 ] || { echo "--command needs a value: '<title>: <description>'" >&2; exit 2; }
       CMD_RAW+=("$2"); shift 2 ;;
@@ -182,7 +190,18 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 RSC_BLOCK=""
-if [ "$RSC_ALL" = 1 ]; then
+if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ]; then
+  RSC_PERMS=""
+  if [ "$RSC_ALL" = 1 ]; then
+    RSC_PERMS="        { \"name\": \"ChannelMessage.Read.Group\", \"type\": \"Application\" },
+        { \"name\": \"ChatMessage.Read.Chat\", \"type\": \"Application\" }"
+  fi
+  if [ "$RSC_MEETING" = 1 ]; then
+    [ -z "$RSC_PERMS" ] || RSC_PERMS="${RSC_PERMS},
+"
+    RSC_PERMS="${RSC_PERMS}        { \"name\": \"OnlineMeeting.ReadBasic.Chat\", \"type\": \"Application\" },
+        { \"name\": \"ChannelMeeting.ReadBasic.Group\", \"type\": \"Application\" }"
+  fi
   RSC_BLOCK=",
   \"webApplicationInfo\": {
     \"id\": \"${APP_ID}\",
@@ -191,8 +210,7 @@ if [ "$RSC_ALL" = 1 ]; then
   \"authorization\": {
     \"permissions\": {
       \"resourceSpecific\": [
-        { \"name\": \"ChannelMessage.Read.Group\", \"type\": \"Application\" },
-        { \"name\": \"ChatMessage.Read.Chat\", \"type\": \"Application\" }
+${RSC_PERMS}
       ]
     }
   }"
@@ -307,6 +325,9 @@ Upload it in Teams: Apps -> Manage your apps -> Upload a custom app -> pick this
 EOF
 if [ "$RSC_ALL" = 1 ]; then
   echo "RSC: requests ChannelMessage.Read.Group and ChatMessage.Read.Chat; the team or chat owner consents at install."
+fi
+if [ "$RSC_MEETING" = 1 ]; then
+  echo "RSC: requests OnlineMeeting.ReadBasic.Chat and ChannelMeeting.ReadBasic.Group for meeting events; a chat member or the meeting organizer consents at install."
 fi
 if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
   echo "COMMANDS: declares ${#CMD_TITLES[@]} slash command(s); the manifest is version 1.29. Re-upload or upgrade an already installed app."

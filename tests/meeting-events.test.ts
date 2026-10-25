@@ -1,0 +1,257 @@
+import { describe, expect, test } from 'bun:test'
+import { mkdtempSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+
+import { channelEventMeta, makeTurnHandler } from '../src/teams/adapter'
+import { createAllowlist } from '../src/pairing/allowlist'
+import { createConversationRefStore } from '../src/teams/conversationRefs'
+import { meetingEventFrom, meetingEventText } from '../src/teams/meetingEvents'
+
+const USER = '00000000-0000-4000-8000-000000000001'
+const TENANT_ID = '00000000-0000-4000-8000-000000000002'
+const CONVERSATION_ID = '19:meeting@thread.v2;messageid=42'
+
+class NoopAdapter extends BotAdapter {
+  async sendActivities(): Promise<any> { return [] }
+  async updateActivity(): Promise<void> {}
+  async deleteActivity(): Promise<void> {}
+  async continueConversation(): Promise<void> {}
+}
+
+const MEETING_START = 'application/vnd.microsoft.meetingStart'
+const MEETING_END = 'application/vnd.microsoft.meetingEnd'
+
+function meetingActivity(o: Record<string, unknown> = {}): Activity {
+  return {
+    type: 'event',
+    channelId: 'msteams',
+    name: MEETING_START,
+    id: 'ev-1',
+    timestamp: new Date('2026-10-23T09:00:05Z'),
+    from: { id: '29:1abc' },
+    conversation: { id: CONVERSATION_ID, tenantId: TENANT_ID },
+    recipient: { id: 'bot-1', name: 'Bot' },
+    channelData: { tenant: { id: TENANT_ID }, meeting: { id: 'MEETING-ID' } },
+    value: {
+      Id: 'VALUE-ID',
+      JoinUrl: 'https://join.example/x',
+      Title: 'Tender kick-off',
+      MeetingType: 'Scheduled',
+      StartTime: '2026-10-23T09:00:00Z',
+      EndTime: null,
+    },
+    ...o,
+  } as unknown as Activity
+}
+
+describe('meetingEventFrom', () => {
+  test('P1 a meetingStart: title, type, channelData meeting id and the start time', () => {
+    expect(meetingEventFrom(meetingActivity())).toEqual({
+      kind: 'started',
+      title: 'Tender kick-off',
+      meetingType: 'Scheduled',
+      meetingId: 'MEETING-ID',
+      time: '2026-10-23T09:00:00.000Z',
+    })
+  })
+
+  test('P2 a meetingEnd: kind ended, the time from EndTime only', () => {
+    expect(meetingEventFrom(meetingActivity({
+      name: MEETING_END,
+      value: { Id: 'VALUE-ID', JoinUrl: null, Title: 'Tender kick-off', MeetingType: 'Scheduled', StartTime: null, EndTime: '2026-10-23T10:30:00Z' },
+    }))).toEqual({
+      kind: 'ended',
+      title: 'Tender kick-off',
+      meetingType: 'Scheduled',
+      meetingId: 'MEETING-ID',
+      time: '2026-10-23T10:30:00.000Z',
+    })
+  })
+
+  test('P3 no channelData.meeting: no meeting id, and never the id from value', () => {
+    const e = meetingEventFrom(meetingActivity({ channelData: { tenant: { id: TENANT_ID } } }))
+    expect(e!.meetingId).toBeUndefined()
+    expect(JSON.stringify(e)).not.toContain('VALUE-ID')
+  })
+
+  test('P4 a start time that is not a date: no time', () => {
+    expect(meetingEventFrom(meetingActivity({ value: { Title: 'T', MeetingType: 'Scheduled', StartTime: 'not a date', EndTime: null } }))!.time).toBeUndefined()
+  })
+
+  test('P5 StartTime on a meetingEnd is ignored', () => {
+    const e = meetingEventFrom(meetingActivity({
+      name: MEETING_END,
+      value: { Title: 'T', MeetingType: 'Scheduled', StartTime: '2026-10-23T09:00:00Z', EndTime: '2026-10-23T10:30:00Z' },
+    }))
+    expect(e!.time).toBe('2026-10-23T10:30:00.000Z')
+  })
+
+  test('P6 a non-string title: no title', () => {
+    expect(meetingEventFrom(meetingActivity({ value: { Title: 5, MeetingType: 'Scheduled', StartTime: '2026-10-23T09:00:00Z', EndTime: null } }))!.title).toBeUndefined()
+  })
+
+  test('P7 anything that is not one of the two meeting events', () => {
+    expect(meetingEventFrom(meetingActivity({ name: ` ${MEETING_START}` }))).toBeUndefined()
+    expect(meetingEventFrom(meetingActivity({ channelId: 'webchat' }))).toBeUndefined()
+    expect(meetingEventFrom(meetingActivity({ type: 'message' }))).toBeUndefined()
+    expect(meetingEventFrom(meetingActivity({ name: 'application/vnd.microsoft.meetingParticipantJoin' }))).toBeUndefined()
+  })
+
+  test('P8 a meeting event whose value is not a plain object is malformed (null)', () => {
+    expect(meetingEventFrom(meetingActivity({ value: 'x' }))).toBeNull()
+    expect(meetingEventFrom(meetingActivity({ value: null }))).toBeNull()
+    expect(meetingEventFrom(meetingActivity({ value: [] }))).toBeNull()
+  })
+})
+
+describe('meetingEventText', () => {
+  test('P9 label plus title, or the label alone', () => {
+    expect(meetingEventText({ kind: 'started', title: 'T' })).toBe('[Meeting started] T')
+    expect(meetingEventText({ kind: 'ended' })).toBe('[Meeting ended]')
+  })
+})
+
+function setup(meetingEvents?: boolean) {
+  const dir = mkdtempSync(join(tmpdir(), 'cct-meeting-'))
+  const allowlist = createAllowlist(join(dir, 'allowlist.json'))
+  allowlist.addEntry(USER)
+  const events: any[] = []
+  const config = {
+    stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p',
+    appType: 'SingleTenant', tenantId: TENANT_ID, bindHost: '127.0.0.1', port: 0,
+    receivedFilesDir: '/tmp/unused',
+  }
+  const turn = makeTurnHandler({
+    config: config as any,
+    adapter: {} as any,
+    allowlist,
+    refs: createConversationRefStore(),
+    onEvent: e => events.push(e),
+    ...(meetingEvents === undefined ? {} : { meetingEvents }),
+  } as any)
+  const run = (a: Activity) => turn(new TurnContext(new NoopAdapter() as any, a))
+  return { run, events }
+}
+
+describe('meeting events in the turn handler', () => {
+  test('E1 a meetingStart is delivered as one event, nothing else in it', async () => {
+    const s = setup(true)
+    await s.run(meetingActivity())
+    expect(s.events.length).toBe(1)
+    expect(s.events[0]).toEqual({
+      text: '[Meeting started] Tender kick-off',
+      conversationId: CONVERSATION_ID,
+      aadObjectId: '',
+      tenantId: TENANT_ID,
+      fromName: '',
+      ts: '2026-10-23T09:00:05.000Z',
+      meetingEvent: {
+        kind: 'started',
+        title: 'Tender kick-off',
+        meetingType: 'Scheduled',
+        meetingId: 'MEETING-ID',
+        time: '2026-10-23T09:00:00.000Z',
+      },
+    })
+  })
+
+  test('E2 the title is cleaned before it reaches text and meta', async () => {
+    const dirty = `T"i<t>\nl\u202e${'x'.repeat(250)}`
+    const s = setup(true)
+    await s.run(meetingActivity({ value: { Title: dirty, MeetingType: 'Scheduled', StartTime: '2026-10-23T09:00:00Z', EndTime: null } }))
+    const cleaned = `T i t l ${'x'.repeat(192)}`
+    expect(s.events[0].text).toBe(`[Meeting started] ${cleaned}`)
+    expect(s.events[0].meetingEvent.title).toBe(cleaned)
+  })
+
+  test('E3 off by default and off when false', async () => {
+    const off = setup()
+    await off.run(meetingActivity())
+    expect(off.events.length).toBe(0)
+    const falsey = setup(false)
+    await falsey.run(meetingActivity())
+    expect(falsey.events.length).toBe(0)
+  })
+
+  test('E4 another tenant is dropped', async () => {
+    const s = setup(true)
+    await s.run(meetingActivity({
+      conversation: { id: CONVERSATION_ID, tenantId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+      channelData: { tenant: { id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, meeting: { id: 'MEETING-ID' } },
+    }))
+    expect(s.events.length).toBe(0)
+  })
+
+  test('E5 without a conversation id nothing is delivered', async () => {
+    const s = setup(true)
+    await s.run(meetingActivity({ conversation: undefined }))
+    expect(s.events.length).toBe(0)
+  })
+
+  test('E6 a meeting event without a value object is dropped, not delivered', async () => {
+    const s = setup(true)
+    await s.run(meetingActivity({ value: 'x' }))
+    expect(s.events.length).toBe(0)
+  })
+
+  test('E7 a normal message still takes the normal path, with no meetingEvent', async () => {
+    const s = setup(true)
+    await s.run({
+      type: 'message',
+      text: 'hello',
+      id: 'msg-1',
+      timestamp: new Date('2026-10-23T09:00:05Z'),
+      from: { id: 'user-1', name: 'Adnan', aadObjectId: USER },
+      conversation: { id: 'a:personal1', tenantId: TENANT_ID, conversationType: 'personal' },
+      recipient: { id: 'bot-1', name: 'Bot' },
+      channelId: 'msteams',
+      serviceUrl: 'https://smba.trafficmanager.net/uk/',
+    } as unknown as Activity)
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].text).toBe('hello')
+    expect(s.events[0].meetingEvent).toBeUndefined()
+  })
+})
+
+describe('channelEventMeta with a meeting event', () => {
+  test('M1 the five meeting_ keys, with the cleaned values', () => {
+    const meta = channelEventMeta({
+      text: '[Meeting started] T',
+      conversationId: CONVERSATION_ID,
+      aadObjectId: '',
+      tenantId: TENANT_ID,
+      fromName: '',
+      meetingEvent: {
+        kind: 'started',
+        title: 'Tender kick-off',
+        meetingType: 'Scheduled',
+        meetingId: 'MEETING-ID',
+        time: '2026-10-23T09:00:00.000Z',
+      },
+    })
+    expect(meta).toEqual({
+      aad_object_id: '',
+      conversation_id: CONVERSATION_ID,
+      tenant_id: TENANT_ID,
+      from_name: '',
+      meeting_event: 'started',
+      meeting_title: 'Tender kick-off',
+      meeting_type: 'Scheduled',
+      meeting_id: 'MEETING-ID',
+      meeting_time: '2026-10-23T09:00:00.000Z',
+    })
+  })
+
+  test('M2 without a meeting event there is no meeting_ key', () => {
+    const meta = channelEventMeta({
+      text: 'hello',
+      conversationId: 'a:personal1',
+      aadObjectId: USER,
+      tenantId: TENANT_ID,
+      fromName: 'Adnan',
+    })
+    expect(Object.keys(meta).filter(k => k.startsWith('meeting_'))).toEqual([])
+  })
+})
