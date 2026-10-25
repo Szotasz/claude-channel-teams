@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
@@ -105,6 +105,28 @@ describe('vttToText', () => {
 
   test('V7 a cue id line is dropped, and cue settings after the end time are fine', () => {
     expect(vttToText('WEBVTT\n\nintro cue\n00:00:01.000 --> 00:00:02.000 align:start\nhello\n')).toBe('hello')
+  })
+
+  test('V8 an indented voice tag still names its speaker', () => {
+    expect(vttToText('WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n  <v Ann>Hello</v>\n')).toBe('Ann: Hello')
+  })
+
+  test('V9 two voices in one cue, on two lines, become two lines', () => {
+    const vtt = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Ann>Hi</v>\n<v Bob>No, I object</v>\n'
+    expect(vttToText(vtt)).toBe('Ann: Hi\nBob: No, I object')
+  })
+
+  test('V10 two voices on one line become two lines', () => {
+    expect(vttToText('WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Ann>Hi</v> <v Bob>No</v>\n')).toBe('Ann: Hi\nBob: No')
+  })
+
+  test('V11 a voice inside a class span: only the voice becomes a speaker line', () => {
+    expect(vttToText('WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<c.x><v Ann>hi</v></c>\n')).toBe('Ann: hi')
+  })
+
+  test('V12 a body without cues: each line of it is a payload of its own', () => {
+    expect(vttToText('Ann: Hello\nBob: Hi there\n')).toBe('Ann: Hello\nBob: Hi there')
+    expect(vttToText('WEBVTT\n\n')).toBe('')
   })
 })
 
@@ -241,6 +263,51 @@ describe('createMeetingStore', () => {
     }
     expect(lines.length).toBe(1)
     expect(lines[0]).toMatch(/^teams channel: meeting store save failed \((ENOENT|error)\)\n$/)
+  })
+
+  test.skipIf(process.getuid?.() === 0)('S8 a store put could not read: one line, and nothing is written', () => {
+    const path = tempFile()
+    const s = createMeetingStore(path)
+    const entry = { graphMeetingId: 'g', organizerId: ORGANIZER.toLowerCase(), conversationId: 'c' }
+    s.put('k1', entry)
+    s.put('k2', entry)
+    s.put('k3', entry)
+    const lines: string[] = []
+    const write = process.stderr.write
+    process.stderr.write = ((chunk: unknown) => { lines.push(String(chunk)); return true }) as typeof process.stderr.write
+    try {
+      chmodSync(path, 0o000)
+      s.put('k4', entry)
+    } finally {
+      process.stderr.write = write
+      chmodSync(path, 0o600)
+    }
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toMatch(/^teams channel: meeting store save failed \((EACCES|error)\)\n$/)
+    const entries = JSON.parse(readFileSync(path, 'utf8')).entries
+    expect(Object.keys(entries).sort()).toEqual(['k1', 'k2', 'k3'])
+  })
+
+  test('S9 an entry whose savedAt is not an instant is dropped, and the prune compares instants', () => {
+    const path = tempFile()
+    const base = { graphMeetingId: 'g', organizerId: ORGANIZER.toLowerCase(), conversationId: 'c' }
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          bad: { ...base, savedAt: 'zzzz' },
+          old: { ...base, savedAt: '2026-01-01T00:00:00.000Z' },
+          newer: { ...base, savedAt: '2026-06-01T00:00:00.000Z' },
+        },
+      }),
+      'utf8',
+    )
+    const s = createMeetingStore(path, 3)
+    s.put('fresh', base)
+    const entries = JSON.parse(readFileSync(path, 'utf8')).entries
+    expect(Object.keys(entries).sort()).toEqual(['fresh', 'newer', 'old'])
+    expect(s.get('bad')).toBeUndefined()
   })
 
   test('S6 a hand-written file is validated entry by entry', () => {
@@ -674,5 +741,49 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
     expect(s.events.length).toBe(1)
     expect(store.get('MEETING-ID')).toBeUndefined()
     expect(lines).toContain('teams channel: meeting info lookup timed out\n')
+  })
+
+  test('A9 a lookup that resolves after the timeout: nothing stored, only the timeout line', async () => {
+    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const s = setup({
+      meetingEvents: true,
+      meetingStore: store,
+      meetingInfoTimeoutMs: 20,
+      getMeetingInfo: () => new Promise(resolve => setTimeout(() => resolve(VALID_INFO), 60)),
+    })
+    const lines: string[] = []
+    const write = process.stderr.write
+    process.stderr.write = ((chunk: unknown) => { lines.push(String(chunk)); return true }) as typeof process.stderr.write
+    try {
+      await s.run(meetingActivity())
+      await new Promise(r => setTimeout(r, 100))
+    } finally {
+      process.stderr.write = write
+    }
+    expect(store.get('MEETING-ID')).toBeUndefined()
+    expect(lines.filter(l => l.startsWith('teams channel: meeting info'))).toEqual([
+      'teams channel: meeting info lookup timed out\n',
+    ])
+  })
+
+  test('A10 a lookup that resolves at once is stored, and no timeout is logged', async () => {
+    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const s = setup({
+      meetingEvents: true,
+      meetingStore: store,
+      meetingInfoTimeoutMs: 20,
+      getMeetingInfo: async () => VALID_INFO,
+    })
+    const lines: string[] = []
+    const write = process.stderr.write
+    process.stderr.write = ((chunk: unknown) => { lines.push(String(chunk)); return true }) as typeof process.stderr.write
+    try {
+      await s.run(meetingActivity())
+      await new Promise(r => setTimeout(r, 60))
+    } finally {
+      process.stderr.write = write
+    }
+    expect(store.get('MEETING-ID')?.graphMeetingId).toBe('graph-id-1')
+    expect(lines.some(l => l.includes('timed out'))).toBe(false)
   })
 })

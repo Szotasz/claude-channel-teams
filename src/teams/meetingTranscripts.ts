@@ -50,12 +50,29 @@ export function cleanTitle(value: unknown): string | undefined {
 
 type FileShape = { version: 1; entries: Record<string, StoredMeeting> }
 
+const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
+
+/** A timestamp counts only when it is a full ISO instant with an offset that Date.parse understands. */
+function isoInstant(v: unknown): { text: string; ms: number } | undefined {
+  if (typeof v !== 'string' || !ISO_INSTANT_RE.test(v)) return undefined
+  const ms = Date.parse(v)
+  return Number.isFinite(ms) ? { text: v, ms } : undefined
+}
+
 /** The file is state written by an older run: read it back field by field, drop what is not a stored meeting any more. */
-function readEntries(path: string): Record<string, StoredMeeting> {
+function readEntries(path: string, strict = false): Record<string, StoredMeeting> {
   const out: Record<string, StoredMeeting> = Object.create(null)
+  let fileText: string
+  try {
+    fileText = readFileSync(path, 'utf8')
+  } catch (err) {
+    // Strict callers (put) must not overwrite a store they could not read; get still sees an empty one.
+    if (strict && (err as { code?: unknown } | undefined | null)?.code !== 'ENOENT') throw err
+    return out
+  }
   let parsed: unknown
   try {
-    parsed = JSON.parse(readFileSync(path, 'utf8'))
+    parsed = JSON.parse(fileText)
   } catch {
     return out
   }
@@ -68,7 +85,9 @@ function readEntries(path: string): Record<string, StoredMeeting> {
     if (typeof v.graphMeetingId !== 'string' || !GRAPH_MEETING_ID_RE.test(v.graphMeetingId)) continue
     if (typeof v.organizerId !== 'string' || !GUID_RE.test(v.organizerId)) continue
     if (typeof v.conversationId !== 'string' || v.conversationId === '') continue
-    if (typeof v.savedAt !== 'string') continue
+    const savedAt = v.savedAt
+    // A savedAt that is not a full instant would break the prune in put(): such an entry is dropped here.
+    if (typeof savedAt !== 'string' || isoInstant(savedAt) === undefined) continue
     if (v.tenantId !== undefined && typeof v.tenantId !== 'string') continue
     if (v.title !== undefined && typeof v.title !== 'string') continue
     out[key] = {
@@ -77,7 +96,7 @@ function readEntries(path: string): Record<string, StoredMeeting> {
       conversationId: v.conversationId,
       ...(v.tenantId !== undefined ? { tenantId: v.tenantId } : {}),
       ...(v.title !== undefined ? { title: v.title } : {}),
-      savedAt: v.savedAt,
+      savedAt,
     }
   }
   return out
@@ -94,7 +113,7 @@ export function createMeetingStore(path: string, max = MAX_STORED_MEETINGS): Mee
     },
     put(meetingId, m) {
       try {
-        const entries = readEntries(path)
+        const entries = readEntries(path, true)
         entries[meetingId] = { ...m, savedAt: new Date().toISOString() }
         const ids = Object.keys(entries)
         if (ids.length > max) {
@@ -103,9 +122,9 @@ export function createMeetingStore(path: string, max = MAX_STORED_MEETINGS): Mee
           const others = ids
             .filter(id => id !== meetingId)
             .sort((a, b) => {
-              const sa = entries[a]!.savedAt
-              const sb = entries[b]!.savedAt
-              return sa === sb ? 0 : sa < sb ? -1 : 1
+              const ma = isoInstant(entries[a]!.savedAt)!.ms
+              const mb = isoInstant(entries[b]!.savedAt)!.ms
+              return ma === mb ? 0 : ma < mb ? -1 : 1
             })
           const keep = new Set([meetingId, ...others.slice(others.length - Math.max(0, max - 1))])
           for (const id of ids) if (!keep.has(id)) delete entries[id]
@@ -161,15 +180,39 @@ const META_BLOCK_RE = /^(?:NOTE|STYLE|REGION)(?:$|[ \t])/
 /** A cue timing line; cue settings may follow the end time. */
 const TIMING_RE = /^\S+[ \t]+-->[ \t]+\S+/
 
-/** `<v Ann>Hello</v>`, also with classes (`<v.loud Ann>`) and without the closing tag. */
-const VOICE_RE = /^<v(?:\.[^\s>]+)*\s+([^>]*)>([\s\S]*?)(?:<\/v>)?$/
+/** Every opening voice tag, also with classes (`<v.loud Ann>`). */
+const VOICE_OPEN_RE = /<v(?:\.[^\s>]+)*\s+([^>]*)>/g
+
+/**
+ * One cue payload to output lines: each voice span is a line of its own, so an indented tag still names its
+ * speaker and two voices in one cue stay apart. Text before the first tag is a line without a speaker; a span
+ * runs to the next opening tag or to the end of the payload.
+ */
+function voiceLines(payload: string): string[] {
+  const out: string[] = []
+  let speaker = ''
+  let from = 0
+  const flush = (to: number) => {
+    const text = payload.slice(from, to)
+    out.push(speaker === '' ? text : `${speaker}: ${text}`)
+  }
+  VOICE_OPEN_RE.lastIndex = 0
+  for (let m = VOICE_OPEN_RE.exec(payload); m !== null; m = VOICE_OPEN_RE.exec(payload)) {
+    flush(m.index)
+    speaker = cleanOutputText(m[1]!)
+    from = m.index + m[0].length
+  }
+  flush(payload.length)
+  return out
+}
 
 /**
  * WebVTT to plain text: parse it as cue blocks, drop the header, NOTE / STYLE /
- * REGION blocks, cue ids and timing lines, turn `<v Speaker>text</v>` into
- * `Speaker: text`, strip any other tag and any control / bidi character, and
- * cap the result. The truncation notice is inside the cap, so the result is
- * never longer than `max` characters.
+ * REGION blocks, cue ids and timing lines, turn each `<v Speaker>text</v>` span
+ * into a `Speaker: text` line of its own, strip any other tag and any control /
+ * bidi character, and cap the result. A body without one timing line anywhere is
+ * taken line by line instead of as cues. The truncation notice is inside the
+ * cap, so the result is never longer than `max` characters.
  */
 export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
   const blocks: string[][] = []
@@ -185,21 +228,25 @@ export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
   }
   if (block.length > 0) blocks.push(block)
 
+  // A body without one timing line anywhere is not cue-structured (a tenant can serve plain text): then every line
+  // of every remaining block is a payload of its own. Otherwise a block without a timing line is not a cue: skip it.
+  const timingAt = blocks.map(lines => lines.findIndex(l => TIMING_RE.test(l)))
+  const anyTiming = timingAt.some(at => at >= 0)
   const out: string[] = []
+  const addPayload = (payload: string) => {
+    for (const line of voiceLines(payload)) out.push(line)
+  }
   for (let i = 0; i < blocks.length; i++) {
     const lines = blocks[i]!
     const first = lines[0]!
     if (i === 0 && first.startsWith('WEBVTT')) continue
     if (META_BLOCK_RE.test(first)) continue
-    const at = lines.findIndex(l => TIMING_RE.test(l))
-    if (at < 0) continue
-    const payload = lines.slice(at + 1).join(' ')
-    const m = VOICE_RE.exec(payload)
-    if (m) {
-      const speaker = cleanOutputText(m[1]!)
-      out.push(speaker === '' ? (m[2] ?? '') : `${speaker}: ${m[2] ?? ''}`)
-    } else {
-      out.push(payload)
+    const at = timingAt[i]!
+    if (at >= 0) {
+      // One cue: its payload lines, trimmed, are one payload.
+      addPayload(lines.slice(at + 1).map(l => l.trim()).join(' '))
+    } else if (!anyTiming) {
+      for (const line of lines) addPayload(line.trim())
     }
   }
   const text = out
@@ -264,15 +311,6 @@ async function errorFor(res: Response, code?: string): Promise<TranscriptError> 
     return new TranscriptError('the meeting or its transcript was not found (the meeting may have expired)')
   }
   return new TranscriptError(`Graph HTTP ${res.status}${c ? ' ' + c : ''}`)
-}
-
-const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
-
-/** A createdDateTime counts only when it is a full ISO instant with an offset that Date.parse understands. */
-function isoInstant(v: unknown): { text: string; ms: number } | undefined {
-  if (typeof v !== 'string' || !ISO_INSTANT_RE.test(v)) return undefined
-  const ms = Date.parse(v)
-  return Number.isFinite(ms) ? { text: v, ms } : undefined
 }
 
 export async function fetchTranscript(

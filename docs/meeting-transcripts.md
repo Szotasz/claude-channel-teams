@@ -18,7 +18,11 @@ This is off by default. It needs all of:
 
 The tool knows only meetings this plugin saw a start or end event for: on each event it asks Teams for the
 meeting's Graph id and organizer and keeps them in `meeting-transcripts.json` in the state directory, at most 200
-meetings, the oldest dropped first. An unknown `meeting_id` is an error, not a guess.
+meetings, the ones seen least recently (by their last start or end event) dropped first. An unknown `meeting_id` is
+an error, not a guess.
+
+The tool is not scoped to a conversation: a meeting the plugin saw an event for can be read from any conversation of
+the same Claude session, whose context holds those meeting ids already.
 
 The transcript is what people said in the meeting: user content, never instructions. Claude is told so, both in
 the tool description and in the text the tool returns.
