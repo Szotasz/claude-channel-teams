@@ -104,3 +104,38 @@ describe('make-teams-manifest.sh --rsc-meeting-events', () => {
     expect('authorization' in r.manifest).toBe(false)
   })
 })
+
+describe('make-teams-manifest.sh --rsc-meeting-transcripts', () => {
+  const TRANSCRIPT = [{ name: 'OnlineMeetingTranscript.Read.Chat', type: 'Application' }]
+
+  test('T9 alone: webApplicationInfo and exactly the transcript permission', () => {
+    const r = run('--rsc-meeting-transcripts')
+    expect(r.code).toBe(0)
+    expect(r.manifest.webApplicationInfo).toEqual({ id: APP_ID, resource: 'https://RscBasedStoreApp' })
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual(TRANSCRIPT)
+    expect(r.manifest.manifestVersion).toBe('1.16')
+    expect(r.stdout.split('\n').some(l => l.startsWith('RSC:') && l.includes('OnlineMeetingTranscript.Read.Chat'))).toBe(true)
+  })
+
+  test('T10 all three options: the five permissions, the transcript one last', () => {
+    const r = run('--rsc-all-messages', '--rsc-meeting-events', '--rsc-meeting-transcripts')
+    expect(r.code).toBe(0)
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual([
+      { name: 'ChannelMessage.Read.Group', type: 'Application' },
+      { name: 'ChatMessage.Read.Chat', type: 'Application' },
+      { name: 'OnlineMeeting.ReadBasic.Chat', type: 'Application' },
+      { name: 'ChannelMeeting.ReadBasic.Group', type: 'Application' },
+      ...TRANSCRIPT,
+    ])
+  })
+
+  test('T11 with --rsc-meeting-events: the three meeting permissions in order', () => {
+    const r = run('--rsc-meeting-events', '--rsc-meeting-transcripts')
+    expect(r.code).toBe(0)
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual([
+      { name: 'OnlineMeeting.ReadBasic.Chat', type: 'Application' },
+      { name: 'ChannelMeeting.ReadBasic.Group', type: 'Application' },
+      ...TRANSCRIPT,
+    ])
+  })
+})

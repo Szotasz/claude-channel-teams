@@ -2,8 +2,8 @@
 
 With `TEAMS_MEETING_EVENTS=1` (or `true`) the plugin delivers the start and end of a
 scheduled or channel meeting in a chat or team where the app is installed. Claude is
-told about it, nothing else: the transcript of the meeting is not part of this (that
-is a separate change).
+told about it, nothing else: reading the meeting's transcript is a separate option,
+see [meeting-transcripts.md](meeting-transcripts.md).
 
 What arrives in the session is the text `[Meeting started] <title>` /
 `[Meeting ended] <title>` (no title, no suffix), and the meta keys `meeting_event`

@@ -1,0 +1,440 @@
+import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+
+import { makeTurnHandler } from '../src/teams/adapter'
+import { createAllowlist } from '../src/pairing/allowlist'
+import { createConversationRefStore } from '../src/teams/conversationRefs'
+import {
+  createMeetingStore,
+  fetchTranscript,
+  meetingFromInfo,
+  TranscriptError,
+  TRANSCRIPT_TOOL,
+  transcriptTools,
+  vttToText,
+} from '../src/teams/meetingTranscripts'
+
+const USER = '00000000-0000-4000-8000-000000000001'
+const TENANT_ID = '00000000-0000-4000-8000-000000000002'
+const CONVERSATION_ID = '19:meeting@thread.v2;messageid=42'
+const ORGANIZER = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE'
+
+// ── vttToText ────────────────────────────────────────────────────────────────
+
+const SAMPLE =
+  'WEBVTT\n' +
+  '\n' +
+  'NOTE two speakers\n' +
+  '\n' +
+  'cue-1\n' +
+  '00:00:01.000 --> 00:00:02.000\n' +
+  '<v Ann Lee>Hello there.</v>\n' +
+  '\n' +
+  '00:00:03.000 --> 00:00:04.000\n' +
+  'no speaker tag on this cue\n' +
+  '\n' +
+  'cue-3\n' +
+  '00:00:05.000 --> 00:00:06.000\n' +
+  'a <b>bold</b> word then‮ bidi and a bell\n'
+
+describe('vttToText', () => {
+  test('V1 header, NOTE, cue ids and timings dropped; speakers named; tags and controls stripped', () => {
+    expect(vttToText(SAMPLE)).toBe(
+      'Ann Lee: Hello there.\nno speaker tag on this cue\na bold word then bidi and a bell',
+    )
+  })
+
+  test('V2 CRLF line endings give the same result', () => {
+    expect(vttToText(SAMPLE.replace(/\n/g, '\r\n'))).toBe(
+      'Ann Lee: Hello there.\nno speaker tag on this cue\na bold word then bidi and a bell',
+    )
+  })
+
+  test('V3 over the cap: cut to max characters plus the truncation marker', () => {
+    const out = vttToText('x'.repeat(100), 40)
+    expect(out).toBe(`${'x'.repeat(40)}\n[transcript truncated]`)
+    expect(out.length).toBe(40 + '\n[transcript truncated]'.length)
+  })
+})
+
+// ── meetingFromInfo ──────────────────────────────────────────────────────────
+
+describe('meetingFromInfo', () => {
+  const info = {
+    details: { msGraphResourceId: 'M_so-me+graph/id=', title: 'Tender kick-off' },
+    organizer: { aadObjectId: ORGANIZER },
+  }
+
+  test('I1 a valid info: Graph id, lower-cased organizer, title', () => {
+    expect(meetingFromInfo(info)).toEqual({
+      graphMeetingId: 'M_so-me+graph/id=',
+      organizerId: ORGANIZER.toLowerCase(),
+      title: 'Tender kick-off',
+    })
+  })
+
+  test('I2 a missing or invalid msGraphResourceId', () => {
+    expect(meetingFromInfo({ organizer: { aadObjectId: ORGANIZER } })).toBeUndefined()
+    expect(meetingFromInfo({ details: {}, organizer: { aadObjectId: ORGANIZER } })).toBeUndefined()
+    expect(meetingFromInfo({ details: { msGraphResourceId: 'has spaces' }, organizer: { aadObjectId: ORGANIZER } })).toBeUndefined()
+  })
+
+  test('I3 an organizer id that is not a GUID', () => {
+    expect(meetingFromInfo({ details: { msGraphResourceId: 'g' }, organizer: { aadObjectId: 'not-a-guid' } })).toBeUndefined()
+    expect(meetingFromInfo({ details: { msGraphResourceId: 'g' } })).toBeUndefined()
+  })
+
+  test('I4 a non-object info and an array', () => {
+    expect(meetingFromInfo(undefined)).toBeUndefined()
+    expect(meetingFromInfo(null)).toBeUndefined()
+    expect(meetingFromInfo('x')).toBeUndefined()
+    expect(meetingFromInfo([info])).toBeUndefined()
+  })
+
+  test('I5 a 300-character title is cut to 200; an empty one is dropped', () => {
+    const m = meetingFromInfo({ details: { msGraphResourceId: 'g', title: 'T'.repeat(300) }, organizer: { aadObjectId: ORGANIZER } })
+    expect(m?.title).toBe('T'.repeat(200))
+    expect(meetingFromInfo({ details: { msGraphResourceId: 'g', title: '' }, organizer: { aadObjectId: ORGANIZER } })?.title).toBeUndefined()
+  })
+})
+
+// ── createMeetingStore ───────────────────────────────────────────────────────
+
+describe('createMeetingStore', () => {
+  function tempFile(name = 'meetings.json'): string {
+    return join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), name)
+  }
+
+  test('S1 put/get round trip, and a second store on the same path reads it back', () => {
+    const path = tempFile()
+    const s = createMeetingStore(path)
+    s.put('m1', { graphMeetingId: 'g1', organizerId: ORGANIZER.toLowerCase(), conversationId: CONVERSATION_ID })
+    const got = s.get('m1')
+    expect(got?.graphMeetingId).toBe('g1')
+    expect(got?.organizerId).toBe(ORGANIZER.toLowerCase())
+    expect(got?.conversationId).toBe(CONVERSATION_ID)
+    expect(typeof got?.savedAt).toBe('string')
+    expect(createMeetingStore(path).get('m1')?.graphMeetingId).toBe('g1')
+    expect(s.get('other')).toBeUndefined()
+  })
+
+  test('S2 the file is written with mode 0600', () => {
+    const path = tempFile()
+    createMeetingStore(path).put('m1', { graphMeetingId: 'g', organizerId: 'o', conversationId: 'c' })
+    expect(statSync(path).mode & 0o777).toBe(0o600)
+  })
+
+  test('S3 with max 3, five puts keep exactly the three newest', async () => {
+    const path = tempFile()
+    const s = createMeetingStore(path, 3)
+    for (let i = 1; i <= 5; i++) {
+      s.put(`k${i}`, { graphMeetingId: `g${i}`, organizerId: 'o', conversationId: 'c' })
+      // Distinct savedAt values: the timestamps have millisecond resolution.
+      await new Promise(r => setTimeout(r, 3))
+    }
+    const entries = JSON.parse(readFileSync(path, 'utf8')).entries
+    expect(Object.keys(entries).sort()).toEqual(['k3', 'k4', 'k5'])
+    expect(s.get('k1')).toBeUndefined()
+    expect(s.get('k5')?.graphMeetingId).toBe('g5')
+  })
+
+  test('S4 a corrupt file reads as an empty store', () => {
+    const path = tempFile()
+    writeFileSync(path, 'not json{', 'utf8')
+    expect(createMeetingStore(path).get('m1')).toBeUndefined()
+  })
+
+  test("S5 get of '__proto__' is undefined", () => {
+    const s = createMeetingStore(tempFile())
+    expect(s.get('__proto__')).toBeUndefined()
+  })
+})
+
+// ── fetchTranscript ──────────────────────────────────────────────────────────
+
+const ORG = ORGANIZER.toLowerCase()
+const GRAPH_ID = 'M/ID+x'
+const BASE = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(ORG)}/onlineMeetings/${encodeURIComponent(GRAPH_ID)}/transcripts`
+
+type Call = { url: string; method: string; headers: Record<string, string>; redirect: RequestRedirect }
+
+function recorder(responder: (url: string, init: RequestInit) => Response | Promise<Response>) {
+  const calls: Call[] = []
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const u = typeof url === 'string' ? url : url.toString()
+    calls.push({
+      url: u,
+      method: init?.method ?? 'GET',
+      headers: { ...(init?.headers as Record<string, string> | undefined) },
+      redirect: (init?.redirect ?? 'follow') as RequestRedirect,
+    })
+    return responder(u, init ?? {})
+  }
+  return { calls, fetchImpl: fetchImpl as unknown as typeof fetch }
+}
+
+const jsonRes = (status: number, body: unknown) =>
+  new Response(body === undefined ? null : JSON.stringify(body), { status })
+const textRes = (status: number, text: string) => new Response(text, { status })
+
+const VTT = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Bob>Hi.</v>\n'
+const deps = (fetchImpl: typeof fetch) => ({ getToken: async (): Promise<string> => 'T', fetch: fetchImpl })
+const MEETING = { graphMeetingId: GRAPH_ID, organizerId: ORG }
+
+describe('fetchTranscript', () => {
+  test('F1 happy path: list then the newest content, text/vtt, no redirect, bearer token', async () => {
+    const { calls, fetchImpl } = recorder((url, init) => {
+      if (url === BASE) {
+        return jsonRes(200, {
+          value: [
+            { id: 'older', createdDateTime: '2026-01-01T00:00:00Z' },
+            { id: 'newer', createdDateTime: '2026-02-01T00:00:00Z' },
+          ],
+        })
+      }
+      if (url === `${BASE}/newer/content` && (init.headers as Record<string, string>).Accept === 'text/vtt') {
+        return textRes(200, VTT)
+      }
+      return jsonRes(500, {})
+    })
+    const t = await fetchTranscript(MEETING, deps(fetchImpl))
+    expect(t).toEqual({ text: 'Bob: Hi.', createdDateTime: '2026-02-01T00:00:00Z' })
+    expect(calls.length).toBe(2)
+    expect(calls[0]!.url).toBe(BASE) // '/' and '+' percent-encoded
+    expect(calls[0]!.url).toContain('M%2FID%2Bx/transcripts')
+    expect(calls[1]!.url).toBe(`${BASE}/newer/content`)
+    for (const c of calls) {
+      expect(c.method).toBe('GET')
+      expect(c.redirect).toBe('error')
+      expect(c.headers.Authorization).toBe('Bearer T')
+    }
+    expect(calls[1]!.headers.Accept).toBe('text/vtt')
+  })
+
+  test('F2 an empty transcript list', async () => {
+    const { fetchImpl } = recorder(() => jsonRes(200, { value: [] }))
+    try {
+      await fetchTranscript(MEETING, deps(fetchImpl))
+      throw new Error('expected a TranscriptError')
+    } catch (err) {
+      expect(err).toBeInstanceOf(TranscriptError)
+      expect((err as Error).message.startsWith('no transcript yet')).toBe(true)
+    }
+  })
+
+  test('F3 403 GraphAccessToTranscriptsDisabled on the list', async () => {
+    const { fetchImpl } = recorder(() =>
+      jsonRes(403, { error: { code: 'Forbidden', innerError: { code: 'GraphAccessToTranscriptsDisabled' } } }),
+    )
+    try {
+      await fetchTranscript(MEETING, deps(fetchImpl))
+      throw new Error('expected a TranscriptError')
+    } catch (err) {
+      expect((err as Error).message).toContain('GraphAccessToTranscriptsDisabled')
+    }
+  })
+
+  test('F4 403 SpeakerAttributionNotAllowed on content: one retry with the unattributed Accept', async () => {
+    const { calls, fetchImpl } = recorder((url, init) => {
+      if (url === BASE) return jsonRes(200, { value: [{ id: 't1', createdDateTime: '2026-01-01T00:00:00Z' }] })
+      if ((init.headers as Record<string, string>).Accept === 'text/vtt') {
+        return jsonRes(403, { error: { code: 'Forbidden', innerError: { code: 'SpeakerAttributionNotAllowed' } } })
+      }
+      return textRes(200, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nplain cue\n')
+    })
+    const t = await fetchTranscript(MEETING, deps(fetchImpl))
+    expect(calls.length).toBe(3)
+    expect(calls[2]!.headers.Accept).toBe('application/vnd.microsoft.graph.transcript+text')
+    expect(t.text).toBe('plain cue')
+  })
+
+  test('F5 another 403 names the permission; a 404 says not found; a 500 shows only the status', async () => {
+    const cases: Array<[number, unknown, (msg: string) => void]> = [
+      [403, { error: { code: 'Forbidden' } }, m => expect(m).toContain('OnlineMeetingTranscript.Read.Chat')],
+      [404, { error: { code: 'NotFound' } }, m => expect(m).toContain('not found')],
+      [500, { error: { code: 'x y' } }, m => expect(m).toBe('Graph HTTP 500')],
+    ]
+    for (const [status, body, check] of cases) {
+      const { fetchImpl } = recorder(() => jsonRes(status, body))
+      try {
+        await fetchTranscript(MEETING, deps(fetchImpl))
+        throw new Error('expected a TranscriptError')
+      } catch (err) {
+        expect(err).toBeInstanceOf(TranscriptError)
+        check((err as Error).message)
+        expect((err as Error).message).not.toContain('Bearer')
+      }
+    }
+  })
+
+  test('F6 a throwing fetch: the network error text is never passed on', async () => {
+    const { fetchImpl } = recorder(() => {
+      throw new Error('secret https://internal.example/tenant')
+    })
+    try {
+      await fetchTranscript(MEETING, deps(fetchImpl))
+      throw new Error('expected a TranscriptError')
+    } catch (err) {
+      expect(err).toBeInstanceOf(TranscriptError)
+      expect((err as Error).message).toBe('Graph request failed (network error)')
+      expect((err as Error).message).not.toContain('secret')
+      expect((err as Error).message).not.toContain('Bearer')
+    }
+  })
+})
+
+// ── transcriptTools ──────────────────────────────────────────────────────────
+
+describe('transcriptTools', () => {
+  test('T1 off is an empty list, on is exactly the one tool', () => {
+    expect(transcriptTools(false)).toEqual([])
+    expect(transcriptTools(true)).toEqual([TRANSCRIPT_TOOL])
+    expect(transcriptTools(true)[0]!.name).toBe('get_meeting_transcript')
+  })
+})
+
+// ── the adapter stores the meeting on a start / end event ────────────────────
+
+class NoopAdapter extends BotAdapter {
+  async sendActivities(): Promise<any> { return [] }
+  async updateActivity(): Promise<void> {}
+  async deleteActivity(): Promise<void> {}
+  async continueConversation(): Promise<void> {}
+}
+
+const MEETING_START = 'application/vnd.microsoft.meetingStart'
+
+function meetingActivity(o: Record<string, unknown> = {}): Activity {
+  return {
+    type: 'event',
+    channelId: 'msteams',
+    name: MEETING_START,
+    id: 'ev-1',
+    timestamp: new Date('2026-10-23T09:00:05Z'),
+    from: { id: '29:1abc' },
+    conversation: { id: CONVERSATION_ID, tenantId: TENANT_ID },
+    recipient: { id: 'bot-1', name: 'Bot' },
+    channelData: { tenant: { id: TENANT_ID }, meeting: { id: 'MEETING-ID' } },
+    value: {
+      Id: 'VALUE-ID',
+      JoinUrl: 'https://join.example/x',
+      Title: 'Tender kick-off',
+      MeetingType: 'Scheduled',
+      StartTime: '2026-10-23T09:00:00Z',
+      EndTime: null,
+    },
+    ...o,
+  } as unknown as Activity
+}
+
+const VALID_INFO = {
+  details: { msGraphResourceId: 'graph-id-1', title: 'Tender kick-off' },
+  organizer: { aadObjectId: ORGANIZER },
+}
+
+function setup(opts: {
+  meetingEvents?: boolean
+  meetingStore?: ReturnType<typeof createMeetingStore>
+  getMeetingInfo?: (ctx: TurnContext, meetingId: string) => Promise<unknown>
+}) {
+  const dir = mkdtempSync(join(tmpdir(), 'cct-transcripts-'))
+  const allowlist = createAllowlist(join(dir, 'allowlist.json'))
+  allowlist.addEntry(USER)
+  const events: any[] = []
+  const infoCalls: Array<[TurnContext, string]> = []
+  const config = {
+    stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p',
+    appType: 'SingleTenant', tenantId: TENANT_ID, bindHost: '127.0.0.1', port: 0,
+    receivedFilesDir: '/tmp/unused',
+  }
+  const turn = makeTurnHandler({
+    config: config as any,
+    adapter: {} as any,
+    allowlist,
+    refs: createConversationRefStore(),
+    onEvent: e => events.push(e),
+    ...(opts.meetingEvents === undefined ? {} : { meetingEvents: opts.meetingEvents }),
+    ...(opts.meetingStore !== undefined ? { meetingStore: opts.meetingStore } : {}),
+    ...(opts.getMeetingInfo !== undefined
+      ? { getMeetingInfo: (ctx: TurnContext, meetingId: string) => { infoCalls.push([ctx, meetingId]); return opts.getMeetingInfo!(ctx, meetingId) } }
+      : {}),
+  } as any)
+  const run = (a: Activity) => turn(new TurnContext(new NoopAdapter() as any, a))
+  return { run, events, infoCalls }
+}
+
+describe('the meeting block stores the meeting for get_meeting_transcript', () => {
+  test('A1 a valid meeting info is stored under the cleaned meeting id', async () => {
+    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const s = setup({
+      meetingEvents: true,
+      meetingStore: store,
+      getMeetingInfo: async () => VALID_INFO,
+    })
+    await s.run(meetingActivity())
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].meetingEvent.meetingId).toBe('MEETING-ID')
+    expect(s.infoCalls.length).toBe(1)
+    expect(s.infoCalls[0]![1]).toBe('MEETING-ID')
+    expect(s.infoCalls[0]![0]).toBeInstanceOf(TurnContext)
+    const m = store.get('MEETING-ID')
+    expect(m?.graphMeetingId).toBe('graph-id-1')
+    expect(m?.organizerId).toBe(ORGANIZER.toLowerCase())
+    expect(m?.conversationId).toBe(CONVERSATION_ID)
+    expect(m?.tenantId).toBe(TENANT_ID)
+    expect(m?.title).toBe('Tender kick-off')
+  })
+
+  test('A2 a throwing meeting-info lookup: the event is still delivered, nothing stored', async () => {
+    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const s = setup({
+      meetingEvents: true,
+      meetingStore: store,
+      getMeetingInfo: async () => { throw new Error('boom') },
+    })
+    await s.run(meetingActivity())
+    expect(s.events.length).toBe(1)
+    expect(store.get('MEETING-ID')).toBeUndefined()
+  })
+
+  test('A3 a meeting info without a usable id: delivered, nothing stored', async () => {
+    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const s = setup({
+      meetingEvents: true,
+      meetingStore: store,
+      getMeetingInfo: async () => ({ details: {}, organizer: 'nope' }),
+    })
+    await s.run(meetingActivity())
+    expect(s.events.length).toBe(1)
+    expect(store.get('MEETING-ID')).toBeUndefined()
+  })
+
+  test('A4 no meetingStore in the deps: the lookup is never made', async () => {
+    const s = setup({ meetingEvents: true, getMeetingInfo: async () => VALID_INFO })
+    await s.run(meetingActivity())
+    expect(s.events.length).toBe(1)
+    expect(s.infoCalls.length).toBe(0)
+  })
+
+  test('A5 meetingEvents off: no lookup, nothing delivered', async () => {
+    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const s = setup({ meetingEvents: false, meetingStore: store, getMeetingInfo: async () => VALID_INFO })
+    await s.run(meetingActivity())
+    expect(s.infoCalls.length).toBe(0)
+    expect(s.events.length).toBe(0)
+    expect(store.get('MEETING-ID')).toBeUndefined()
+  })
+
+  test('A6 the lookup gets the raw meeting id, the store the cleaned one', async () => {
+    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const s = setup({ meetingEvents: true, meetingStore: store, getMeetingInfo: async () => VALID_INFO })
+    // metaText turns 'M"Q<1>' into 'M Q 1' — the raw id must go to Teams, the cleaned one must be the key.
+    await s.run(meetingActivity({ channelData: { tenant: { id: TENANT_ID }, meeting: { id: 'M"Q<1>' } } }))
+    expect(s.infoCalls.map(c => c[1])).toEqual(['M"Q<1>'])
+    expect(store.get('M Q 1')?.graphMeetingId).toBe('graph-id-1')
+    expect(store.get('M"Q<1>')).toBeUndefined()
+  })
+})

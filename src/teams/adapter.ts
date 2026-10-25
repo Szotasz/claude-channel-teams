@@ -30,6 +30,7 @@
 
 import {
   CloudAdapter,
+  TeamsInfo,
   TurnContext,
   type Activity,
   type ConversationReference,
@@ -53,6 +54,7 @@ import { cardActionFrom, cardActionText } from './cardAction.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
 import { userViewInvokeFrom } from './userViews.js'
 import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
+import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -233,6 +235,11 @@ export interface AdapterDeps {
   /** Whether meeting start / end events are delivered (TEAMS_MEETING_EVENTS). Optional so existing
    *  tests still wire. */
   meetingEvents?: boolean
+  /** Meetings this channel saw an event for, so get_meeting_transcript can find their transcript. Optional so existing
+   *  tests still wire. */
+  meetingStore?: MeetingStore
+  /** Looks up a meeting's Graph id and organizer; defaults to TeamsInfo.getMeetingInfo. Injectable for tests. */
+  getMeetingInfo?: (ctx: TurnContext, meetingId: string) => Promise<unknown>
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -502,6 +509,18 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
           ...(meeting.time !== undefined ? { time: meeting.time } : {}),
         },
       })
+      // Remember the meeting's Graph id and organizer so get_meeting_transcript can find its transcript later. A failed
+      // lookup must not affect the delivered event.
+      if (deps.meetingStore && meetingId !== undefined && meeting.meetingId !== undefined) {
+        try {
+          const info = await (deps.getMeetingInfo ?? ((c: TurnContext, id: string) => TeamsInfo.getMeetingInfo(c, id)))(ctx, meeting.meetingId)
+          const m = meetingFromInfo(info)
+          if (m) deps.meetingStore.put(meetingId, { ...m, conversationId: evConversation, ...(evTenant ? { tenantId: evTenant } : {}) })
+          else process.stderr.write('teams channel: meeting info without a usable Graph id or organizer\n')
+        } catch {
+          process.stderr.write('teams channel: meeting info lookup failed\n')
+        }
+      }
       return
     }
     if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card) return
