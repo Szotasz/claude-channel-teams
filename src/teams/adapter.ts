@@ -455,19 +455,29 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         process.stderr.write('teams channel: drop — meeting event without a value object\n')
         return
       }
-      const evTenant = a.conversation?.tenantId ?? (isPlainObject(a.channelData) && isPlainObject(a.channelData.tenant) && typeof a.channelData.tenant.id === 'string' ? a.channelData.tenant.id : undefined)
-      if (deps.config.tenantId && evTenant && evTenant.toLowerCase() !== deps.config.tenantId.toLowerCase()) {
+      // Both places can name the tenant. Only a non-empty string counts, and any one of them that disagrees with the
+      // pinned tenant drops the event (an empty conversation.tenantId must not hide a foreign channelData tenant).
+      const rawConvTenant: unknown = a.conversation?.tenantId
+      const convTenant = typeof rawConvTenant === 'string' && rawConvTenant !== '' ? rawConvTenant : undefined
+      const dataTenant = isPlainObject(a.channelData) && isPlainObject(a.channelData.tenant)
+        && typeof a.channelData.tenant.id === 'string' && a.channelData.tenant.id !== '' ? a.channelData.tenant.id : undefined
+      const pinned = deps.config.tenantId ? deps.config.tenantId.toLowerCase() : undefined
+      if (pinned && [convTenant, dataTenant].some(t => t !== undefined && t.toLowerCase() !== pinned)) {
         process.stderr.write('teams channel: drop — meeting event from another tenant\n')
         return
       }
-      const evConversation = a.conversation?.id
-      if (!evConversation) {
+      const evTenant = convTenant ?? dataTenant
+      const rawConversation: unknown = a.conversation?.id
+      if (typeof rawConversation !== 'string' || rawConversation === '') {
         process.stderr.write('teams channel: drop — meeting event without conversation.id\n')
         return
       }
+      const evConversation = rawConversation
       const title = metaText(meeting.title)
       const meetingType = metaText(meeting.meetingType, 40)
       const meetingId = metaText(meeting.meetingId, 300)
+      // A malformed timestamp must not throw in the turn handler: the event is delivered without ts.
+      const when = a.timestamp ? new Date(a.timestamp) : undefined
       deps.onEvent({
         text: meetingEventText({ kind: meeting.kind, title }),
         conversationId: evConversation,
@@ -475,7 +485,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         aadObjectId: '',
         tenantId: evTenant ?? deps.config.tenantId,
         fromName: '',
-        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        ts: when && !Number.isNaN(when.getTime()) ? when.toISOString() : undefined,
         meetingEvent: {
           kind: meeting.kind,
           ...(title !== undefined ? { title } : {}),

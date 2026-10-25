@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
 
-import { channelEventMeta, makeTurnHandler } from '../src/teams/adapter'
+import { channelEventMeta, makeTurnHandler, metaText } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { meetingEventFrom, meetingEventText } from '../src/teams/meetingEvents'
@@ -212,6 +212,73 @@ describe('meeting events in the turn handler', () => {
     expect(s.events.length).toBe(1)
     expect(s.events[0].text).toBe('hello')
     expect(s.events[0].meetingEvent).toBeUndefined()
+  })
+
+  test('E8 a malformed timestamp is delivered without ts', async () => {
+    const s = setup(true)
+    await s.run(meetingActivity({ timestamp: 'garbage' }))
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].text).toBe('[Meeting started] Tender kick-off')
+    expect(s.events[0].ts).toBeUndefined()
+  })
+
+  test('E9 a foreign tenant named only in channelData is dropped', async () => {
+    const foreign = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const withEmptyConvTenant = setup(true)
+    await withEmptyConvTenant.run(meetingActivity({
+      conversation: { id: CONVERSATION_ID, tenantId: '' },
+      channelData: { tenant: { id: foreign }, meeting: { id: 'MEETING-ID' } },
+    }))
+    expect(withEmptyConvTenant.events.length).toBe(0)
+    const withoutConvTenant = setup(true)
+    await withoutConvTenant.run(meetingActivity({
+      conversation: { id: CONVERSATION_ID },
+      channelData: { tenant: { id: foreign }, meeting: { id: 'MEETING-ID' } },
+    }))
+    expect(withoutConvTenant.events.length).toBe(0)
+  })
+
+  test('E10 a non-string conversation tenant does not throw', async () => {
+    const s = setup(true)
+    await s.run(meetingActivity({
+      conversation: { id: CONVERSATION_ID, tenantId: 5 },
+      channelData: { tenant: { id: TENANT_ID }, meeting: { id: 'MEETING-ID' } },
+    }))
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].tenantId).toBe(TENANT_ID)
+  })
+
+  test('E13 an empty channelData tenant id is ignored, not a mismatch', async () => {
+    const s = setup(true)
+    await s.run(meetingActivity({
+      conversation: { id: CONVERSATION_ID, tenantId: TENANT_ID },
+      channelData: { tenant: { id: '' }, meeting: { id: 'MEETING-ID' } },
+    }))
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].tenantId).toBe(TENANT_ID)
+  })
+
+  test('E11 an empty or array conversation id is dropped', async () => {
+    // A number or an object already throws in the diagnostic log line above the block; an array does not.
+    for (const id of ['', ['19:x']] as unknown[]) {
+      const s = setup(true)
+      await s.run(meetingActivity({ conversation: { id, tenantId: TENANT_ID } }))
+      expect(s.events.length).toBe(0)
+    }
+  })
+
+  test('E12 the meeting type is cleaned and capped at 40', async () => {
+    const meetingType = 'Sch"ed<ul>ed\u202e ' + 'x'.repeat(60)
+    const s = setup(true)
+    await s.run(meetingActivity({
+      value: { Title: 'Tender kick-off', MeetingType: meetingType, StartTime: '2026-10-23T09:00:00Z', EndTime: null },
+    }))
+    const cleaned = metaText(meetingType, 40)
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].meetingEvent.meetingType).toBe(cleaned)
+    expect(s.events[0].meetingEvent.meetingType.length).toBeLessThanOrEqual(40)
+    for (const ch of ['"', '<', '\u202e']) expect(s.events[0].meetingEvent.meetingType).not.toContain(ch)
+    expect(channelEventMeta(s.events[0]).meeting_type).toBe(cleaned)
   })
 })
 
