@@ -180,8 +180,9 @@ const META_BLOCK_RE = /^(?:NOTE|STYLE|REGION)(?:$|[ \t])/
 /** A cue timing line; cue settings may follow the end time. */
 const TIMING_RE = /^\S+[ \t]+-->[ \t]+\S+/
 
-/** Every opening voice tag, also with classes (`<v.loud Ann>`). */
-const VOICE_OPEN_RE = /<v(?:\.[^\s>]+)*\s+([^>]*)>/g
+/** Every opening voice tag, also with classes (`<v.loud Ann>`). A class name holds no dot, so a long dot chain
+ *  cannot be split in many ways (no exponential backtracking). */
+const VOICE_OPEN_RE = /<v(?:\.[^\s.>]+)*\s+([^>]*)>/g
 
 /**
  * One cue payload to output lines: each voice span is a line of its own, so an indented tag still names its

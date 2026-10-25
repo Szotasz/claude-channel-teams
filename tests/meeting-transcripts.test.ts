@@ -124,6 +124,15 @@ describe('vttToText', () => {
     expect(vttToText('WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<c.x><v Ann>hi</v></c>\n')).toBe('Ann: hi')
   })
 
+  test('V13 voice-like tags with a long dot chain and no space are not slow', () => {
+    const cue = `00:00:01.000 --> 00:00:02.000\n<v${'.a'.repeat(30)}>x\n`
+    const vtt = `WEBVTT\n\n${[cue, cue, cue].join('\n')}`
+    const t0 = performance.now()
+    expect(vttToText(vtt)).toBe('x\nx\nx')
+    // A backtracking pattern spent about 1.5 s on each such cue (Bun); a linear one takes well under a millisecond.
+    expect(performance.now() - t0).toBeLessThan(1000)
+  }, 30000)
+
   test('V12 a body without cues: each line of it is a payload of its own', () => {
     expect(vttToText('Ann: Hello\nBob: Hi there\n')).toBe('Ann: Hello\nBob: Hi there')
     expect(vttToText('WEBVTT\n\n')).toBe('')
