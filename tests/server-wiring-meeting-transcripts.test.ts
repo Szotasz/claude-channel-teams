@@ -53,4 +53,10 @@ describe('server.ts meeting-transcripts wiring', () => {
     expect(listener).toContain('...(transcriptsOn ? { meetingStore } : {}),')
     expect(listener).not.toContain('meetingStore,')
   })
+
+  test('the get_meeting_transcript case returns transcriptResultText(m.title, t)', () => {
+    const c = block(server, "case 'get_meeting_transcript': {")
+    expect(c).toContain('text: transcriptResultText(m.title, t)')
+    expect(c).not.toContain('Transcript of')
+  })
 })

@@ -32,7 +32,8 @@
 # --rsc-meeting-transcripts adds the RSC permission OnlineMeetingTranscript.Read.Chat (application) and the
 # webApplicationInfo block, so the bot can read the transcripts of scheduled private chat meetings in the chats where
 # the app is installed (not channel meetings); the plugin uses it only with TEAMS_MEETING_TRANSCRIPTS (see
-# docs/meeting-transcripts.md). Not tested in a Teams tenant.
+# docs/meeting-transcripts.md). Given without --rsc-meeting-events the script warns on stderr and still writes the
+# manifest. Not tested in a Teams tenant.
 #
 # --command "<title>: <description>" declares a Teams slash command (repeatable, order kept, max 12). The value is split at
 # the first ": "; one leading "/" on the title is dropped, the title must match [A-Za-z0-9][A-Za-z0-9_-]* (max 128 bytes) and
@@ -84,6 +85,12 @@ while [ $# -gt 0 ]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# The transcript tool reads only meetings the plugin saw a start or end event for, and those events come with
+# --rsc-meeting-events: warn, but still write the manifest (the owner may add the other option later).
+if [ "$RSC_TRANSCRIPTS" = 1 ] && [ "$RSC_MEETING" != 1 ]; then
+  echo "warning: --rsc-meeting-transcripts without --rsc-meeting-events: the plugin keeps a meeting only from its start or end events, so the transcript tool will find none" >&2
+fi
 
 # Validate every --command before anything is written. Byte semantics: LC_ALL=C.
 CMD_TITLES=()

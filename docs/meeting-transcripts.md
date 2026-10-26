@@ -14,12 +14,15 @@ This is off by default. It needs all of:
 3. an app package built with `scripts/make-teams-manifest.sh --rsc-meeting-events --rsc-meeting-transcripts`.
    The meeting-info lookup uses the meeting permissions, the transcript read uses
    `OnlineMeetingTranscript.Read.Chat`; a chat member or the meeting organizer consents when the app is installed,
-   and an app that is already installed must be upgraded with the new permissions.
+   and an app that is already installed must be upgraded with the new permissions. The manifest script warns when
+   `--rsc-meeting-transcripts` is given without `--rsc-meeting-events`.
 
 The tool knows only meetings this plugin saw a start or end event for: on each event it asks Teams for the
 meeting's Graph id and organizer and keeps them in `meeting-transcripts.json` in the state directory, at most 200
-meetings, the ones seen least recently (by their last start or end event) dropped first. An unknown `meeting_id` is
-an error, not a guess.
+meetings, the ones whose meeting lookup last succeeded longest ago dropped first (an event whose lookup fails changes
+nothing). An unknown `meeting_id` is an error, not a guess.
+
+The transcript list is read page by page; a meeting with more than 20 pages of transcripts is an error.
 
 The tool is not scoped to a conversation: a meeting the plugin saw an event for can be read from any conversation of
 the same Claude session, whose context holds those meeting ids already.
