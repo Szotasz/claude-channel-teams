@@ -184,6 +184,8 @@ describe('vttToText edge cases', () => {
     expect(vttToText(`${H}&amp;lt;\n`)).toBe('&lt;')
     expect(vttToText(`${H}a&#xD800;b &#1114112; &AMP; &#0;\n`)).toBe('a&#xD800;b &#1114112; &AMP; &#0;')
     expect(vttToText(`${H}<v R&amp;D>go</v>\n`)).toBe('R&D: go')
+    // the other named references; a decoded bidi mark becomes a space like any other
+    expect(vttToText(`${H}&quot;a&apos; &gt; x&lrm;y&rlm;z\n`)).toBe('"a\' > x y z')
     // the last code point is still decoded
     expect(vttToText(`${H}&#x10FFFF;!\n`)).toBe('\u{10FFFF}!')
   })
@@ -209,6 +211,7 @@ describe('vttToText edge cases', () => {
     expect(a.out).toBe('<v x')
     expect(a.ms).toBeLessThan(1000)
     const b = time(`${H}${'<v '.repeat(20000)}\n`)
+    expect(b.out).toBe('<v '.repeat(20000).trim())
     expect(b.ms).toBeLessThan(1000)
     const c = time(`${H}${'<'.repeat(50000)}\n`)
     expect(c.out).toBe('<'.repeat(50000))
@@ -229,6 +232,8 @@ describe('vttToText edge cases', () => {
 
   test('V27 a NOTE block is dropped in a body with cues but no header', () => {
     expect(vttToText('NOTE x\n\n00:01.000 --> 00:02.000\nhi\n')).toBe('hi')
+    // with the header and no cue, a REGION block is still metadata
+    expect(vttToText('WEBVTT\n\nREGION\nid:r\n\nAnn: hi\n')).toBe('Ann: hi')
   })
 
   test('V28 a span opened with a class is closed by </v>', () => {

@@ -258,8 +258,9 @@ function voiceLines(payload: string): string[] {
  * into a `Speaker: text` line of its own (a `</v>` ends the span, so the text
  * after it has no speaker, and an empty span gives no line), strip any other
  * tag, decode the character references once and strip any control / bidi
- * character, and cap the result. A body with neither a timing line nor the
- * header is plain text and keeps every line instead of being taken as cues.
+ * character, and cap the result. A body without a timing line is taken line
+ * by line; without the header as well, its NOTE / STYLE / REGION lines are
+ * kept as text.
  * The truncation notice is inside the cap, so the result is never longer than
  * `max` characters.
  */
@@ -281,7 +282,7 @@ export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
   // of every remaining block is a payload of its own. Otherwise a block without a timing line is not a cue: skip it.
   const timingAt = blocks.map(lines => lines.findIndex(l => TIMING_RE.test(l)))
   const anyTiming = timingAt.some(at => at >= 0)
-  // Only such a body counts as plain text: with no header and no cue, its NOTE / STYLE / REGION lines are payload too.
+  // The body is WebVTT if it has a timing line or starts with the header; only then are NOTE / STYLE / REGION blocks metadata.
   const isVtt = anyTiming || HEADER_RE.test(blocks[0]?.[0] ?? '')
   const out: string[] = []
   const addPayload = (payload: string) => {
