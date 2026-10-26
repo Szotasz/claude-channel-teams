@@ -230,7 +230,7 @@ describe('vttToText edge cases', () => {
     expect(vttToText('WEBVTT - title\n\n00:01.000 --> 00:02.000\nhi\n')).toBe('hi')
   })
 
-  test('V27 NOTE and REGION blocks are not payload in a WebVTT body (with cues, or with the header and no cue)', () => {
+  test('V27 a NOTE block is dropped in a body with cues but no header', () => {
     expect(vttToText('NOTE x\n\n00:01.000 --> 00:02.000\nhi\n')).toBe('hi')
     // with the header and no cue, a REGION block is still metadata
     expect(vttToText('WEBVTT\n\nREGION\nid:r\n\nAnn: hi\n')).toBe('Ann: hi')
@@ -734,7 +734,17 @@ describe('fetchTranscript', () => {
   })
 
   test('F14 a nextLink that is not a Graph v1.0 URL is refused before any request to it', async () => {
-    const nextLinks = ['https://example.org/v1.0/x', 42, 'https://graph.microsoft.com.example.org/v1.0/x', '']
+    const nextLinks = [
+      'https://example.org/v1.0/x',
+      42,
+      'https://graph.microsoft.com.example.org/v1.0/x',
+      '',
+      `${BASE.slice(0, BASE.indexOf('/v1.0/'))}/v1.0/../beta/x`,
+      'https://graph.microsoft.com/v1.0/%2e%2e/beta/x',
+      'https://graph.microsoft.com/v1.0x/y',
+      'not a url',
+      null,
+    ]
     for (const nextLink of nextLinks) {
       const { calls, fetchImpl } = recorder(() =>
         jsonRes(200, { value: [{ id: 'a', createdDateTime: '2026-01-01T00:00:00Z' }], '@odata.nextLink': nextLink }),
@@ -782,6 +792,25 @@ describe('fetchTranscript', () => {
     const t = await fetchTranscript(MEETING, deps(fetchImpl))
     expect(t).toEqual({ text: 'Bob: Hi.', createdDateTime: '2026-02-01T00:00:00Z' })
     expect(calls.map(c => c.url)).toEqual([BASE, NEXT, `${BASE}/newer/content`])
+  })
+
+  test('F18 a next link with another spelling of the Graph origin is followed', async () => {
+    const { calls, fetchImpl } = recorder(url => {
+      if (url === BASE) {
+        return jsonRes(200, {
+          value: [{ id: 'older', createdDateTime: '2026-01-01T00:00:00Z' }],
+          '@odata.nextLink': 'https://GRAPH.microsoft.com:443/v1.0/next?$skiptoken=p2',
+        })
+      }
+      if (url === 'https://graph.microsoft.com/v1.0/next?$skiptoken=p2') {
+        return jsonRes(200, { value: [{ id: 'newer', createdDateTime: '2026-02-01T00:00:00Z' }] })
+      }
+      if (url === `${BASE}/newer/content`) return textRes(200, VTT)
+      return jsonRes(500, {})
+    })
+    const t = await fetchTranscript(MEETING, deps(fetchImpl))
+    expect(t).toEqual({ text: 'Bob: Hi.', createdDateTime: '2026-02-01T00:00:00Z' })
+    expect(calls.map(c => c.url)).toEqual([BASE, 'https://graph.microsoft.com/v1.0/next?$skiptoken=p2', `${BASE}/newer/content`])
   })
 
   test('F16 an error on the second page is mapped like the first', async () => {

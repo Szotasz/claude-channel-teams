@@ -9,7 +9,7 @@
  */
 
 import { randomBytes } from 'crypto'
-import { chmodSync, closeSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
+import { closeSync, fchmodSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 
 export interface StoredMeeting {
   graphMeetingId: string
@@ -139,14 +139,16 @@ export function createMeetingStore(path: string, max = MAX_STORED_MEETINGS): Mee
           created = true
           try {
             writeFileSync(fd, JSON.stringify(body, null, 2))
+            fchmodSync(fd, 0o600)
           } finally {
             closeSync(fd)
           }
-          chmodSync(tmp, 0o600)
           renameSync(tmp, path)
           created = false
         } finally {
           // A temporary file this put created and did not rename is removed; a name it did not create is never touched.
+          // A process killed between the open and the rename leaves its own temp file behind; such a file is never
+          // reused or read.
           if (created) {
             try {
               unlinkSync(tmp)
@@ -383,8 +385,9 @@ async function errorFor(res: Response, code?: string): Promise<TranscriptError> 
 /** At most this many pages of the transcript list are read. */
 const MAX_TRANSCRIPT_PAGES = 20
 
-// The bearer token is sent only to Graph v1.0 URLs.
-const GRAPH_PREFIX = 'https://graph.microsoft.com/v1.0/'
+// The bearer token is sent only to Graph v1.0 URLs: checked on the parsed URL, after dot segments are resolved.
+const GRAPH_ORIGIN = 'https://graph.microsoft.com'
+const GRAPH_PATH_PREFIX = '/v1.0/'
 
 export async function fetchTranscript(
   m: Pick<StoredMeeting, 'graphMeetingId' | 'organizerId'>,
@@ -431,10 +434,17 @@ export async function fetchTranscript(
     }
     const next: unknown = isObject(json) ? json['@odata.nextLink'] : undefined
     if (next === undefined) break
-    if (typeof next !== 'string' || !next.startsWith(GRAPH_PREFIX)) {
+    if (typeof next !== 'string') throw new TranscriptError('Graph returned an invalid response')
+    let nextUrl: URL
+    try {
+      nextUrl = new URL(next)
+    } catch {
       throw new TranscriptError('Graph returned an invalid response')
     }
-    listUrl = next
+    if (nextUrl.origin !== GRAPH_ORIGIN || !nextUrl.pathname.startsWith(GRAPH_PATH_PREFIX)) {
+      throw new TranscriptError('Graph returned an invalid response')
+    }
+    listUrl = nextUrl.href
   }
   if (newest === undefined) {
     throw new TranscriptError(
