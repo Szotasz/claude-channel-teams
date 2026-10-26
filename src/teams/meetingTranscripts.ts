@@ -177,30 +177,71 @@ const isBlank = (line: string): boolean => /^[ \t]*$/.test(line)
 /** A NOTE / STYLE / REGION block header: the whole block is metadata, never payload. */
 const META_BLOCK_RE = /^(?:NOTE|STYLE|REGION)(?:$|[ \t])/
 
-/** A cue timing line; cue settings may follow the end time. */
-const TIMING_RE = /^\S+[ \t]+-->[ \t]+\S+/
+/** A cue timing line needs real WebVTT timestamps (hours optional); cue settings may follow the end time. */
+const TIMING_RE = /^(?:\d+:)?\d{2}:\d{2}\.\d{3}[ \t]+-->[ \t]+(?:\d+:)?\d{2}:\d{2}\.\d{3}(?:[ \t]|$)/
 
-/** Every opening voice tag, also with classes (`<v.loud Ann>`). A class name holds no dot, so a long dot chain
- *  cannot be split in many ways (no exponential backtracking). */
-const VOICE_OPEN_RE = /<v(?:\.[^\s.>]+)*\s+([^>]*)>/g
+/** Every opening and closing voice tag, also with classes (`<v.loud Ann>`). A class name holds no dot, so a long
+ *  dot chain cannot be split in many ways (no exponential backtracking). */
+const VOICE_TAG_RE = /<v(?:\.[^\s.>]+)*\s+([^>]*)>|<\/v>/g
+
+/** The character references cue text may hold. One replace pass, so `&amp;lt;` becomes `&lt;`, never `<`. */
+const ENTITY_RE = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos|nbsp|lrm|rlm));/g
+
+/** The named references; names are case-sensitive, so `&AMP;` stays as it is. `&nbsp;` gives a plain space. */
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', lrm: '\u200e', rlm: '\u200f',
+}
+
+/** One replace pass: a reference that names no code point (0, past Unicode, a surrogate) stays as it is. */
+function decodeEntities(s: string): string {
+  return s.replace(ENTITY_RE, (match: string, dec?: string, hex?: string, name?: string) => {
+    if (name !== undefined) return NAMED_ENTITIES[name]!
+    const cp = dec !== undefined ? parseInt(dec, 10) : parseInt(hex!, 16)
+    if (cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return match
+    return String.fromCodePoint(cp)
+  })
+}
+
+/** One span of cue text: tags off first, then the references decoded once, then the text cleaned. */
+function spanText(s: string): string {
+  return cleanOutputText(decodeEntities(s.replace(/<[^>]*>/g, '')))
+}
+
+/** Cut to `n` characters; a lone high surrogate at the cut is dropped, so no half surrogate pair is left. */
+function cutAt(s: string, n: number): string {
+  const cut = s.slice(0, n)
+  const last = cut.charCodeAt(cut.length - 1)
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut
+}
 
 /**
  * One cue payload to output lines: each voice span is a line of its own, so an indented tag still names its
- * speaker and two voices in one cue stay apart. Text before the first tag is a line without a speaker; a span
- * runs to the next opening tag or to the end of the payload.
+ * speaker and two voices in one cue stay apart. A `</v>` ends the span, so the text after it is a line without
+ * a speaker, and an empty span gives no line at all. Text before the first tag is a line without a speaker; a
+ * span without a closing tag runs to the next tag or to the end of the payload.
  */
 function voiceLines(payload: string): string[] {
   const out: string[] = []
   let speaker = ''
+  let open = false
   let from = 0
   const flush = (to: number) => {
-    const text = payload.slice(from, to)
-    out.push(speaker === '' ? text : `${speaker}: ${text}`)
+    const text = spanText(payload.slice(from, to))
+    if (text !== '') out.push(speaker === '' ? text : `${speaker}: ${text}`)
   }
-  VOICE_OPEN_RE.lastIndex = 0
-  for (let m = VOICE_OPEN_RE.exec(payload); m !== null; m = VOICE_OPEN_RE.exec(payload)) {
-    flush(m.index)
-    speaker = cleanOutputText(m[1]!)
+  VOICE_TAG_RE.lastIndex = 0
+  for (let m = VOICE_TAG_RE.exec(payload); m !== null; m = VOICE_TAG_RE.exec(payload)) {
+    if (m[0] === '</v>') {
+      // A stray close (no span open) is no split point: it is removed with the other tags.
+      if (!open) continue
+      flush(m.index)
+      speaker = ''
+      open = false
+    } else {
+      flush(m.index)
+      speaker = cleanOutputText(decodeEntities(m[1]!))
+      open = true
+    }
     from = m.index + m[0].length
   }
   flush(payload.length)
@@ -210,15 +251,18 @@ function voiceLines(payload: string): string[] {
 /**
  * WebVTT to plain text: parse it as cue blocks, drop the header, NOTE / STYLE /
  * REGION blocks, cue ids and timing lines, turn each `<v Speaker>text</v>` span
- * into a `Speaker: text` line of its own, strip any other tag and any control /
- * bidi character, and cap the result. A body without one timing line anywhere is
- * taken line by line instead of as cues. The truncation notice is inside the
- * cap, so the result is never longer than `max` characters.
+ * into a `Speaker: text` line of its own (a `</v>` ends the span, so the text
+ * after it has no speaker, and an empty span gives no line), strip any other
+ * tag, decode the character references once and strip any control / bidi
+ * character, and cap the result. A body with neither a timing line nor the
+ * header is plain text and keeps every line instead of being taken as cues.
+ * The truncation notice is inside the cap, so the result is never longer than
+ * `max` characters.
  */
 export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
   const blocks: string[][] = []
   let block: string[] = []
-  for (const line of vtt.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')) {
+  for (const line of vtt.replace(/^\ufeff/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')) {
     if (isBlank(line)) {
       // Several blank lines in a row are one separator.
       if (block.length > 0) blocks.push(block)
@@ -233,6 +277,8 @@ export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
   // of every remaining block is a payload of its own. Otherwise a block without a timing line is not a cue: skip it.
   const timingAt = blocks.map(lines => lines.findIndex(l => TIMING_RE.test(l)))
   const anyTiming = timingAt.some(at => at >= 0)
+  // Only such a body counts as plain text: with no header and no cue, its NOTE / STYLE / REGION lines are payload too.
+  const isVtt = anyTiming || (blocks[0]?.[0] ?? '').startsWith('WEBVTT')
   const out: string[] = []
   const addPayload = (payload: string) => {
     for (const line of voiceLines(payload)) out.push(line)
@@ -241,7 +287,7 @@ export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
     const lines = blocks[i]!
     const first = lines[0]!
     if (i === 0 && first.startsWith('WEBVTT')) continue
-    if (META_BLOCK_RE.test(first)) continue
+    if (isVtt && META_BLOCK_RE.test(first)) continue
     const at = timingAt[i]!
     if (at >= 0) {
       // One cue: its payload lines, trimmed, are one payload.
@@ -250,16 +296,12 @@ export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
       for (const line of lines) addPayload(line.trim())
     }
   }
-  const text = out
-    .map(l => cleanOutputText(l.replace(/<[^>]*>/g, '')))
-    .filter(l => l !== '')
-    .join('\n')
+  const text = out.join('\n')
   if (text.length > max) {
+    const room = Math.max(0, max)
+    if (room < NOTICE.length) return cutAt(text, room)
     // The notice is part of the bound, and a lone high surrogate at the cut is dropped.
-    let cut = text.slice(0, Math.max(0, max - NOTICE.length))
-    const last = cut.charCodeAt(cut.length - 1)
-    if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1)
-    return cut + NOTICE
+    return cutAt(text, room - NOTICE.length) + NOTICE
   }
   return text
 }

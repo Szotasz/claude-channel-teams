@@ -139,6 +139,71 @@ describe('vttToText', () => {
   })
 })
 
+describe('vttToText edge cases', () => {
+  const H = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n'
+
+  test('V14 a closing tag ends the voice span', () => {
+    expect(vttToText(`${H}<v Ann>Hello</v> aside\n`)).toBe('Ann: Hello\naside')
+  })
+
+  test('V15 text between two voices is its own line', () => {
+    expect(vttToText(`${H}<v Ann>Hi</v> (applause) <v Bob>No</v>\n`)).toBe('Ann: Hi\n(applause)\nBob: No')
+  })
+
+  test('V16 an empty voice span gives no line', () => {
+    expect(vttToText(`${H}<v Ann></v><v Bob>No</v>\n`)).toBe('Bob: No')
+    expect(vttToText(`${H}<v Ann> </v>\n`)).toBe('')
+  })
+
+  test('V17 a stray closing tag does not split a line', () => {
+    expect(vttToText(`${H}Hello</v> world\n`)).toBe('Hello world')
+  })
+
+  test('V18 a text arrow is not a timing line', () => {
+    expect(vttToText('Alice --> Bob\nAnn: Hello\n')).toBe('Alice --> Bob\nAnn: Hello')
+    // still parsed as cues
+    expect(vttToText('WEBVTT\n\n00:01.000 --> 00:02.000\nshort form\n')).toBe('short form')
+    expect(vttToText('WEBVTT\n\n01:00:01.000 --> 01:00:02.000 line:0\nwith settings\n')).toBe('with settings')
+    // the end time must end there: a longer token is text, not a timing line
+    expect(vttToText('00:01.000 --> 00:02.000x\nAnn: Hi\n')).toBe('00:01.000 --> 00:02.000x\nAnn: Hi')
+  })
+
+  test('V19 a plain body keeps a line that starts with STYLE / NOTE', () => {
+    expect(vttToText('STYLE guide was agreed\nBob: ok\n')).toBe('STYLE guide was agreed\nBob: ok')
+    expect(vttToText('NOTE to self\n')).toBe('NOTE to self')
+  })
+
+  test('V20 a byte order mark does not hide the header', () => {
+    expect(vttToText('\ufeffWEBVTT\n\nNOTE x\n')).toBe('')
+    expect(vttToText(`\ufeff${H}<v Ann>Hi</v>\n`)).toBe('Ann: Hi')
+  })
+
+  test('V21 character references are decoded once, after the tags are removed', () => {
+    expect(vttToText(`${H}<v Ann>R&amp;D &lt;3 &#x41;&#66;&nbsp;x</v>\n`)).toBe('Ann: R&D <3 AB x')
+    expect(vttToText(`${H}&lt;v Bob&gt;hi\n`)).toBe('<v Bob>hi')
+    expect(vttToText(`${H}&amp;lt;\n`)).toBe('&lt;')
+    expect(vttToText(`${H}a&#xD800;b &#1114112; &AMP; &#0;\n`)).toBe('a&#xD800;b &#1114112; &AMP; &#0;')
+    expect(vttToText(`${H}<v R&amp;D>go</v>\n`)).toBe('R&D: go')
+    // the last code point is still decoded
+    expect(vttToText(`${H}&#x10FFFF;!\n`)).toBe('\u{10FFFF}!')
+  })
+
+  test('V22 a bound smaller than the notice is still kept', () => {
+    expect(vttToText(`${H}${'a'.repeat(50)}\n`, 10)).toBe('a'.repeat(10))
+    expect(vttToText(`${H}${'a'.repeat(50)}\n`, 0)).toBe('')
+    // a bound exactly the notice's length still gives the notice
+    expect(vttToText(`${H}${'a'.repeat(50)}\n`, '\n[transcript truncated]'.length)).toBe('\n[transcript truncated]')
+    // the cut would split the surrogate pair
+    expect(vttToText(`${H}a\u{1F600}b\n`, 2)).toBe('a')
+  })
+
+  test('V23 the cut before the notice never leaves half a surrogate pair', () => {
+    const notice = '\n[transcript truncated]'
+    const out = vttToText(`${H}ab\u{1F600}${'c'.repeat(100)}\n`, notice.length + 3)
+    expect(out).toBe('ab' + notice)
+  })
+})
+
 // ── meetingFromInfo ──────────────────────────────────────────────────────────
 
 describe('meetingFromInfo', () => {
