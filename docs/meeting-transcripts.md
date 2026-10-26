@@ -41,6 +41,9 @@ These errors can come back, and what they mean:
   meeting chat (re-install or upgrade the app there), or the tenant requires an application access policy.
 - `the meeting or its transcript was not found (the meeting may have expired)` — Teams keeps transcripts for a
   limited time.
+- `Graph returned an invalid response` — a page of the transcript list was not a JSON object with a `value` array,
+  or its `@odata.nextLink` was not a Graph v1.0 URL; the plugin sends no request to such a link.
+- `the transcript list has more than 20 pages; this tool reads at most that many` — trying again does not help.
 - `Graph HTTP <status> [<code>]` — anything else; the code, when shown, is Graph's own error code.
 
 This covers scheduled meetings in a private chat (the chats where the app is installed). For channel meetings an
