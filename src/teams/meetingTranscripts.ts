@@ -8,7 +8,8 @@
  * returned, and no request follows a redirect.
  */
 
-import { chmodSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { randomBytes } from 'crypto'
+import { chmodSync, closeSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 
 export interface StoredMeeting {
   graphMeetingId: string
@@ -129,11 +130,29 @@ export function createMeetingStore(path: string, max = MAX_STORED_MEETINGS): Mee
           const keep = new Set([meetingId, ...others.slice(others.length - Math.max(0, max - 1))])
           for (const id of ids) if (!keep.has(id)) delete entries[id]
         }
-        const tmp = `${path}.tmp`
         const body: FileShape = { version: 1, entries }
-        writeFileSync(tmp, JSON.stringify(body, null, 2), { mode: 0o600 })
-        chmodSync(tmp, 0o600)
-        renameSync(tmp, path)
+        const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+        let created = false
+        try {
+          // 'wx' = O_CREAT | O_EXCL: fails on any existing name, a symlink too
+          const fd = openSync(tmp, 'wx', 0o600)
+          created = true
+          try {
+            writeFileSync(fd, JSON.stringify(body, null, 2))
+          } finally {
+            closeSync(fd)
+          }
+          chmodSync(tmp, 0o600)
+          renameSync(tmp, path)
+          created = false
+        } finally {
+          // A temporary file this put created and did not rename is removed; a name it did not create is never touched.
+          if (created) {
+            try {
+              unlinkSync(tmp)
+            } catch {}
+          }
+        }
       } catch (err) {
         const c = (err as { code?: unknown } | undefined | null)?.code
         const code = typeof c === 'string' && SAVE_ERROR_CODE_RE.test(c) ? c : 'error'
@@ -361,6 +380,12 @@ async function errorFor(res: Response, code?: string): Promise<TranscriptError> 
   return new TranscriptError(`Graph HTTP ${res.status}${c ? ' ' + c : ''}`)
 }
 
+/** At most this many pages of the transcript list are read. */
+const MAX_TRANSCRIPT_PAGES = 20
+
+// The bearer token is sent only to Graph v1.0 URLs.
+const GRAPH_PREFIX = 'https://graph.microsoft.com/v1.0/'
+
 export async function fetchTranscript(
   m: Pick<StoredMeeting, 'graphMeetingId' | 'organizerId'>,
   deps: { getToken: () => Promise<string>; fetch?: typeof fetch },
@@ -377,25 +402,39 @@ export async function fetchTranscript(
     })
   }
 
-  // 1. List, then take the newest transcript by createdDateTime.
-  const listRes = await get(base)
-  if (listRes.status !== 200) throw await errorFor(listRes)
-  let json: unknown
-  try {
-    json = await listRes.json()
-  } catch {
-    json = undefined
-  }
-  const items = isObject(json) && Array.isArray(json.value) ? json.value : undefined
-  if (items === undefined) throw new TranscriptError('Graph returned an invalid response')
+  // 1. List, then take the newest transcript by createdDateTime. The list is read page by page through @odata.nextLink.
   let newest: { id: string; at?: { text: string; ms: number } } | undefined
-  for (const item of items) {
-    if (!isObject(item) || typeof item.id !== 'string' || item.id === '' || !GRAPH_MEETING_ID_RE.test(item.id)) continue
-    const at = isoInstant(item.createdDateTime)
-    // An item without a valid timestamp counts as older than every item with one; the first one seen wins ties.
-    if (newest === undefined || (at !== undefined && (newest.at === undefined || at.ms > newest.at.ms))) {
-      newest = { id: item.id, ...(at !== undefined ? { at } : {}) }
+  let listUrl: string = base
+  for (let page = 1; ; page++) {
+    if (page > MAX_TRANSCRIPT_PAGES) {
+      throw new TranscriptError(
+        `the transcript list has more than ${MAX_TRANSCRIPT_PAGES} pages; this tool reads at most that many`,
+      )
     }
+    const listRes = await get(listUrl)
+    if (listRes.status !== 200) throw await errorFor(listRes)
+    let json: unknown
+    try {
+      json = await listRes.json()
+    } catch {
+      json = undefined
+    }
+    const items = isObject(json) && Array.isArray(json.value) ? json.value : undefined
+    if (items === undefined) throw new TranscriptError('Graph returned an invalid response')
+    for (const item of items) {
+      if (!isObject(item) || typeof item.id !== 'string' || item.id === '' || !GRAPH_MEETING_ID_RE.test(item.id)) continue
+      const at = isoInstant(item.createdDateTime)
+      // An item without a valid timestamp counts as older than every item with one; the first one seen wins ties.
+      if (newest === undefined || (at !== undefined && (newest.at === undefined || at.ms > newest.at.ms))) {
+        newest = { id: item.id, ...(at !== undefined ? { at } : {}) }
+      }
+    }
+    const next: unknown = isObject(json) ? json['@odata.nextLink'] : undefined
+    if (next === undefined) break
+    if (typeof next !== 'string' || !next.startsWith(GRAPH_PREFIX)) {
+      throw new TranscriptError('Graph returned an invalid response')
+    }
+    listUrl = next
   }
   if (newest === undefined) {
     throw new TranscriptError(

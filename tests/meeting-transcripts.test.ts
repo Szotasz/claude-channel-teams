@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { basename, dirname, join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
 
 import { makeTurnHandler } from '../src/teams/adapter'
@@ -230,7 +230,7 @@ describe('vttToText edge cases', () => {
     expect(vttToText('WEBVTT - title\n\n00:01.000 --> 00:02.000\nhi\n')).toBe('hi')
   })
 
-  test('V27 a NOTE block is dropped in a body with cues but no header', () => {
+  test('V27 NOTE and REGION blocks are not payload in a WebVTT body (with cues, or with the header and no cue)', () => {
     expect(vttToText('NOTE x\n\n00:01.000 --> 00:02.000\nhi\n')).toBe('hi')
     // with the header and no cue, a REGION block is still metadata
     expect(vttToText('WEBVTT\n\nREGION\nid:r\n\nAnn: hi\n')).toBe('Ann: hi')
@@ -450,6 +450,55 @@ describe('createMeetingStore', () => {
     writeFileSync(path, JSON.stringify({ version: 1, entries: [good] }), 'utf8')
     expect(createMeetingStore(path).get('0')).toBeUndefined()
   })
+
+  test('S10 a put leaves no temporary file next to the store', () => {
+    const path = tempFile()
+    const s = createMeetingStore(path)
+    s.put('k1', { graphMeetingId: 'g', organizerId: ORGANIZER.toLowerCase(), conversationId: 'c' })
+    expect(readdirSync(dirname(path))).toEqual([basename(path)])
+  })
+
+  test('S11 a symlink at the old fixed temporary name is not followed', () => {
+    const path = tempFile()
+    const victim = join(dirname(path), 'victim.txt')
+    writeFileSync(victim, 'keep')
+    symlinkSync(victim, `${path}.tmp`)
+    createMeetingStore(path).put('k1', { graphMeetingId: 'g', organizerId: ORGANIZER.toLowerCase(), conversationId: 'c' })
+    expect(readFileSync(victim, 'utf8')).toBe('keep')
+    expect(Object.keys(JSON.parse(readFileSync(path, 'utf8')).entries)).toEqual(['k1'])
+  })
+
+  test('S12 a store path that is a directory: one line, nothing written, no temporary file', () => {
+    const path = tempFile()
+    mkdirSync(path)
+    const lines: string[] = []
+    const write = process.stderr.write
+    process.stderr.write = ((chunk: unknown) => { lines.push(String(chunk)); return true }) as typeof process.stderr.write
+    try {
+      createMeetingStore(path).put('k1', { graphMeetingId: 'g', organizerId: ORGANIZER.toLowerCase(), conversationId: 'c' })
+    } finally {
+      process.stderr.write = write
+    }
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toMatch(/^teams channel: meeting store save failed \((EISDIR|error)\)\n$/)
+    expect(readdirSync(dirname(path))).toEqual([basename(path)])
+  })
+
+  test("S13 a stored file with a '__proto__' key is read as a plain entry and kept by the next put", () => {
+    const path = tempFile()
+    const entry = {
+      graphMeetingId: 'g',
+      organizerId: ORGANIZER.toLowerCase(),
+      conversationId: 'c',
+      savedAt: '2026-01-01T00:00:00.000Z',
+    }
+    writeFileSync(path, `{"version":1,"entries":{"__proto__":${JSON.stringify(entry)}}}`)
+    const s = createMeetingStore(path)
+    expect(s.get('__proto__')).toEqual(entry)
+    expect(s.get('graphMeetingId')).toBeUndefined()
+    s.put('k1', { graphMeetingId: 'g2', organizerId: ORGANIZER.toLowerCase(), conversationId: 'c' })
+    expect(Object.keys(JSON.parse(readFileSync(path, 'utf8')).entries).sort()).toEqual(['__proto__', 'k1'])
+  })
 })
 
 // ── fetchTranscript ──────────────────────────────────────────────────────────
@@ -660,6 +709,98 @@ describe('fetchTranscript', () => {
       expect((err as Error).message.startsWith('no transcript yet')).toBe(true)
     }
     expect(calls.length).toBe(1)
+  })
+
+  test('F13 two pages: the newest item is on the second page', async () => {
+    const NEXT = `${BASE}?$skiptoken=p2`
+    const { calls, fetchImpl } = recorder((url, init) => {
+      if (url === BASE) {
+        return jsonRes(200, { value: [{ id: 'older', createdDateTime: '2026-01-01T00:00:00Z' }], '@odata.nextLink': NEXT })
+      }
+      if (url === NEXT) return jsonRes(200, { value: [{ id: 'newer', createdDateTime: '2026-02-01T00:00:00Z' }] })
+      if (url === `${BASE}/newer/content` && (init.headers as Record<string, string>).Accept === 'text/vtt') {
+        return textRes(200, VTT)
+      }
+      return jsonRes(500, {})
+    })
+    const t = await fetchTranscript(MEETING, deps(fetchImpl))
+    expect(t).toEqual({ text: 'Bob: Hi.', createdDateTime: '2026-02-01T00:00:00Z' })
+    expect(calls.map(c => c.url)).toEqual([BASE, NEXT, `${BASE}/newer/content`])
+    for (const c of calls) {
+      expect(c.method).toBe('GET')
+      expect(c.redirect).toBe('error')
+      expect(c.headers.Authorization).toBe('Bearer T')
+    }
+  })
+
+  test('F14 a nextLink that is not a Graph v1.0 URL is refused before any request to it', async () => {
+    const nextLinks = ['https://example.org/v1.0/x', 42, 'https://graph.microsoft.com.example.org/v1.0/x', '']
+    for (const nextLink of nextLinks) {
+      const { calls, fetchImpl } = recorder(() =>
+        jsonRes(200, { value: [{ id: 'a', createdDateTime: '2026-01-01T00:00:00Z' }], '@odata.nextLink': nextLink }),
+      )
+      try {
+        await fetchTranscript(MEETING, deps(fetchImpl))
+        throw new Error('expected a TranscriptError')
+      } catch (err) {
+        expect(err).toBeInstanceOf(TranscriptError)
+        expect((err as Error).message).toBe('Graph returned an invalid response')
+      }
+      expect(calls.length).toBe(1)
+    }
+  })
+
+  test('F15 a list that never ends stops after 20 pages', async () => {
+    const { calls, fetchImpl } = recorder(url =>
+      url.endsWith('/content')
+        ? textRes(200, VTT)
+        : jsonRes(200, {
+            value: [{ id: 'a', createdDateTime: '2026-01-01T00:00:00Z' }],
+            '@odata.nextLink': `${BASE}?$skiptoken=n`,
+          }),
+    )
+    try {
+      await fetchTranscript(MEETING, deps(fetchImpl))
+      throw new Error('expected a TranscriptError')
+    } catch (err) {
+      expect(err).toBeInstanceOf(TranscriptError)
+      expect((err as Error).message.startsWith('the transcript list has more than 20 pages')).toBe(true)
+    }
+    expect(calls.length).toBe(20)
+  })
+
+  test('F17 the newest item on the first page stays the newest after a later page', async () => {
+    const NEXT = `${BASE}?$skiptoken=p2`
+    const { calls, fetchImpl } = recorder(url => {
+      if (url === BASE) {
+        return jsonRes(200, { value: [{ id: 'newer', createdDateTime: '2026-02-01T00:00:00Z' }], '@odata.nextLink': NEXT })
+      }
+      if (url === NEXT) return jsonRes(200, { value: [{ id: 'older', createdDateTime: '2026-01-01T00:00:00Z' }] })
+      if (url === `${BASE}/newer/content`) return textRes(200, VTT)
+      return jsonRes(500, {})
+    })
+    const t = await fetchTranscript(MEETING, deps(fetchImpl))
+    expect(t).toEqual({ text: 'Bob: Hi.', createdDateTime: '2026-02-01T00:00:00Z' })
+    expect(calls.map(c => c.url)).toEqual([BASE, NEXT, `${BASE}/newer/content`])
+  })
+
+  test('F16 an error on the second page is mapped like the first', async () => {
+    const NEXT = `${BASE}?$skiptoken=p2`
+    const { calls, fetchImpl } = recorder(url => {
+      if (url === BASE) {
+        return jsonRes(200, { value: [{ id: 'a', createdDateTime: '2026-01-01T00:00:00Z' }], '@odata.nextLink': NEXT })
+      }
+      if (url === NEXT) return jsonRes(500, {})
+      return textRes(200, VTT)
+    })
+    try {
+      await fetchTranscript(MEETING, deps(fetchImpl))
+      throw new Error('expected a TranscriptError')
+    } catch (err) {
+      expect(err).toBeInstanceOf(TranscriptError)
+      expect((err as Error).message).toBe('Graph HTTP 500')
+    }
+    expect(calls.length).toBe(2)
   })
 })
 
