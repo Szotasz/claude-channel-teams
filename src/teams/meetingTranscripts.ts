@@ -177,15 +177,19 @@ const isBlank = (line: string): boolean => /^[ \t]*$/.test(line)
 /** A NOTE / STYLE / REGION block header: the whole block is metadata, never payload. */
 const META_BLOCK_RE = /^(?:NOTE|STYLE|REGION)(?:$|[ \t])/
 
-/** A cue timing line needs real WebVTT timestamps (hours optional); cue settings may follow the end time. */
+/** The header is the word WEBVTT alone or followed by a space or a tab. */
+const HEADER_RE = /^WEBVTT(?:$|[ \t])/
+
+/** A cue timing line needs timestamps in the WebVTT form (two-digit minutes and seconds, three millisecond digits,
+ *  hours optional), and cue settings may follow the end time. A line in another form is text, not a timing line. */
 const TIMING_RE = /^(?:\d+:)?\d{2}:\d{2}\.\d{3}[ \t]+-->[ \t]+(?:\d+:)?\d{2}:\d{2}\.\d{3}(?:[ \t]|$)/
 
-/** Every opening and closing voice tag, also with classes (`<v.loud Ann>`). A class name holds no dot, so a long
- *  dot chain cannot be split in many ways (no exponential backtracking). */
-const VOICE_TAG_RE = /<v(?:\.[^\s.>]+)*\s+([^>]*)>|<\/v>/g
+/** Every opening and closing voice tag, also with classes (`<v.loud Ann>`). A class name holds no dot, and no part
+ *  of a tag can hold '<', so each start scans only up to the next '<' (linear time). */
+const VOICE_TAG_RE = /<v(?:\.[^\s.<>]+)*\s([^<>]*)>|<\/v>/g
 
 /** The character references cue text may hold. One replace pass, so `&amp;lt;` becomes `&lt;`, never `<`. */
-const ENTITY_RE = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos|nbsp|lrm|rlm));/g
+const ENTITY_RE = /&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|(amp|lt|gt|quot|apos|nbsp|lrm|rlm));/g
 
 /** The named references; names are case-sensitive, so `&AMP;` stays as it is. `&nbsp;` gives a plain space. */
 const NAMED_ENTITIES: Record<string, string> = {
@@ -204,7 +208,7 @@ function decodeEntities(s: string): string {
 
 /** One span of cue text: tags off first, then the references decoded once, then the text cleaned. */
 function spanText(s: string): string {
-  return cleanOutputText(decodeEntities(s.replace(/<[^>]*>/g, '')))
+  return cleanOutputText(decodeEntities(s.replace(/<[^<>]*>/g, '')))
 }
 
 /** Cut to `n` characters; a lone high surrogate at the cut is dropped, so no half surrogate pair is left. */
@@ -278,7 +282,7 @@ export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
   const timingAt = blocks.map(lines => lines.findIndex(l => TIMING_RE.test(l)))
   const anyTiming = timingAt.some(at => at >= 0)
   // Only such a body counts as plain text: with no header and no cue, its NOTE / STYLE / REGION lines are payload too.
-  const isVtt = anyTiming || (blocks[0]?.[0] ?? '').startsWith('WEBVTT')
+  const isVtt = anyTiming || HEADER_RE.test(blocks[0]?.[0] ?? '')
   const out: string[] = []
   const addPayload = (payload: string) => {
     for (const line of voiceLines(payload)) out.push(line)
@@ -286,7 +290,7 @@ export function vttToText(vtt: string, max = MAX_TRANSCRIPT_CHARS): string {
   for (let i = 0; i < blocks.length; i++) {
     const lines = blocks[i]!
     const first = lines[0]!
-    if (i === 0 && first.startsWith('WEBVTT')) continue
+    if (i === 0 && HEADER_RE.test(first)) continue
     if (isVtt && META_BLOCK_RE.test(first)) continue
     const at = timingAt[i]!
     if (at >= 0) {

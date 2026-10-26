@@ -202,6 +202,42 @@ describe('vttToText edge cases', () => {
     const out = vttToText(`${H}ab\u{1F600}${'c'.repeat(100)}\n`, notice.length + 3)
     expect(out).toBe('ab' + notice)
   })
+
+  test('V24 tag patterns run in linear time', () => {
+    const time = (s: string) => { const t0 = performance.now(); const out = vttToText(s); return { out, ms: performance.now() - t0 } }
+    const a = time(`${H}<v${' '.repeat(50000)}x\n`)
+    expect(a.out).toBe('<v x')
+    expect(a.ms).toBeLessThan(1000)
+    const b = time(`${H}${'<v '.repeat(20000)}\n`)
+    expect(b.ms).toBeLessThan(1000)
+    const c = time(`${H}${'<'.repeat(50000)}\n`)
+    expect(c.out).toBe('<'.repeat(50000))
+    expect(c.ms).toBeLessThan(1000)
+  })
+
+  test('V25 numeric references with leading zeroes', () => {
+    expect(vttToText(`${H}<v &#000000065;>Hello</v>\n`)).toBe('A: Hello')
+    expect(vttToText(`${H}&#x0000000041;&#99999999999999999999;\n`)).toBe('A&#99999999999999999999;')
+  })
+
+  test('V26 the header is the word WEBVTT alone', () => {
+    expect(vttToText('WEBVTTish notes\nBob: ok\n')).toBe('WEBVTTish notes\nBob: ok')
+    // not a header, so the body is plain text and keeps its NOTE line
+    expect(vttToText('WEBVTTish\n\nNOTE x\n')).toBe('WEBVTTish\nNOTE x')
+    expect(vttToText('WEBVTT - title\n\n00:01.000 --> 00:02.000\nhi\n')).toBe('hi')
+  })
+
+  test('V27 a NOTE block is dropped in a body with cues but no header', () => {
+    expect(vttToText('NOTE x\n\n00:01.000 --> 00:02.000\nhi\n')).toBe('hi')
+  })
+
+  test('V28 a span opened with a class is closed by </v>', () => {
+    expect(vttToText(`${H}<v.loud Ann>Hi</v> x\n`)).toBe('Ann: Hi\nx')
+  })
+
+  test('V29 a voice tag whose name is only spaces gives a line without a speaker', () => {
+    expect(vttToText(`${H}<v   >text\n`)).toBe('text')
+  })
 })
 
 // ── meetingFromInfo ──────────────────────────────────────────────────────────
