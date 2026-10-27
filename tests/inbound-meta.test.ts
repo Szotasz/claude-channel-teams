@@ -202,4 +202,20 @@ describe('inbound meta', () => {
     const without = channelEventMeta(base)
     for (const key of Object.keys(without)) expect(key.startsWith('invisible_')).toBe(false)
   })
+
+  test('M13 metaText removes tag characters, zero-width spaces and BOM, keeps the RGI flags', () => {
+    expect(metaText('Sa\u{200B}les\u{FEFF} Desk\u{E0041}\u{E0042}')).toBe('Sales Desk')
+    const wales = 'Ops \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
+    expect(metaText(wales)).toBe(wales)
+    expect(metaText('x\u{202E}Admin')).toBe('x Admin')
+    expect(metaText('\u{200B}\u{E0041}')).toBeUndefined()
+  })
+
+  test('M14 from_name is stripped of invisible characters', () => {
+    const base = {
+      text: 'hello', conversationId: 'conv-abc', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID,
+    }
+    const meta = channelEventMeta({ ...base, fromName: 'Night\u{200B} Desk\u{E0041}\u{E007F}' })
+    expect(meta.from_name).toBe('Night Desk')
+  })
 })

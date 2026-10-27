@@ -47,7 +47,7 @@ import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
 import type { InboundIds } from './inboundIds.js'
-import { invisibleMeta } from './invisibleChars.js'
+import { invisibleMeta, stripInvisible } from './invisibleChars.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -95,11 +95,11 @@ export type ChannelEventSink = (event: {
 
 // Meta values end up as attributes of the <channel> tag. Team, channel and user names are set by people
 // in the tenant, so they are untrusted: no double quotes, angle brackets, control characters (C0, C1) or
-// bidi controls, bounded length.
+// bidi controls, tag characters (except the three RGI flags), zero-width spaces, word joiners and BOM, bounded length.
 export function metaText(value: unknown, max = 200): string | undefined {
   if (typeof value !== 'string') return undefined
-  const cleaned = value
-    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069"<>]/g, ' ')
+  const cleaned = stripInvisible(value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069"<>]/g, ' '))
+    .text
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max)
@@ -122,7 +122,7 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     aad_object_id: event.aadObjectId,
     conversation_id: event.conversationId,
     tenant_id: event.tenantId,
-    from_name: event.fromName,
+    from_name: stripInvisible(event.fromName).text,
     ...(event.messageId ? { message_id: event.messageId } : {}),
     ...(event.ts ? { ts: event.ts } : {}),
     ...(event.messageEvent ? { message_event: event.messageEvent } : {}),
