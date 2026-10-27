@@ -920,6 +920,8 @@ function setup(opts: {
   meetingStore?: ReturnType<typeof createMeetingStore>
   getMeetingInfo?: (ctx: TurnContext, meetingId: string) => Promise<unknown>
   meetingInfoTimeoutMs?: number
+  /** TEAMS_MEETING_CONVERSATIONS; null leaves the key out. Default: the fixture conversation. */
+  meetingConversations?: ReadonlySet<string> | null
 }) {
   const dir = mkdtempSync(join(tmpdir(), 'cct-transcripts-'))
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
@@ -930,6 +932,9 @@ function setup(opts: {
     stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p',
     appType: 'SingleTenant', tenantId: TENANT_ID, bindHost: '127.0.0.1', port: 0,
     receivedFilesDir: '/tmp/unused',
+    ...(opts.meetingConversations === null
+      ? {}
+      : { meetingConversations: opts.meetingConversations ?? new Set(['19:meeting@thread.v2']) }),
   }
   const turn = makeTurnHandler({
     config: config as any,
