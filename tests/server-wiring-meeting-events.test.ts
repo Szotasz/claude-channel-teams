@@ -8,10 +8,11 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { parseFlag } from '../src/config'
+import { meetingEventsWarning, parseFlag } from '../src/config'
 
 const read = (...p: string[]) => readFileSync(join(import.meta.dir, '..', 'src', ...p), 'utf8')
 const server = read('server.ts')
+const configSrc = read('config.ts')
 
 /** The block that starts at `anchor`, from its first '{' up to the matching closing brace. */
 function block(src: string, anchor: string): string {
@@ -47,5 +48,34 @@ describe('parseFlag', () => {
   test('anything else, including nothing at all, is false', () => {
     expect(parseFlag('yes')).toBe(false)
     expect(parseFlag(undefined)).toBe(false)
+  })
+})
+
+describe('TEAMS_MEETING_CONVERSATIONS', () => {
+  test('the config reads it with parseIdList', () => {
+    expect(configSrc).toContain('meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),')
+  })
+
+  test('server.ts writes the startup warning once', () => {
+    expect(server.match(/meetingEventsWarning\(config\)/g)?.length).toBe(1)
+  })
+
+  test('W1 no warning while TEAMS_MEETING_EVENTS is off, even with no list', () => {
+    expect(meetingEventsWarning({ meetingEvents: false })).toBeUndefined()
+    expect(meetingEventsWarning({ meetingEvents: false, meetingConversations: new Set() })).toBeUndefined()
+  })
+
+  test('W2 on with no list or an empty one: a warning that names the empty setting', () => {
+    expect(meetingEventsWarning({ meetingEvents: true })).toContain('TEAMS_MEETING_CONVERSATIONS is empty')
+    expect(meetingEventsWarning({ meetingEvents: true, meetingConversations: new Set() })).toContain('TEAMS_MEETING_CONVERSATIONS is empty')
+  })
+
+  test("W3 on with '*' on the list: a warning that '*' is not a wildcard", () => {
+    expect(meetingEventsWarning({ meetingEvents: true, meetingConversations: new Set(['*']) })).toContain("'*' matches no conversation")
+    expect(meetingEventsWarning({ meetingEvents: true, meetingConversations: new Set(['19:a@thread.v2', '*']) })).toContain("'*' matches no conversation")
+  })
+
+  test('W4 on with a real list: no warning', () => {
+    expect(meetingEventsWarning({ meetingEvents: true, meetingConversations: new Set(['19:a@thread.v2']) })).toBeUndefined()
   })
 })

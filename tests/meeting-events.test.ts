@@ -113,7 +113,15 @@ describe('meetingEventText', () => {
   })
 })
 
-function setup(meetingEvents?: boolean, tenantId: string = TENANT_ID) {
+/** CONVERSATION_ID without ';messageid=': the form TEAMS_MEETING_CONVERSATIONS takes. */
+const BASE_CONVERSATION_ID = '19:meeting@thread.v2'
+
+function setup(
+  meetingEvents?: boolean,
+  tenantId: string = TENANT_ID,
+  // null: no meetingConversations key at all (undefined would take this default).
+  meetingConversations: ReadonlySet<string> | null = new Set([BASE_CONVERSATION_ID]),
+) {
   const dir = mkdtempSync(join(tmpdir(), 'cct-meeting-'))
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(USER)
@@ -122,6 +130,7 @@ function setup(meetingEvents?: boolean, tenantId: string = TENANT_ID) {
     stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p',
     appType: 'SingleTenant', tenantId, bindHost: '127.0.0.1', port: 0,
     receivedFilesDir: '/tmp/unused',
+    ...(meetingConversations === null ? {} : { meetingConversations }),
   }
   const turn = makeTurnHandler({
     config: config as any,
@@ -349,5 +358,63 @@ describe('channelEventMeta with a meeting event', () => {
       fromName: 'Adnan',
     })
     expect(Object.keys(meta).filter(k => k.startsWith('meeting_'))).toEqual([])
+  })
+})
+
+/** Runs `fn` with process.stderr.write captured; returns what was written. */
+async function captureStderr(fn: () => Promise<void>): Promise<string> {
+  const original = process.stderr.write.bind(process.stderr)
+  let out = ''
+  process.stderr.write = ((chunk: any) => { out += String(chunk); return true }) as typeof process.stderr.write
+  try { await fn() } finally { process.stderr.write = original }
+  return out
+}
+
+describe('meeting events only for the conversations in TEAMS_MEETING_CONVERSATIONS', () => {
+  test('C1 a conversation that is not on the list is dropped, with one stderr line naming the setting', async () => {
+    const s = setup(true, TENANT_ID, new Set(['19:other@thread.v2']))
+    const err = await captureStderr(() => s.run(meetingActivity()))
+    expect(s.events.length).toBe(0)
+    expect(err).toContain('teams channel: drop — meeting event from a conversation not in TEAMS_MEETING_CONVERSATIONS')
+  })
+
+  test('C2 no list and an empty list deliver nothing', async () => {
+    const none = setup(true, TENANT_ID, null)
+    await captureStderr(() => none.run(meetingActivity()))
+    expect(none.events.length).toBe(0)
+    const empty = setup(true, TENANT_ID, new Set())
+    await captureStderr(() => empty.run(meetingActivity()))
+    expect(empty.events.length).toBe(0)
+  })
+
+  test("C3 '*' is not a wildcard: it matches no conversation", async () => {
+    const s = setup(true, TENANT_ID, new Set(['*']))
+    await captureStderr(() => s.run(meetingActivity()))
+    expect(s.events.length).toBe(0)
+  })
+
+  test("C4 the list is matched against the id without ';messageid=', and the listed conversation still gets its event", async () => {
+    const s = setup(true, TENANT_ID, new Set(['19:other@thread.v2', BASE_CONVERSATION_ID]))
+    await s.run(meetingActivity())
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].conversationId).toBe(CONVERSATION_ID)
+  })
+
+  test('C5 the list is checked after the tenant: a listed conversation from another tenant is still dropped', async () => {
+    const s = setup(true, TENANT_ID, new Set([BASE_CONVERSATION_ID]))
+    const err = await captureStderr(() => s.run(meetingActivity({
+      conversation: { id: CONVERSATION_ID, tenantId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+    })))
+    expect(s.events.length).toBe(0)
+    expect(err).toContain('meeting event from another tenant')
+  })
+
+  test('C6 zero-width characters, a word joiner and a BOM in the title are removed', async () => {
+    const s = setup(true)
+    await s.run(meetingActivity({
+      value: { Title: 'Ten​der kick⁠-off﻿', MeetingType: 'Scheduled', StartTime: '2026-10-23T09:00:00Z', EndTime: null },
+    }))
+    expect(s.events[0].text).toBe('[Meeting started] Tender kick-off')
+    expect(s.events[0].meetingEvent.title).toBe('Tender kick-off')
   })
 })
