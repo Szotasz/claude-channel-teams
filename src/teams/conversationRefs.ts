@@ -44,6 +44,8 @@ interface StoredRef {
   aadObjectId: string
   /** Last time we saw an inbound from this conversation (ms epoch). */
   lastSeen: number
+  /** A chat the bot opened (dm_member) that the user has not written in yet: never the permission-relay target. */
+  botOpened?: boolean
 }
 
 /** A 1:1 chat with the bot. Shared conversations (team channels, group chats) are not personal. */
@@ -85,7 +87,11 @@ export function storedReference(ref: Partial<ConversationReference>): Partial<Co
 }
 
 export interface ConversationRefStore {
-  put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string): void
+  /**
+   * `opts.botOpened` marks a chat the BOT opened (dm_member): it is not activity from that user, so it must never
+   * become the permission-relay target. An inbound put (no opts) clears the mark.
+   */
+  put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string, opts?: { botOpened?: boolean }): void
   get(conversationId: string): StoredRef | undefined
   size(): number
   /**
@@ -96,6 +102,20 @@ export interface ConversationRefStore {
   mostRecentConversationId(): string | undefined
   /** Like mostRecentConversationId(), but only over 1:1 chats (isPersonalReference). */
   mostRecentPersonalConversationId(): string | undefined
+  /**
+   * The conversation id of the most recently seen 1:1 chat with the given
+   * AAD Object ID (compared lowercase on both sides), or undefined when the
+   * bot has never seen a personal chat with that user. Used by `dm_member`
+   * to reuse an existing 1:1 conversation instead of opening a new one.
+   */
+  personalConversationIdFor(aadObjectId: string): string | undefined
+  /**
+   * The serviceUrl of the most recently seen stored reference. Every reference
+   * in the store was validated against the Teams service host on the way in,
+   * so any of them works as the endpoint for opening a new conversation.
+   * undefined when the store is empty — the connector then has no route.
+   */
+  serviceUrlHint(): string | undefined
 }
 
 export interface RefStoreOptions {
@@ -206,7 +226,7 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
       kept.push([
         e.conversationId,
         // A file written before this version may hold full references; keep only the fields needed to send.
-        { ref: storedReference(e.ref), aadObjectId: String(e.aadObjectId).toLowerCase(), lastSeen: Math.min(e.lastSeen, now()) },
+        { ref: storedReference(e.ref), aadObjectId: String(e.aadObjectId).toLowerCase(), lastSeen: Math.min(e.lastSeen, now()), ...(e.botOpened === true ? { botOpened: true } : {}) },
       ])
     }
     // Newest first; a conversation listed twice keeps its most recent entry.
@@ -248,7 +268,7 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
   }
 
   return {
-    put(conversationId, ref, aadObjectId) {
+    put(conversationId, ref, aadObjectId, opts) {
       // We index by conversation.id because that's what Claude will pass
       // back via the reply tool. Lowercase the AAD ID at storage time so
       // the outbound gate's compare is symmetric with the inbound store.
@@ -256,6 +276,7 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
         ref,
         aadObjectId: aadObjectId.toLowerCase(),
         lastSeen: now(),
+        ...(opts?.botOpened === true ? { botOpened: true } : {}),
       })
       while (store.size > maxEntries) {
         let oldestId: string | undefined
@@ -281,7 +302,23 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
       return mostRecent(() => true)
     },
     mostRecentPersonalConversationId(): string | undefined {
-      return mostRecent(stored => isPersonalReference(stored.ref))
+      // A chat the bot opened and the user never wrote in is never the permission-relay target.
+      return mostRecent(stored => stored.botOpened !== true && isPersonalReference(stored.ref))
+    },
+    personalConversationIdFor(aadObjectId: string): string | undefined {
+      const target = aadObjectId.trim().toLowerCase()
+      return mostRecent(
+        stored =>
+          isPersonalReference(stored.ref) && stored.aadObjectId.trim().toLowerCase() === target,
+      )
+    },
+    serviceUrlHint(): string | undefined {
+      const hasUrl = (stored: StoredRef) =>
+        typeof stored.ref.serviceUrl === 'string' && stored.ref.serviceUrl.length > 0
+      const id = mostRecent(hasUrl)
+      if (id === undefined) return undefined
+      const url = store.get(id)?.ref.serviceUrl
+      return typeof url === 'string' && url.length > 0 ? url : undefined
     },
   }
 }
