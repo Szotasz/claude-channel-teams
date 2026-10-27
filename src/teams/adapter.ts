@@ -47,6 +47,7 @@ import type { Outbox } from './outbox.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
 import type { InboundIds } from './inboundIds.js'
+import { invisibleMeta, stripInvisible } from './invisibleChars.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -88,19 +89,32 @@ export type ChannelEventSink = (event: {
   replyToId?: string
   /** Display names of the people @mentioned in the message, the bot itself excluded. */
   mentions?: string[]
+  /** Set by withInvisibleStripped when invisible characters were removed from `text`. */
+  invisible?: { tag: number; zwsp: number; bidi: number; bom: number }
+  /** True when the inbound activity carried attachments (their notes are already in `text`). */
+  hasAttachments?: boolean
+  /** Set by the inbound debouncer when several quick messages were merged into this one. */
+  merged?: { count: number; messageIds: string[] }
 }) => void
+
+// The most mention names one event carries.
+export const MAX_MENTION_NAMES = 20
+// The most characters the mention names take, joined with ', '.
+export const MAX_MENTIONS_CHARS = 200
 
 // Meta values end up as attributes of the <channel> tag. Team, channel and user names are set by people
 // in the tenant, so they are untrusted: no double quotes, angle brackets, control characters (C0, C1) or
-// bidi controls, bounded length.
+// bidi controls, tag characters (except the three RGI flags), zero-width spaces, word joiners and BOM, bounded length.
 export function metaText(value: unknown, max = 200): string | undefined {
   if (typeof value !== 'string') return undefined
-  const cleaned = value
-    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069"<>]/g, ' ')
+  const bounded = stripInvisible(value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069"<>]/g, ' '))
+    .text
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max)
-    .trim()
+    .replace(/[\ud800-\udbff]$/, '')
+  // The bound counts UTF-16 units and can cut a kept RGI flag: strip again, so no partial tag run survives.
+  const cleaned = stripInvisible(bounded).text.trim()
   return cleaned === '' ? undefined : cleaned
 }
 
@@ -113,13 +127,27 @@ export function threadIdFromConversationId(conversationId: string): string | und
   return metaText(end < 0 ? rest : rest.slice(0, end))
 }
 
+/** merged_count, and merged_message_ids built from the ids that survive metaText one by one (an id that sanitises
+ *  to nothing is left out, and the key is omitted when none is left), whole ids only, at most 1000 characters. */
+function mergedMeta(merged: { count: number; messageIds: string[] }): Record<string, string> {
+  const ids = merged.messageIds.map(id => metaText(id, 200)).filter((id): id is string => id !== undefined)
+  // Whole ids only: the next id goes in only if the joined value stays within 1000 characters.
+  let joined = ''
+  for (const id of ids) {
+    const next = joined === '' ? id : `${joined},${id}`
+    if (next.length > 1000) break
+    joined = next
+  }
+  return { merged_count: String(merged.count), ...(joined !== '' ? { merged_message_ids: joined } : {}) }
+}
+
 /** The meta of the channel notification for one event. Keys are snake_case: Claude Code drops a key that is not [A-Za-z0-9_]+. */
 export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record<string, string> {
   return {
     aad_object_id: event.aadObjectId,
     conversation_id: event.conversationId,
     tenant_id: event.tenantId,
-    from_name: event.fromName,
+    from_name: stripInvisible(event.fromName).text,
     ...(event.messageId ? { message_id: event.messageId } : {}),
     ...(event.ts ? { ts: event.ts } : {}),
     ...(event.messageEvent ? { message_event: event.messageEvent } : {}),
@@ -132,6 +160,8 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.threadId !== undefined ? { thread_id: event.threadId } : {}),
     ...(event.replyToId !== undefined ? { reply_to_id: event.replyToId } : {}),
     ...(event.mentions !== undefined ? { mentions: event.mentions.join(', ') } : {}),
+    ...(event.merged ? mergedMeta(event.merged) : {}),
+    ...(event.invisible ? invisibleMeta(event.invisible) : {}),
   }
 }
 
@@ -675,10 +705,10 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       const n = metaText(m.name) ?? metaText(m.id)
       if (n === undefined || mentionNames.includes(n)) continue
       const len = mentionNames.length === 0 ? n.length : mentionsLen + 2 + n.length
-      if (len > 200) break
+      if (len > MAX_MENTIONS_CHARS) break
       mentionNames.push(n)
       mentionsLen = len
-      if (mentionNames.length >= 20) break
+      if (mentionNames.length >= MAX_MENTION_NAMES) break
     }
 
     deps.onEvent({
@@ -689,6 +719,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       fromName,
       messageId,
       ts,
+      ...(rawAttachments.length > 0 ? { hasAttachments: true } : {}),
       ...(mentioned !== undefined ? { mentioned } : {}),
       isGroup: isGroupContext,
       teamId: metaText(team?.id),

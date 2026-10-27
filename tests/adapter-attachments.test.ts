@@ -192,6 +192,52 @@ describe('adapter: attachment wiring', () => {
     expect(events[0].text).toBe('with files')
     rmSync(dir, { recursive: true })
   })
+
+  // hasAttachments tells the inbound debouncer (src/teams/inboundDebounce.ts)
+  // not to hold this message back: its file notes are already in the text, so
+  // waiting for a follow-up fragment would only delay it.
+  test('an activity with attachments sets hasAttachments true on the event', async () => {
+    const allowlist = createAllowlist(allowlistFile)
+    allowlist.addEntry(FIXTURE_ID)
+    const refs = createConversationRefStore()
+    const events: any[] = []
+    const turn = makeTurnHandler({
+      config: makeConfig() as any,
+      adapter: {} as any,
+      allowlist,
+      refs,
+      onEvent: e => events.push(e),
+      attachments: async () => ({ annotations: ['[Attached: /tmp/x.pdf (application/pdf, 1.0 KB)]'] }),
+    })
+    const ctx = new TurnContext(new NoopAdapter() as any, makeActivity({
+      attachments: [{ contentType: 'image/png', contentUrl: 'x' }] as any,
+    }))
+    await turn(ctx)
+    expect(events.length).toBe(1)
+    expect(events[0].hasAttachments).toBe(true)
+    rmSync(dir, { recursive: true })
+  })
+
+  test('a message without attachments carries no hasAttachments key at all', async () => {
+    const allowlist = createAllowlist(allowlistFile)
+    allowlist.addEntry(FIXTURE_ID)
+    const refs = createConversationRefStore()
+    const events: any[] = []
+    const turn = makeTurnHandler({
+      config: makeConfig() as any,
+      adapter: {} as any,
+      allowlist,
+      refs,
+      onEvent: e => events.push(e),
+      attachments: async () => ({ annotations: [] }),
+    })
+    const ctx = new TurnContext(new NoopAdapter() as any, makeActivity())
+    await turn(ctx)
+    expect(events.length).toBe(1)
+    expect(Object.hasOwn(events[0], 'hasAttachments')).toBe(false)
+    expect(events[0].hasAttachments).toBeUndefined()
+    rmSync(dir, { recursive: true })
+  })
 })
 
 // Channel / group-chat scope (manifest scopes 'team' + 'groupChat'). In a shared

@@ -26,6 +26,11 @@ function block(src: string, anchor: string): string {
   throw new Error(`unbalanced block: ${anchor}`)
 }
 
+/** The source with leading whitespace and comments removed, so `startsWith` sees the first statement. */
+function firstStatement(src: string): string {
+  return src.replace(/^(\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*/, '')
+}
+
 describe('server.ts wiring', () => {
   test('#12 the permission prompt target is the most recent 1:1 chat, re-checked against the allowlist', () => {
     const body = block(server, 'resolveTargetConversation: () => {')
@@ -90,5 +95,41 @@ describe('server.ts wiring', () => {
       ['conversationId', 'conversationId'], ['messageId', 'messageId'], ['reaction', 'reaction'],
     ])
     expect(react.lastIndexOf('throw new Error(')).toBeLessThan(react.indexOf(call))
+  })
+
+  test('invisible characters are stripped from the text before it reaches the model', () => {
+    const notify = block(server, 'const onEvent: ChannelEventSink = event => {')
+    const strip = 'event = withInvisibleStripped(event)'
+    expect(notify).toContain(strip)
+    // The strip happens before the notification is built and before the text is read.
+    const at = (s: string) => notify.indexOf(s)
+    expect(at(strip)).toBeLessThan(at('mcp'))
+    expect(at(strip)).toBeLessThan(at('content: event.text'))
+    expect(server).toContain("import { withInvisibleStripped } from './teams/invisibleChars.js'")
+  })
+
+  test('inbound debouncing: the listener pushes into the debouncer, which delivers to onEvent', () => {
+    expect(server).toContain("import { createInboundDebouncer } from './teams/inboundDebounce.js'")
+    // Created after the sink, delivering into it — the strip inside onEvent still runs last.
+    expect(server).toContain(
+      'const inboundDebouncer = createInboundDebouncer({ windowMs: config.inboundDebounceMs, deliver: onEvent })',
+    )
+    const listener = block(server, 'const listener = startListener({')
+    expect(listener).toContain('onEvent: inboundDebouncer.push')
+    // Not the bare sink shorthand — that would bypass the debouncer entirely.
+    expect(listener).not.toMatch(/^\s*onEvent,\s*$/m)
+  })
+
+  test('shutdown flushes whatever the debouncer is holding before anything else is torn down', () => {
+    const shutdown = block(server, 'async function shutdown(): Promise<void> {')
+    const tryBody = shutdown.slice(shutdown.indexOf('try {') + 'try {'.length)
+    expect(firstStatement(tryBody).startsWith('inboundDebouncer.stop()')).toBe(true)
+    expect(shutdown.indexOf('inboundDebouncer.stop()')).toBeLessThan(shutdown.indexOf('permission.clear()'))
+  })
+
+  test('the onEvent block still begins with the invisible-character strip line', () => {
+    const notify = block(server, 'const onEvent: ChannelEventSink = event => {')
+    const body = notify.slice(notify.indexOf('{') + 1)
+    expect(firstStatement(body).startsWith('event = withInvisibleStripped(event)')).toBe(true)
   })
 })
