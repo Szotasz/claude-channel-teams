@@ -85,6 +85,10 @@ describe('server.ts wiring', () => {
     expect(react).toContain(call)
     const throws = [...react.matchAll(/throw new Error\('react requires a non-empty (\w+) string'\)/g)].map(m => m[1])
     expect(throws).toEqual(['conversation_id', 'message_id', 'reaction'])
+    const guards = [...react.matchAll(/if \(typeof (\w+) !== 'string' \|\| (\w+)\.length === 0\) \{\n\s*throw new Error/g)]
+    expect(guards.map(m => [m[1], m[2]])).toEqual([
+      ['conversationId', 'conversationId'], ['messageId', 'messageId'], ['reaction', 'reaction'],
+    ])
     expect(react.lastIndexOf('throw new Error(')).toBeLessThan(react.indexOf(call))
   })
 })
