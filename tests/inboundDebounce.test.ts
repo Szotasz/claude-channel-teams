@@ -339,6 +339,81 @@ describe('inbound debounce', () => {
     expect(delivered).toEqual([other])
     expect(debouncer.pending()).toBe(0)
   })
+
+  test('B14 a merged event is mentioned when any fragment was, and carries the union of the mentioned names', () => {
+    const { clock, delivered, debouncer } = makeHarness({ windowMs: 1500 })
+    const a = fragment({ mentioned: true, mentions: ['Ann'] })
+    const b = fragment({ mentioned: false, mentions: ['Bob', 'Ann'] })
+    const c = fragment({ mentioned: false })
+    debouncer.push(a)
+    clock.advance(100)
+    debouncer.push(b)
+    clock.advance(100)
+    debouncer.push(c)
+    clock.advance(1500)
+    expect(delivered.length).toBe(1)
+    const merged = delivered[0]!
+    expect(merged.mentioned).toBe(true)
+    expect(merged.mentions).toEqual(['Ann', 'Bob'])
+    expect(merged.merged?.count).toBe(3)
+    expect(merged.messageId).toBe(c.messageId)
+  })
+
+  test("B15 without any mention the merged event keeps the last fragment's values", () => {
+    const first = makeHarness({ windowMs: 1500 })
+    for (let i = 0; i < 3; i++) {
+      first.debouncer.push(fragment({ mentioned: false }))
+      first.clock.advance(100)
+    }
+    first.clock.advance(1500)
+    expect(first.delivered.length).toBe(1)
+    expect(first.delivered[0]!.mentioned).toBe(false)
+    expect(first.delivered[0]!.mentions).toBeUndefined()
+
+    const second = makeHarness({ windowMs: 1500 })
+    for (let i = 0; i < 3; i++) {
+      second.debouncer.push(fragment())
+      second.clock.advance(100)
+    }
+    second.clock.advance(1500)
+    expect(second.delivered.length).toBe(1)
+    expect('mentioned' in second.delivered[0]!).toBe(false)
+    expect(second.delivered[0]!.mentions).toBeUndefined()
+  })
+
+  test('B16 the union stays within the adapter bound', () => {
+    const count = makeHarness({ windowMs: 1500 })
+    const names = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => `n${from + i}`)
+    count.debouncer.push(fragment({ mentions: names(1, 15) }))
+    count.debouncer.push(fragment({ mentions: names(11, 25) }))
+    count.clock.advance(1500)
+    expect(count.delivered.length).toBe(1)
+    expect(count.delivered[0]!.mentions).toEqual(names(1, 20))
+
+    const chars = makeHarness({ windowMs: 1500 })
+    const long = (digit: number) => 'a'.repeat(59) + String(digit)
+    chars.debouncer.push(fragment({ mentions: [long(1), long(2)] }))
+    chars.debouncer.push(fragment({ mentions: [long(3), long(4)] }))
+    chars.clock.advance(1500)
+    expect(chars.delivered.length).toBe(1)
+    const mentions = chars.delivered[0]!.mentions!
+    expect(mentions).toEqual([long(1), long(2), long(3)])
+    expect(mentions.join(', ').length).toBeLessThanOrEqual(200)
+  })
+
+  test('B17 on the 200-character edge: exactly 200 fits; past it the union stops, like the adapter, even for a short name', () => {
+    const fits = makeHarness({ windowMs: 1500 })
+    fits.debouncer.push(fragment({ mentions: ['a'.repeat(98)] }))
+    fits.debouncer.push(fragment({ mentions: ['b'.repeat(100)] }))
+    fits.clock.advance(1500)
+    expect(fits.delivered[0]!.mentions!.join(', ').length).toBe(200)
+
+    const stops = makeHarness({ windowMs: 1500 })
+    stops.debouncer.push(fragment({ mentions: ['a'.repeat(100)] }))
+    stops.debouncer.push(fragment({ mentions: ['b'.repeat(99), 'c'] }))
+    stops.clock.advance(1500)
+    expect(stops.delivered[0]!.mentions).toEqual(['a'.repeat(100)])
+  })
 })
 
 describe('inbound debounce clock', () => {

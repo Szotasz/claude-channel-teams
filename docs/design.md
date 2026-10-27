@@ -597,7 +597,9 @@ and the channel notification):
 - The merged event is the LAST message (its `message_id`, `ts`, thread and
   reply context are the ones to answer) with the texts joined by newlines in
   arrival order. Buffers are per sender + conversation, so two people writing
-  at once never mix.
+  at once never mix. `mentioned` is true when any fragment @mentioned the
+  bot, and `mentions` is the union of the names in arrival order (at most 20,
+  at most 200 characters joined, like a single message).
 - Never held back: edits / deletes / restores, messages with attachments, and
   slash commands. Each flushes what that sender has pending and then goes
   through unchanged, so order is preserved.

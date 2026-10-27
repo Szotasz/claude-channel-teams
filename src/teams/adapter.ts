@@ -97,6 +97,11 @@ export type ChannelEventSink = (event: {
   merged?: { count: number; messageIds: string[] }
 }) => void
 
+// The most mention names one event carries.
+export const MAX_MENTION_NAMES = 20
+// The most characters the mention names take, joined with ', '.
+export const MAX_MENTIONS_CHARS = 200
+
 // Meta values end up as attributes of the <channel> tag. Team, channel and user names are set by people
 // in the tenant, so they are untrusted: no double quotes, angle brackets, control characters (C0, C1) or
 // bidi controls, tag characters (except the three RGI flags), zero-width spaces, word joiners and BOM, bounded length.
@@ -647,10 +652,10 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       const n = metaText(m.name) ?? metaText(m.id)
       if (n === undefined || mentionNames.includes(n)) continue
       const len = mentionNames.length === 0 ? n.length : mentionsLen + 2 + n.length
-      if (len > 200) break
+      if (len > MAX_MENTIONS_CHARS) break
       mentionNames.push(n)
       mentionsLen = len
-      if (mentionNames.length >= 20) break
+      if (mentionNames.length >= MAX_MENTION_NAMES) break
     }
 
     deps.onEvent({

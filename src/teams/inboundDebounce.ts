@@ -14,12 +14,15 @@
  * slash command — flushes what is pending for that sender first and then goes
  * through unchanged, so per-sender order is preserved. The merged event is a
  * shallow copy of the LAST message (that is the one to answer) with the texts
- * joined by '\n' and `merged = { count, messageIds }`.
+ * joined by '\n' and `merged = { count, messageIds }`. `mentioned` is true when
+ * any fragment mentioned the bot, and `mentions` is the union of the fragments'
+ * names, bounded like the adapter's list.
  *
  * Off unless configured: windowMs <= 0 delivers every event immediately and
  * unchanged. See TEAMS_INBOUND_DEBOUNCE_MS in config.ts and the design notes.
  */
 
+import { MAX_MENTION_NAMES, MAX_MENTIONS_CHARS } from './adapter.js'
 import type { ChannelEventSink } from './adapter.js'
 import { stripInvisible } from './invisibleChars.js'
 
@@ -39,6 +42,23 @@ function isImmediate(event: Ev): boolean {
     // zero-width character in front of the slash must not turn a command into a held fragment.
     stripInvisible(event.text).text.trimStart().startsWith('/')
   )
+}
+
+/** The union of the fragments' mention names in arrival order, bounded like the adapter's own list. */
+function mergedMentions(events: Ev[]): string[] | undefined {
+  const names: string[] = []
+  let len = 0
+  for (const event of events) {
+    for (const name of event.mentions ?? []) {
+      if (names.includes(name)) continue
+      const next = names.length === 0 ? name.length : len + 2 + name.length
+      if (next > MAX_MENTIONS_CHARS) return names.length > 0 ? names : undefined
+      names.push(name)
+      len = next
+      if (names.length >= MAX_MENTION_NAMES) return names
+    }
+  }
+  return names.length > 0 ? names : undefined
 }
 
 interface KeyBuffer {
@@ -102,9 +122,13 @@ export function createInboundDebouncer(opts: {
     for (const event of events) {
       if (event.messageId !== undefined && messageIds.length < maxMergedIds) messageIds.push(event.messageId)
     }
+    const last = events[events.length - 1]!
+    const mentions = mergedMentions(events)
     deliver({
-      ...events[events.length - 1]!,
+      ...last,
       text: events.map(event => event.text).join('\n'),
+      ...(events.some(event => event.mentioned === true) ? { mentioned: true } : {}),
+      ...(mentions !== undefined || last.mentions !== undefined ? { mentions } : {}),
       merged: { count: events.length, messageIds },
     })
   }
