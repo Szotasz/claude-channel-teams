@@ -68,7 +68,7 @@ describe('invisible character stripping', () => {
   })
 
   test('I4c a tag outside the letter/digit range breaks the sequence: every tag in it goes', () => {
-    // U+E007B is a tag character, but not a tag letter or digit, so this is not a valid flag.
+    // U+E007B is a tag character, not one of the three RGI flags' tags.
     const r = stripInvisible('\u{1F3F4}\u{E0067}\u{E007B}\u{E007F}')
     expect(r.text).toBe('\u{1F3F4}')
     expect(r.counts).toEqual({ tag: 3, zwsp: 0, bidi: 0, bom: 0 })
@@ -161,5 +161,9 @@ describe('invisible character stripping', () => {
     const noCancel = stripInvisible('\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E0078}')
     expect(noCancel.text).toBe('\u{1F3F4}')
     expect(noCancel.counts.tag).toBe(6)
+    // after a kept flag the next code point is judged on its own: a tag goes, a second flag is matched again
+    const after = stripInvisible(ENGLAND + '\u{E0041}' + '\u{1F3F4}' + WALES)
+    expect(after.text).toBe(ENGLAND + '\u{1F3F4}' + WALES)
+    expect(after.counts.tag).toBe(1)
   })
 })

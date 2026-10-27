@@ -209,6 +209,10 @@ describe('inbound meta', () => {
     expect(metaText(wales)).toBe(wales)
     expect(metaText('x\u{202E}Admin')).toBe('x Admin')
     expect(metaText('\u{200B}\u{E0041}')).toBeUndefined()
+    // removed before the whitespace collapse and the length bound: no double space, and invisible padding
+    // cannot push the visible name out of the bound
+    expect(metaText('a \u{200B} b')).toBe('a b')
+    expect(metaText('\u{200B}'.repeat(300) + 'Desk')).toBe('Desk')
   })
 
   test('M14 from_name is stripped of invisible characters', () => {
@@ -217,5 +221,20 @@ describe('inbound meta', () => {
     }
     const meta = channelEventMeta({ ...base, fromName: 'Night\u{200B} Desk\u{E0041}\u{E007F}' })
     expect(meta.from_name).toBe('Night Desk')
+    const wales = 'Desk \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
+    expect(channelEventMeta({ ...base, fromName: wales }).from_name).toBe(wales)
+  })
+
+  test('M15 the length bound never leaves part of an RGI flag or half a surrogate pair', () => {
+    const wales = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
+    // the flag is 14 UTF-16 units: with 186 letters before it, it fits the 200 bound whole
+    expect(metaText('a'.repeat(186) + wales)).toBe('a'.repeat(186) + wales)
+    for (let pad = 187; pad <= 199; pad++) {
+      const out = metaText('a'.repeat(pad) + wales)!
+      const points = Array.from(out).map((c) => c.codePointAt(0)!)
+      expect(points.some((cp) => cp >= 0xe0000 && cp <= 0xe007f)).toBe(false)
+      expect(points.some((cp) => cp >= 0xd800 && cp <= 0xdfff)).toBe(false)
+      expect(out.startsWith('a'.repeat(pad))).toBe(true)
+    }
   })
 })

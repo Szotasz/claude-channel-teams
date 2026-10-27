@@ -98,12 +98,14 @@ export type ChannelEventSink = (event: {
 // bidi controls, tag characters (except the three RGI flags), zero-width spaces, word joiners and BOM, bounded length.
 export function metaText(value: unknown, max = 200): string | undefined {
   if (typeof value !== 'string') return undefined
-  const cleaned = stripInvisible(value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069"<>]/g, ' '))
+  const bounded = stripInvisible(value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069"<>]/g, ' '))
     .text
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max)
-    .trim()
+    .replace(/[\ud800-\udbff]$/, '')
+  // The bound counts UTF-16 units and can cut a kept RGI flag: strip again, so no partial tag run survives.
+  const cleaned = stripInvisible(bounded).text.trim()
   return cleaned === '' ? undefined : cleaned
 }
 
