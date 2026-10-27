@@ -475,7 +475,9 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       }
       const evConversation = rawConversation
       // No sender to allowlist: the conversation itself must be opted in (TEAMS_MEETING_CONVERSATIONS, no wildcard).
-      if (deps.config.meetingConversations?.has(baseConversationId(evConversation)) !== true) {
+      // A '*' entry matches nothing, not even a conversation whose id is literally '*'.
+      const evBase = baseConversationId(evConversation)
+      if (evBase === '*' || deps.config.meetingConversations?.has(evBase) !== true) {
         process.stderr.write('teams channel: drop — meeting event from a conversation not in TEAMS_MEETING_CONVERSATIONS\n')
         return
       }
