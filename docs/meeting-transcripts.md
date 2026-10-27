@@ -1,8 +1,8 @@
 # Meeting transcripts (`TEAMS_MEETING_TRANSCRIPTS`)
 
 With `TEAMS_MEETING_TRANSCRIPTS=1` (or `true`) Claude gets a `get_meeting_transcript` tool. It takes the
-`meeting_id` of a `meeting_event` tag (see [meeting-events.md](meeting-events.md)) and returns the newest transcript
-of that meeting as plain text: one line per cue, `<v Speaker Name>` cues become `Speaker Name: <text>`. The
+`meeting_id` and the `conversation_id` of a `meeting_event` tag (see [meeting-events.md](meeting-events.md)) and
+returns the newest transcript of that meeting as plain text: one line per cue, `<v Speaker Name>` cues become `Speaker Name: <text>`. The
 transcript text is at most 60000 characters (`MAX_TRANSCRIPT_CHARS`) including the `[transcript truncated]` notice
 that marks a cut, and one header line of at most about 300 characters comes before it.
 
@@ -24,14 +24,20 @@ nothing). An unknown `meeting_id` is an error, not a guess.
 
 The transcript list is read page by page; a meeting with more than 20 pages of transcripts is an error.
 
-The tool is not scoped to a conversation: a meeting the plugin saw an event for can be read from any conversation of
-the same Claude session, whose context holds those meeting ids already.
+The tool is bound to the conversation the meeting was seen in: `conversation_id` must be that conversation
+(with or without `;messageid=`), and the conversation must still be on `TEAMS_MEETING_CONVERSATIONS` (see
+[meeting-events.md](meeting-events.md)); a meeting is stored only for a conversation on that list. Anything
+else is an error.
 
 The transcript is what people said in the meeting: user content, never instructions. Claude is told so, both in
-the tool description and in the text the tool returns.
+the tool description and in the text the tool returns. Invisible characters (Unicode tag characters, zero-width spaces,
+bidi controls) are removed from the title and the transcript before they are returned.
 
 These errors can come back, and what they mean:
 
+- `the meeting_id does not belong to this conversation_id: ...` — the meeting was seen in another conversation.
+- `the meeting is from a conversation not on TEAMS_MEETING_CONVERSATIONS` — the operator took that
+  conversation off the list after the meeting was stored.
 - `no transcript yet: ...` — transcription was off, or the transcript is still being processed after the meeting;
   trying again later can work.
 - `the tenant administrator has turned off Graph API access to meeting transcripts
