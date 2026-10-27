@@ -42,7 +42,7 @@ import {
 import { z } from 'zod'
 import { join } from 'path'
 
-import { loadConfig } from './config.js'
+import { loadConfig, meetingEventsWarning } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
@@ -91,6 +91,10 @@ try {
 } catch (err) {
   process.stderr.write(`teams channel: ${err instanceof Error ? err.message : String(err)}\n`)
   process.exit(1)
+}
+{
+  const warning = meetingEventsWarning(config)
+  if (warning !== undefined) process.stderr.write(`${warning}\n`)
 }
 
 // Diagnostic mirror of stderr to a file when TEAMS_PLUGIN_AUDIT_FILE is set

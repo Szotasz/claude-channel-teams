@@ -113,6 +113,8 @@ environment winning. `.env` is chmod-0600 on every load.
 | `TEAMS_PROACTIVE_CHANNELS` | No | empty | Comma-separated channel ids (no `;messageid=`, no wildcard) where the `post_to_channel` tool may open a new top-level post. The route is learned from an allowlisted user's message in the channel and kept in `channel-refs.json` (0600) in the state dir. |
 | `TEAMS_FILES_BASE_URL` | No | origin of `TEAMS_BOT_ENDPOINT_URL` + `/files` | Override for the `send_file` download-link base. https only. |
 | `TEAMS_UNMENTIONED_CONVERSATIONS` | No | empty | Comma-separated shared conversation ids (without `;messageid=`) or `*`, where allowlisted senders' messages are delivered without an @mention. Non-allowlisted senders are not paired from unmentioned messages. |
+| `TEAMS_MEETING_EVENTS` | No | off | `1` or `true` delivers meeting start / end events — see [docs/meeting-events.md](meeting-events.md). |
+| `TEAMS_MEETING_CONVERSATIONS` | No | empty | Comma-separated conversation ids (without `;messageid=`, no wildcard) whose meeting events are delivered. Empty delivers none. |
 | `TEAMS_INBOUND_DEBOUNCE_MS` | No | `0` (off) | Inbound debounce window in milliseconds (recommended `1500`) — see [Inbound debounce (opt-in)](#inbound-debounce-opt-in). A whole number, capped at 10000; anything else turns debouncing off with one stderr line. |
 | `TEAMS_STATE_DIR` | No | `~/.claude/channels/teams` | For multi-instance setups. |
 | `TEAMS_ACCESS_MODE` | No | — | `static` pins access at boot, disables pairing. |
@@ -336,7 +338,7 @@ We point at Microsoft's documentation for these in
 
 **Edit / delete / restore events.** `messageUpdate` (`editMessage`, `undeleteMessage`) and `messageDelete` (`softDeleteMessage`) activities are forwarded as channel events with `message_event="edited" | "restored" | "deleted"` and the id of the affected message. The delivered-message rule: the plugin keeps a bounded in-memory record (500 ids per conversation, 1000 conversations) of messages it delivered, with their sender. An update is forwarded only if that record has the message (keeps the @mention gate meaningful), the sender is the original sender and is still allowlisted. Anything else is dropped; these events never pair and never send anything to Teams.
 
-With TEAMS_MEETING_EVENTS, meeting start and end events are delivered too; see [docs/meeting-events.md](meeting-events.md).
+With TEAMS_MEETING_EVENTS, meeting start and end events are delivered too, for the conversations listed in TEAMS_MEETING_CONVERSATIONS; see [docs/meeting-events.md](meeting-events.md).
 
 **Repeated deliveries.** Teams may deliver the same activity again (for example when a turn takes longer than 15 seconds). A message whose id was already received in the same conversation is dropped before anything else happens. The id is noted on arrival, so a repeat that comes while the first is still being processed is dropped too, and it is forgotten again if the turn fails, so a retry that arrives after the failure still goes through (at most 500 ids per conversation and 1000 conversations). Edit, delete and restore events are not filtered.
 

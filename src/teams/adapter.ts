@@ -447,7 +447,8 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       : undefined
     // Meeting start / end (an 'event' activity, delivered only with the RSC
     // meeting permissions and TEAMS_MEETING_EVENTS). Runs before the message
-    // path: there is no sender to allowlist and no mention to strip.
+    // path: there is no sender to allowlist (the conversation must be on
+    // TEAMS_MEETING_CONVERSATIONS) and no mention to strip.
     const meeting = meetingEventFrom(a)
     if (meeting !== undefined) {
       if (!deps.meetingEvents) return
@@ -473,6 +474,11 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         return
       }
       const evConversation = rawConversation
+      // No sender to allowlist: the conversation itself must be opted in (TEAMS_MEETING_CONVERSATIONS, no wildcard).
+      if (deps.config.meetingConversations?.has(baseConversationId(evConversation)) !== true) {
+        process.stderr.write('teams channel: drop — meeting event from a conversation not in TEAMS_MEETING_CONVERSATIONS\n')
+        return
+      }
       const title = metaText(meeting.title)
       const meetingType = metaText(meeting.meetingType, 40)
       const meetingId = metaText(meeting.meetingId, 300)

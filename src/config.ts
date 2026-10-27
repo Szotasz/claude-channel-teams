@@ -194,6 +194,27 @@ export interface Config {
    * From TEAMS_MEETING_EVENTS ('1' or 'true'); see docs/meeting-events.md.
    */
   meetingEvents: boolean
+  /**
+   * Conversations (ids without ';messageid=') whose meeting start / end events are delivered. Empty (the
+   * default) delivers none, even with TEAMS_MEETING_EVENTS on. No wildcard: '*' matches no conversation.
+   * From TEAMS_MEETING_CONVERSATIONS (comma-separated); see docs/meeting-events.md.
+   */
+  meetingConversations?: ReadonlySet<string>
+}
+
+/** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
+export function meetingEventsWarning(c: {
+  meetingEvents: boolean
+  meetingConversations?: ReadonlySet<string>
+}): string | undefined {
+  if (!c.meetingEvents) return undefined
+  if (c.meetingConversations?.has('*')) {
+    return "teams channel: TEAMS_MEETING_CONVERSATIONS takes no wildcard; '*' matches no conversation"
+  }
+  if (c.meetingConversations === undefined || c.meetingConversations.size === 0) {
+    return 'teams channel: TEAMS_MEETING_EVENTS is on but TEAMS_MEETING_CONVERSATIONS is empty; no meeting event will be delivered'
+  }
+  return undefined
 }
 
 /**
@@ -393,5 +414,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ackText,
     ackDelayMs,
     meetingEvents: parseFlag(env.TEAMS_MEETING_EVENTS),
+    meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),
   })
 }
