@@ -1110,3 +1110,19 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
     expect(lines.some(l => l.includes('timed out'))).toBe(false)
   })
 })
+
+describe('the meeting store and TEAMS_MEETING_CONVERSATIONS', () => {
+  test('A11 a conversation not on the list: no lookup, nothing stored, nothing delivered', async () => {
+    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const s = setup({
+      meetingEvents: true,
+      meetingStore: store,
+      getMeetingInfo: async () => VALID_INFO,
+      meetingConversations: new Set(['19:other@thread.v2']),
+    })
+    await s.run(meetingActivity())
+    expect(s.events.length).toBe(0)
+    expect(s.infoCalls.length).toBe(0)
+    expect(store.get('MEETING-ID')).toBeUndefined()
+  })
+})

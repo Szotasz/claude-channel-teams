@@ -43,9 +43,9 @@ describe('server.ts meeting-transcripts wiring', () => {
   })
 
   test('the transcript instruction appears once, only inside the transcriptsOn branch', () => {
-    const sentences = server.match(/'get_meeting_transcript\(meeting_id\)[^\n]*/g) ?? []
+    const sentences = server.match(/'get_meeting_transcript\(conversation_id, meeting_id\)[^\n]*/g) ?? []
     expect(sentences.length).toBe(1)
-    expect(server).toMatch(/\.\.\.\(transcriptsOn\n\s*\? \[\n\s*'get_meeting_transcript\(meeting_id\)/)
+    expect(server).toMatch(/\.\.\.\(transcriptsOn\n\s*\? \[\n\s*'get_meeting_transcript\(conversation_id, meeting_id\)/)
   })
 
   test('the listener gets the meeting store only under transcriptsOn', () => {
@@ -54,9 +54,9 @@ describe('server.ts meeting-transcripts wiring', () => {
     expect(listener).not.toContain('meetingStore,')
   })
 
-  test('the get_meeting_transcript case returns transcriptResultText(m.title, t)', () => {
+  test('the get_meeting_transcript case returns transcriptResultText(m.title, t), invisible characters stripped', () => {
     const c = block(server, "case 'get_meeting_transcript': {")
-    expect(c).toContain('text: transcriptResultText(m.title, t)')
+    expect(c).toContain('text: withInvisibleStripped({ text: transcriptResultText(m.title, t) }).text')
     expect(c).not.toContain('Transcript of')
   })
 })
