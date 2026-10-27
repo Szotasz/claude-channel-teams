@@ -375,7 +375,9 @@ describe('meeting events only for the conversations in TEAMS_MEETING_CONVERSATIO
     const s = setup(true, TENANT_ID, new Set(['19:other@thread.v2']))
     const err = await captureStderr(() => s.run(meetingActivity()))
     expect(s.events.length).toBe(0)
-    expect(err).toContain('teams channel: drop — meeting event from a conversation not in TEAMS_MEETING_CONVERSATIONS')
+    expect(err.split('\n').filter(l => l.startsWith('teams channel: drop'))).toEqual([
+      'teams channel: drop — meeting event from a conversation not in TEAMS_MEETING_CONVERSATIONS',
+    ])
   })
 
   test('C2 no list and an empty list deliver nothing', async () => {
@@ -391,6 +393,12 @@ describe('meeting events only for the conversations in TEAMS_MEETING_CONVERSATIO
     const s = setup(true, TENANT_ID, new Set(['*']))
     await captureStderr(() => s.run(meetingActivity()))
     expect(s.events.length).toBe(0)
+    // not even a conversation whose id is literally '*'
+    for (const id of ['*', '*;messageid=1']) {
+      const err = await captureStderr(() => s.run(meetingActivity({ conversation: { id, tenantId: TENANT_ID } })))
+      expect(s.events.length).toBe(0)
+      expect(err).toContain('meeting event from a conversation not in TEAMS_MEETING_CONVERSATIONS')
+    }
   })
 
   test("C4 the list is matched against the id without ';messageid=', and the listed conversation still gets its event", async () => {
@@ -407,6 +415,12 @@ describe('meeting events only for the conversations in TEAMS_MEETING_CONVERSATIO
     })))
     expect(s.events.length).toBe(0)
     expect(err).toContain('meeting event from another tenant')
+    // an unlisted conversation from another tenant is dropped for the tenant, which is checked first
+    const both = await captureStderr(() => s.run(meetingActivity({
+      conversation: { id: '19:other@thread.v2', tenantId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+    })))
+    expect(both).toContain('meeting event from another tenant')
+    expect(both).not.toContain('TEAMS_MEETING_CONVERSATIONS')
   })
 
   test('C6 zero-width characters, a word joiner and a BOM in the title are removed', async () => {
