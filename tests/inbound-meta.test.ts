@@ -239,4 +239,54 @@ describe('inbound meta', () => {
     expect(metaText('a'.repeat(199) + '\u{1F600}')).toBe('a'.repeat(199))
     expect(metaText('a'.repeat(198) + ' ' + wales)).toBe('a'.repeat(198))
   })
+
+  test('M16 a merged inbound message carries merged_count and merged_message_ids, after the other keys', () => {
+    const base = {
+      text: 'look at this\nhttps://example.test\nurgent', conversationId: 'conv-abc', aadObjectId: FIXTURE_ID,
+      tenantId: TENANT_ID, fromName: 'Adnan Khan', messageId: 'm3', ts: '2026-05-18T19:43:00.000Z',
+    }
+    const meta = channelEventMeta({ ...base, merged: { count: 3, messageIds: ['m1', 'm2'] } })
+    expect(meta.merged_count).toBe('3')
+    expect(meta.merged_message_ids).toBe('m1,m2')
+    // An id with characters the meta cannot carry comes out sanitised, not raw.
+    const dirty = channelEventMeta({ ...base, merged: { count: 2, messageIds: ['m"1', 'm<2'] } })
+    expect(dirty.merged_message_ids).toBe(metaText('m"1,m<2'))
+    expect(dirty.merged_message_ids).toBe('m 1,m 2')
+    expect(dirty.merged_message_ids).not.toContain('"')
+    // An id that sanitises to nothing is left out; when none is left, the key is omitted (never undefined or ',').
+    expect(channelEventMeta({ ...base, merged: { count: 2, messageIds: ['"', 'm2'] } }).merged_message_ids).toBe('m2')
+    const empty = channelEventMeta({ ...base, merged: { count: 2, messageIds: ['"', '<>'] } })
+    expect(empty.merged_count).toBe('2')
+    expect('merged_message_ids' in empty).toBe(false)
+    // Only whole ids fit the 1000-character cap: no half id, no trailing comma; one id is cut to 200 characters.
+    const long = channelEventMeta({ ...base, merged: { count: 6, messageIds: Array(6).fill('a'.repeat(199)) } })
+    expect(long.merged_message_ids).toBe(Array(5).fill('a'.repeat(199)).join(','))
+    // Exactly 1000 characters still fits (one 200-character id, four 199-character ids, four commas).
+    const exact = channelEventMeta({ ...base, merged: { count: 5, messageIds: ['c'.repeat(200), ...Array(4).fill('c'.repeat(199))] } })
+    expect(exact.merged_message_ids!.length).toBe(1000)
+    const huge = channelEventMeta({ ...base, merged: { count: 2, messageIds: ['b'.repeat(250), 'm2'] } })
+    expect(huge.merged_message_ids).toBe('b'.repeat(200) + ',m2')
+    // No merged message: neither key exists.
+    const plain = channelEventMeta(base)
+    expect(plain.merged_count).toBeUndefined()
+    expect(plain.merged_message_ids).toBeUndefined()
+    for (const key of Object.keys(plain)) expect(key.startsWith('merged_')).toBe(false)
+    // Key order is unchanged: the invisible_* keys still come last.
+    const withBoth = channelEventMeta({
+      ...base,
+      merged: { count: 3, messageIds: ['m1', 'm2'] },
+      invisible: { tag: 1, zwsp: 0, bidi: 0, bom: 0 },
+    })
+    const keys = Object.keys(withBoth)
+    const firstInvisible = keys.findIndex(key => key.startsWith('invisible_'))
+    expect(firstInvisible).toBeGreaterThan(-1)
+    expect(keys.slice(0, firstInvisible).every(key => !key.startsWith('invisible_'))).toBe(true)
+    expect(keys.slice(firstInvisible).every(key => key.startsWith('invisible_'))).toBe(true)
+    expect(keys.indexOf('merged_count')).toBeLessThan(firstInvisible)
+    expect(keys.indexOf('merged_message_ids')).toBeLessThan(firstInvisible)
+    // A merged event whose fragments carried no message ids reports the count only.
+    const noIds = channelEventMeta({ ...base, merged: { count: 2, messageIds: [] } })
+    expect(noIds.merged_count).toBe('2')
+    expect(noIds.merged_message_ids).toBeUndefined()
+  })
 })

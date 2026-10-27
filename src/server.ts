@@ -56,6 +56,7 @@ import { withSendRetry } from './teams/sendRetry.js'
 import { createFileSender } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createInboundIds } from './teams/inboundIds.js'
+import { createInboundDebouncer } from './teams/inboundDebounce.js'
 import { withInvisibleStripped } from './teams/invisibleChars.js'
 import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
@@ -801,6 +802,15 @@ const onEvent: ChannelEventSink = event => {
     })
 }
 
+// ── Inbound debounce ─────────────────────────────────────────────────────────
+// Opt-in (TEAMS_INBOUND_DEBOUNCE_MS): the listener pushes into the debouncer
+// and it delivers to onEvent, so quick successive fragments from one sender
+// arrive as one event instead of the first one starting a turn on half a
+// request. With the window at 0 this is a pass-through. stop() runs first on
+// shutdown: it delivers what is held and lets every later message (one still in
+// flight in the listener) straight through, so nothing buffered is lost.
+const inboundDebouncer = createInboundDebouncer({ windowMs: config.inboundDebounceMs, deliver: onEvent })
+
 // ── Boot ────────────────────────────────────────────────────────────────────
 
 const listener = startListener({
@@ -809,7 +819,7 @@ const listener = startListener({
   allowlist,
   refs,
   channelRefs,
-  onEvent,
+  onEvent: inboundDebouncer.push,
   pending,
   permission,
   typingPump,
@@ -838,6 +848,7 @@ async function shutdown(): Promise<void> {
   shuttingDown = true
   process.stderr.write('teams channel: shutting down\n')
   try {
+    inboundDebouncer.stop()
     permission.clear()
     typingPump.stopAll()
     outbox.shutdown()
