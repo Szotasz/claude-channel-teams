@@ -67,7 +67,7 @@ describe('invisible character stripping', () => {
     expect(r.counts).toEqual({ tag: 1, zwsp: 0, bidi: 0, bom: 0 })
   })
 
-  test('I4c a tag outside the letter/digit range breaks the sequence: every tag in it goes', () => {
+  test('I4c a flag with a tag outside the three RGI sequences: every tag in it goes', () => {
     // U+E007B is a tag character, not one of the three RGI flags' tags.
     const r = stripInvisible('\u{1F3F4}\u{E0067}\u{E007B}\u{E007F}')
     expect(r.text).toBe('\u{1F3F4}')

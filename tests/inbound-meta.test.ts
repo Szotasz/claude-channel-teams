@@ -229,12 +229,14 @@ describe('inbound meta', () => {
     const wales = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
     // the flag is 14 UTF-16 units: with 186 letters before it, it fits the 200 bound whole
     expect(metaText('a'.repeat(186) + wales)).toBe('a'.repeat(186) + wales)
-    for (let pad = 187; pad <= 199; pad++) {
-      const out = metaText('a'.repeat(pad) + wales)!
-      const points = Array.from(out).map((c) => c.codePointAt(0)!)
-      expect(points.some((cp) => cp >= 0xe0000 && cp <= 0xe007f)).toBe(false)
-      expect(points.some((cp) => cp >= 0xd800 && cp <= 0xdfff)).toBe(false)
-      expect(out.startsWith('a'.repeat(pad))).toBe(true)
-    }
+    // cut inside the flag: its tags go and the black flag stays; cut inside the black flag itself: nothing of it
+    for (let pad = 187; pad <= 198; pad++) expect(metaText('a'.repeat(pad) + wales)).toBe('a'.repeat(pad) + '\u{1F3F4}')
+    expect(metaText('a'.repeat(199) + wales)).toBe('a'.repeat(199))
+    // other bounds, a name that is only a flag, another astral character cut in half, and the final trim
+    expect(metaText(wales, 14)).toBe(wales)
+    expect(metaText(wales, 13)).toBe('\u{1F3F4}')
+    expect(metaText(wales, 1)).toBeUndefined()
+    expect(metaText('a'.repeat(199) + '\u{1F600}')).toBe('a'.repeat(199))
+    expect(metaText('a'.repeat(198) + ' ' + wales)).toBe('a'.repeat(198))
   })
 })
