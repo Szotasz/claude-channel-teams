@@ -7,7 +7,7 @@ import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { ConversationNotAllowedError, createReplySender } from '../src/teams/reply'
-import { makeTurnHandler, reactionEventText } from '../src/teams/adapter'
+import { channelEventMeta, makeTurnHandler, reactionEventText } from '../src/teams/adapter'
 
 const ID = '00000000-0000-4000-8000-000000000001'
 const UNKNOWN = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -126,6 +126,9 @@ describe('adapter reactions', () => {
     expect(b.events.length).toBe(1)
     expect(b.events[0].text).toBe('[Reaction] added: like')
     expect(b.events[0].messageId).toBe('bot-msg-1')
+    // marked like an edit: an update about an earlier message, never part of a text burst
+    expect(b.events[0].messageEvent).toBe('reaction')
+    expect(channelEventMeta(b.events[0]).message_event).toBe('reaction')
   })
 
   test('R4 unknown sender: no event, no pending', async () => {

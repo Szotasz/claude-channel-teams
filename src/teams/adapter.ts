@@ -74,8 +74,8 @@ export type ChannelEventSink = (event: {
   ts?: string
   /** Group context only: whether the bot was @mentioned. Undefined in 1:1 chats. */
   mentioned?: boolean
-  /** Set when the event is about an earlier, already delivered message. */
-  messageEvent?: 'edited' | 'restored' | 'deleted'
+  /** Set when the event is about an earlier message: an edit / restore / delete, or a user's reaction to it. */
+  messageEvent?: 'edited' | 'restored' | 'deleted' | 'reaction'
   /** true for a team channel or a group chat (the same isGroupContext the mention gate uses). */
   isGroup?: boolean
   teamId?: string
@@ -393,6 +393,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
         fromName,
         messageId: typeof a.replyToId === 'string' && a.replyToId.length > 0 ? a.replyToId : a.id,
         ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        messageEvent: 'reaction',
       })
       return
     }
