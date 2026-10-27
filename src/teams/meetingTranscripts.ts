@@ -132,7 +132,9 @@ export function resolveTranscriptRequest(
       'the meeting_id does not belong to this conversation_id: pass the conversation_id of the same meeting_event tag',
     )
   }
-  if (meetingConversations?.has(baseId(stored.conversationId)) !== true) {
+  // As for meeting events: a '*' entry matches nothing, not even a conversation whose id is literally '*'.
+  const storedBase = baseId(stored.conversationId)
+  if (storedBase === '*' || meetingConversations?.has(storedBase) !== true) {
     throw new Error('the meeting is from a conversation not on TEAMS_MEETING_CONVERSATIONS')
   }
   return stored
