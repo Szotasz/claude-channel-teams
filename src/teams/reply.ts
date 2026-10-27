@@ -21,6 +21,9 @@ import type { ConversationRefStore } from './conversationRefs.js'
 import type { TypingPump } from './typingPump.js'
 import { withSendRetry } from './sendRetry.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
+import { createPipelineRequest } from '@azure/core-rest-pipeline'
+
+export const REACTION_ID_RE = /^[a-z0-9_]{1,40}$/
 
 export type CitationInput = {
   name: string
@@ -229,5 +232,50 @@ export function createReplySender(deps: ReplyDeps) {
     )
   }
 
-  return { sendReply, editReply, assertAllowedConversation }
+  /**
+   * Add (or remove) the bot's own emoji reaction on a message. Teams exposes
+   * this as PUT/DELETE .../activities/{id}/reactions/{type} on the Bot
+   * Connector; we send it through the turn's connector client so it is signed
+   * with the bot's credentials.
+   */
+  async function react(
+    conversationId: string,
+    messageId: string,
+    reaction: string,
+    remove = false,
+  ): Promise<void> {
+    if (typeof reaction !== 'string' || !REACTION_ID_RE.test(reaction)) {
+      throw new Error('invalid reaction id')
+    }
+    if (typeof messageId !== 'string' || messageId.length === 0 || messageId.length > 512) {
+      throw new Error('invalid message id')
+    }
+    const { ref } = assertAllowedConversation(conversationId)
+    await deps.adapter.continueConversationAsync(
+      deps.config.appId,
+      ref,
+      async ctx => {
+        const client = ctx.turnState.get((ctx.adapter as any).ConnectorClientKey) as
+          | { sendRequest(req: unknown): Promise<{ status: number }> }
+          | undefined
+        if (!client) throw new Error('no connector client for this turn')
+        const serviceUrl = String(ref.serviceUrl ?? '').replace(/\/+$/, '')
+        if (!serviceUrl) throw new Error('no service URL')
+        const url =
+          `${serviceUrl}/v3/conversations/${encodeURIComponent(conversationId)}` +
+          `/activities/${encodeURIComponent(messageId)}/reactions/${reaction}`
+        const res = await client.sendRequest(
+          createPipelineRequest({ url, method: remove ? 'DELETE' : 'PUT' }),
+        )
+        if (res.status < 200 || res.status >= 300) {
+          throw new Error(`react failed (HTTP ${res.status})`)
+        }
+      },
+    )
+    process.stderr.write(
+      `teams channel: reaction ${remove ? 'removed' : 'added'} conv=${conversationId} id=${messageId} type=${reaction}\n`,
+    )
+  }
+
+  return { sendReply, editReply, react, assertAllowedConversation }
 }

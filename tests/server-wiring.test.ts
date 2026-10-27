@@ -77,6 +77,26 @@ describe('server.ts wiring', () => {
     }
   })
 
+  test('#16 the react tool validates its arguments, then calls replier.react once with them; remove only when exactly true', () => {
+    const react = block(server, "case 'react': {")
+    for (const line of [
+      'const conversationId = args.conversation_id',
+      'const messageId = args.message_id',
+      'const reaction = args.reaction',
+      'const remove = args.remove === true',
+    ]) expect(react).toContain(line)
+    const call = 'await replier.react(conversationId, messageId, reaction, remove)'
+    expect(react.match(/replier\.react\(/g)).toEqual(['replier.react('])
+    expect(react).toContain(call)
+    const throws = [...react.matchAll(/throw new Error\('react requires a non-empty (\w+) string'\)/g)].map(m => m[1])
+    expect(throws).toEqual(['conversation_id', 'message_id', 'reaction'])
+    const guards = [...react.matchAll(/if \(typeof (\w+) !== 'string' \|\| (\w+)\.length === 0\) \{\n\s*throw new Error/g)]
+    expect(guards.map(m => [m[1], m[2]])).toEqual([
+      ['conversationId', 'conversationId'], ['messageId', 'messageId'], ['reaction', 'reaction'],
+    ])
+    expect(react.lastIndexOf('throw new Error(')).toBeLessThan(react.indexOf(call))
+  })
+
   test('invisible characters are stripped from the text before it reaches the model', () => {
     const notify = block(server, 'const onEvent: ChannelEventSink = event => {')
     const strip = 'event = withInvisibleStripped(event)'

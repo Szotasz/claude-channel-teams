@@ -75,8 +75,8 @@ export type ChannelEventSink = (event: {
   ts?: string
   /** Group context only: whether the bot was @mentioned. Undefined in 1:1 chats. */
   mentioned?: boolean
-  /** Set when the event is about an earlier, already delivered message. */
-  messageEvent?: 'edited' | 'restored' | 'deleted'
+  /** Set when the event is about an earlier message: an edit / restore / delete, or a user's reaction to it. */
+  messageEvent?: 'edited' | 'restored' | 'deleted' | 'reaction'
   /** true for a team channel or a group chat (the same isGroupContext the mention gate uses). */
   isGroup?: boolean
   teamId?: string
@@ -213,6 +213,33 @@ const rejectedSeen = new Set<string>()
 /** Senders already told (once) to pair in a 1:1 chat instead of a shared one. */
 const groupPairingHinted = new Set<string>()
 
+const REACTION_TYPE_RE = /^[a-z0-9_]{1,40}$/
+
+function reactionTypes(list: unknown): string[] {
+  if (!Array.isArray(list)) return []
+  const out: string[] = []
+  for (const el of list) {
+    if (!el || typeof el !== 'object') continue
+    const t = (el as { type?: unknown }).type
+    if (typeof t === 'string' && REACTION_TYPE_RE.test(t)) out.push(t)
+    if (out.length >= 10) break
+  }
+  return out
+}
+
+/** Text for an inbound user reaction, or undefined when nothing valid remains. */
+export function reactionEventText(activity: {
+  reactionsAdded?: unknown
+  reactionsRemoved?: unknown
+}): string | undefined {
+  const added = reactionTypes(activity.reactionsAdded)
+  const removed = reactionTypes(activity.reactionsRemoved)
+  const lines: string[] = []
+  if (added.length > 0) lines.push(`[Reaction] added: ${added.join(', ')}`)
+  if (removed.length > 0) lines.push(`[Reaction] removed: ${removed.join(', ')}`)
+  return lines.length > 0 ? lines.join('\n') : undefined
+}
+
 /**
  * Adapt a Bun-native fetch-style Request to the minimal `Request` interface
  * CloudAdapter expects. The SDK only reads `body`, `headers`, and `method`.
@@ -343,7 +370,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
       : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
       : undefined
-    if (a.type !== 'message' && !messageEvent) return
+    if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent) return
 
     const aadObjectIdRaw = a.from?.aadObjectId
     if (!aadObjectIdRaw) {
@@ -374,6 +401,32 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       return
     }
     const fromName = a.from?.name ?? ''
+
+    // User reactions: allowlisted senders only, no pairing, no @mention needed.
+    if (a.type === 'messageReaction') {
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        if (!rejectedSeen.has(aadObjectId)) {
+          rejectedSeen.add(aadObjectId)
+          process.stderr.write(
+            `teams channel: drop reaction from a sender not on the allowlist (${aadObjectId})\n`,
+          )
+        }
+        return
+      }
+      const reactionText = reactionEventText(a as any)
+      if (reactionText === undefined) return
+      deps.onEvent({
+        text: reactionText,
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof a.replyToId === 'string' && a.replyToId.length > 0 ? a.replyToId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        messageEvent: 'reaction',
+      })
+      return
+    }
 
     // Channel / group-chat scope (manifest scopes 'team' + 'groupChat'). In a
     // SHARED conversation the bot must act ONLY when explicitly @mentioned --
