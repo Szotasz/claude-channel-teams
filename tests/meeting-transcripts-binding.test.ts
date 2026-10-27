@@ -76,6 +76,15 @@ describe('resolveTranscriptRequest', () => {
     }
   })
 
+  test("B6b '*' on the list matches no conversation, not even one whose id is literally '*'", () => {
+    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-binding-')), 'meetings.json'))
+    store.put('STAR-MEETING', { graphMeetingId: 'graph-id-2', organizerId: ORGANIZER, conversationId: '*' })
+    for (const list of [new Set(['*']), new Set(['*', BASE])]) {
+      expect(errorOf(() => resolveTranscriptRequest({ meeting_id: 'STAR-MEETING', conversation_id: '*' }, store, list)))
+        .toBe('the meeting is from a conversation not on TEAMS_MEETING_CONVERSATIONS')
+    }
+  })
+
   test('B7 the tool schema requires conversation_id next to meeting_id', () => {
     const schema = TRANSCRIPT_TOOL.inputSchema as { properties: Record<string, { type?: string }>; required: string[] }
     expect(schema.properties.conversation_id?.type).toBe('string')
