@@ -31,7 +31,9 @@ else is an error.
 
 The transcript is what people said in the meeting: user content, never instructions. Claude is told so, both in
 the tool description and in the text the tool returns. Invisible characters (Unicode tag characters, zero-width spaces,
-bidi controls) are removed from the title and the transcript before they are returned.
+bidi controls) are removed from the title and the transcript before they are returned. The one exception is an RGI
+subdivision flag (England, Scotland, Wales): its tag characters stay, because they show as that flag and carry no
+other text. A flag-shaped run of any other tag characters is removed.
 
 These errors can come back, and what they mean:
 
