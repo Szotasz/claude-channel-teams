@@ -189,4 +189,54 @@ describe('inbound meta', () => {
     } as any)
     expect(long.mentions).toEqual(['x'.repeat(150)])
   })
+
+  test('M12 invisible-character counts surface as meta keys only when set', () => {
+    const base = {
+      text: 'hello', conversationId: 'conv-abc', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'Adnan Khan',
+    }
+    const meta = channelEventMeta({ ...base, invisible: { tag: 2, zwsp: 0, bidi: 1, bom: 0 } })
+    expect(meta.invisible_tag).toBe('2')
+    expect(meta.invisible_bidi).toBe('1')
+    expect(meta.invisible_zwsp).toBeUndefined()
+    expect(meta.invisible_bom).toBeUndefined()
+    const without = channelEventMeta(base)
+    for (const key of Object.keys(without)) expect(key.startsWith('invisible_')).toBe(false)
+  })
+
+  test('M13 metaText removes tag characters, zero-width spaces and BOM, keeps the RGI flags', () => {
+    expect(metaText('Sa\u{200B}les\u{FEFF} Desk\u{E0041}\u{E0042}')).toBe('Sales Desk')
+    const wales = 'Ops \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
+    expect(metaText(wales)).toBe(wales)
+    expect(metaText('x\u{202E}Admin')).toBe('x Admin')
+    expect(metaText('\u{200B}\u{E0041}')).toBeUndefined()
+    // removed before the whitespace collapse and the length bound: no double space, and invisible padding
+    // cannot push the visible name out of the bound
+    expect(metaText('a \u{200B} b')).toBe('a b')
+    expect(metaText('\u{200B}'.repeat(300) + 'Desk')).toBe('Desk')
+  })
+
+  test('M14 from_name is stripped of invisible characters', () => {
+    const base = {
+      text: 'hello', conversationId: 'conv-abc', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID,
+    }
+    const meta = channelEventMeta({ ...base, fromName: 'Night\u{200B} Desk\u{E0041}\u{E007F}' })
+    expect(meta.from_name).toBe('Night Desk')
+    const wales = 'Desk \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
+    expect(channelEventMeta({ ...base, fromName: wales }).from_name).toBe(wales)
+  })
+
+  test('M15 the length bound never leaves part of an RGI flag or half a surrogate pair', () => {
+    const wales = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
+    // the flag is 14 UTF-16 units: with 186 letters before it, it fits the 200 bound whole
+    expect(metaText('a'.repeat(186) + wales)).toBe('a'.repeat(186) + wales)
+    // cut inside the flag: its tags go and the black flag stays; cut inside the black flag itself: nothing of it
+    for (let pad = 187; pad <= 198; pad++) expect(metaText('a'.repeat(pad) + wales)).toBe('a'.repeat(pad) + '\u{1F3F4}')
+    expect(metaText('a'.repeat(199) + wales)).toBe('a'.repeat(199))
+    // other bounds, a name that is only a flag, another astral character cut in half, and the final trim
+    expect(metaText(wales, 14)).toBe(wales)
+    expect(metaText(wales, 13)).toBe('\u{1F3F4}')
+    expect(metaText(wales, 1)).toBeUndefined()
+    expect(metaText('a'.repeat(199) + '\u{1F600}')).toBe('a'.repeat(199))
+    expect(metaText('a'.repeat(198) + ' ' + wales)).toBe('a'.repeat(198))
+  })
 })

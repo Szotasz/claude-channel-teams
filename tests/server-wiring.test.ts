@@ -71,4 +71,15 @@ describe('server.ts wiring', () => {
       expect(block(notify, 'meta: {')).toContain(spread)
     }
   })
+
+  test('invisible characters are stripped from the text before it reaches the model', () => {
+    const notify = block(server, 'const onEvent: ChannelEventSink = event => {')
+    const strip = 'event = withInvisibleStripped(event)'
+    expect(notify).toContain(strip)
+    // The strip happens before the notification is built and before the text is read.
+    const at = (s: string) => notify.indexOf(s)
+    expect(at(strip)).toBeLessThan(at('mcp'))
+    expect(at(strip)).toBeLessThan(at('content: event.text'))
+    expect(server).toContain("import { withInvisibleStripped } from './teams/invisibleChars.js'")
+  })
 })
