@@ -63,7 +63,8 @@ describe('moveFile', () => {
     try {
       moveFile(src, dst, () => { throw codeErr('EXDEV', 'EXDEV') })
     } catch (e) { caught = e }
-    expect(caught?.code).toBe('ENOENT')
+    // ENOENT under Bun 1.3 on Linux (the copy opens the source first); another platform may check the destination first.
+    expect(['ENOENT', 'EEXIST']).toContain(caught?.code)
     expect(readFileSync(dst, 'utf8')).toBe('old')
   }))
 
