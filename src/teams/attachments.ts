@@ -39,7 +39,7 @@
  * same — no MCP schema changes — Hermes reads the path out of the text.
  */
 
-import { mkdirSync, renameSync, statSync, writeFileSync, existsSync } from 'fs'
+import { mkdirSync, renameSync, statSync, writeFileSync, existsSync, copyFileSync, constants, unlinkSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import type { Attachment } from 'botframework-schema'
@@ -53,6 +53,30 @@ export const DOWNLOAD_TIMEOUT_MS = 30_000
 
 const TEAMS_FILE_DOWNLOAD_CONTENT_TYPE =
   'application/vnd.microsoft.teams.file.download.info'
+
+// The temp file lives under the OS temp directory, which can be another
+// filesystem than the state directory, and rename cannot cross filesystems.
+export function moveFile(src: string, dst: string, rename: (from: string, to: string) => void = renameSync): void {
+  try {
+    rename(src, dst)
+    return
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'EXDEV') throw err
+  }
+  // A failed copy may only remove its own partial file. The copy can fail on the source
+  // (ENOENT, EACCES) before it ever reaches the destination, so EEXIST alone does not say
+  // whether a destination was there before.
+  const existed = existsSync(dst)
+  try {
+    copyFileSync(src, dst, constants.COPYFILE_EXCL)
+  } catch (err) {
+    if (!existed && (err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+      try { unlinkSync(dst) } catch {}
+    }
+    throw err
+  }
+  unlinkSync(src)
+}
 
 /**
  * Host gate for inline-image content URLs.
@@ -317,7 +341,7 @@ export async function processOne(
       const { tempPath, sizeBytes } = await downloadToTemp(downloadUrl, {}, fetchImpl)
       mkdirSync(dateDir, { recursive: true, mode: 0o700 })
       const finalPath = pickPath(dateDir, prefix, declaredName)
-      renameSync(tempPath, finalPath)
+      moveFile(tempPath, finalPath)
       // For SharePoint files we use a generic content-type if absent. The
       // sender's fileType (e.g. "pdf") is the best hint we have.
       const ct =
@@ -375,7 +399,7 @@ export async function processOne(
       const fallback = `image.${ext}`
       const name = declaredName === 'file' ? fallback : declaredName
       const finalPath = pickPath(dateDir, prefix, name)
-      renameSync(tempPath, finalPath)
+      moveFile(tempPath, finalPath)
       return {
         kind: 'saved',
         path: finalPath,
