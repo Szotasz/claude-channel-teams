@@ -98,11 +98,6 @@ try {
   if (warning !== undefined) process.stderr.write(`${warning}\n`)
 }
 
-{
-  const warning = channelEventsWarning(config)
-  if (warning !== undefined) process.stderr.write(`${warning}\n`)
-}
-
 // Diagnostic mirror of stderr to a file when TEAMS_PLUGIN_AUDIT_FILE is set
 // (read from the loaded .env). Useful when stderr is hidden inside a TUI
 // host process. NOT for production — leaves no rotation/cap.
@@ -115,6 +110,12 @@ if (process.env.TEAMS_PLUGIN_AUDIT_FILE) {
     return originalWrite(chunk, ...rest)
   }) as typeof process.stderr.write
   process.stderr.write(`teams channel: audit mirror enabled → ${auditPath}\n`)
+}
+
+// After the audit mirror, so the warning reaches the audit file too.
+{
+  const warning = channelEventsWarning(config)
+  if (warning !== undefined) process.stderr.write(`${warning}\n`)
 }
 
 const allowlist = createAllowlist(config.allowlistFile)
