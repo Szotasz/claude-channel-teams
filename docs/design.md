@@ -365,6 +365,8 @@ the card until the plugin can receive a card click as its own, marked event:
 otherwise a model-written button could post text in the name of the user who
 clicks it.
 
+In 1:1 chats Claude can also show a status line while it works (`status_update`, opt-in); see docs/status-updates.md.
+
 `reply` can also mark a message as AI-generated (`ai_generated`) and attach
 numbered source citations (`citations`, at most 20; name ≤ 80, abstract ≤ 160
 characters, optional http(s) url, ≤ 3 keywords of ≤ 28 characters, optional

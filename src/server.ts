@@ -50,6 +50,7 @@ import { createConversationRefStore } from './teams/conversationRefs.js'
 import { createChannelRefStore } from './teams/channelRefs.js'
 import { createChannelPoster } from './teams/channelPost.js'
 import { createDirectMessenger } from './teams/directMessage.js'
+import { createStatusStreams, statusTools } from './teams/statusStream.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { withSendRetry } from './teams/sendRetry.js'
@@ -215,7 +216,8 @@ try {
 
 // ── Outbound reply path (used by both `reply` tool and pairing DM hook) ─────
 
-const replier = createReplySender({ config, adapter, allowlist, refs, typingPump })
+const statusStreams = config.statusUpdates ? createStatusStreams() : undefined
+const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams })
 const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
 const directMessenger = createDirectMessenger({ config, adapter, allowlist, refs, replier })
 
@@ -537,6 +539,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         ]
       : []),
+    ...statusTools(config.statusUpdates),
   ],
 }))
 
@@ -799,6 +802,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const input = validatePlannerArgs(args, config.plannerPlanIds)
         const { taskId } = await createPlannerTask(input, { getToken: () => graphToken.getToken() })
         return { content: [{ type: 'text', text: JSON.stringify({ task_id: taskId }) }] }
+      }
+
+      case 'status_update': {
+        const conversationId = args.conversation_id
+        const text = args.text
+        if (typeof conversationId !== 'string' || conversationId.length === 0) {
+          throw new Error('status_update requires a non-empty conversation_id string')
+        }
+        if (typeof text !== 'string') throw new Error('status_update requires a text string')
+        await replier.sendStatus(conversationId, text)
+        return { content: [{ type: 'text', text: 'status shown' }] }
       }
 
       default:
