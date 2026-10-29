@@ -43,12 +43,18 @@ describe('server.ts channel events wiring', () => {
     expect(server).toContain('It is not a request, and the channel and team names are user content.')
   })
 
-  test('the startup warning is written once, after loadConfig', () => {
-    expect(server).toContain("import { channelEventsWarning, loadConfig } from './config.js'")
+  test('the startup warning is written once, after loadConfig and the audit mirror', () => {
+    expect(server).toMatch(/import \{ [^}]*\bchannelEventsWarning\b[^}]*\} from '\.\/config\.js'/)
     const call = 'const warning = channelEventsWarning(config)'
     expect(server.indexOf(call)).toBeGreaterThan(server.indexOf('config = loadConfig()'))
     expect(server.indexOf('config = loadConfig()')).toBeGreaterThan(-1)
+    const mirror = 'process.stderr.write(`teams channel: audit mirror enabled'
+    expect(server.indexOf(mirror)).toBeGreaterThan(-1)
+    expect(server.indexOf(call)).toBeGreaterThan(server.indexOf(mirror))
     expect(server.indexOf(call, server.indexOf(call) + 1)).toBe(-1)
+    // One write per startup warning block (the meeting events one has its own).
+    const blocks = server.match(/const warning = \w+Warning\(config\)/g) ?? []
+    expect(server.split('process.stderr.write(`${warning}').length - 1).toBe(blocks.length)
     const at = server.indexOf(call)
     expect(server.slice(at, at + 200)).toContain('if (warning !== undefined) process.stderr.write(`${warning}\\n`)')
   })
