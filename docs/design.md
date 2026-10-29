@@ -338,6 +338,8 @@ We point at Microsoft's documentation for these in
 
 **Repeated deliveries.** Teams may deliver the same activity again (for example when a turn takes longer than 15 seconds). A message whose id was already received in the same conversation is dropped before anything else happens. The id is noted on arrival, so a repeat that comes while the first is still being processed is dropped too, and it is forgotten again if the turn fails, so a retry that arrives after the failure still goes through (at most 500 ids per conversation and 1000 conversations). Edit, delete and restore events are not filtered.
 
+**Slow turns.** A message turn that is still running after 5 seconds (for example while large attachments download) gets its HTTP request answered and goes on in the background, so Teams does not need to send it again; a failure after that point is logged. Messages of one conversation are handed to the turn handler one after another, in the order in which botbuilder passes them on; other conversations do not wait. Other activities (edit and delete events, conversation updates) are not changed.
+
 ### Outbound (Claude → Teams)
 
 1. Claude calls `reply` tool with `{ conversation_id, text, reply_to? }`.

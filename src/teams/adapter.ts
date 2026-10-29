@@ -48,6 +48,7 @@ import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
 import type { InboundIds } from './inboundIds.js'
 import { invisibleMeta, stripInvisible } from './invisibleChars.js'
+import { makeEarlyAckTurn } from './earlyAck.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -355,8 +356,8 @@ export function baseConversationId(conversationId: string): string {
  * TurnContext — bypassing the JWT validator (which requires Microsoft-signed
  * tokens, impractical to produce in tests).
  */
-export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promise<void> {
-  const handle = async function turn(ctx: TurnContext) {
+export function makeTurnHandler(deps: AdapterDeps): (ctx: Pick<TurnContext, 'activity'>) => Promise<void> {
+  const handle = async function turn(ctx: Pick<TurnContext, 'activity'>) {
     const a = ctx.activity
     // Diagnostic: log every inbound so we know what arrived.
     process.stderr.write(
@@ -732,7 +733,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     })
   }
 
-  return async function dedupedTurn(ctx: TurnContext) {
+  return async function dedupedTurn(ctx: Pick<TurnContext, 'activity'>) {
     const a = ctx.activity
     const conversation = a.conversation?.id
     const id = a.id
@@ -769,7 +770,7 @@ export interface RunningListener {
  */
 export function startListener(deps: AdapterDeps): RunningListener {
   const { config, adapter } = deps
-  const turn = makeTurnHandler(deps)
+  const turn = makeEarlyAckTurn(makeTurnHandler(deps))
 
   const server = Bun.serve({
     hostname: config.bindHost,
