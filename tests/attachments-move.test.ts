@@ -56,6 +56,17 @@ describe('moveFile', () => {
     expect(readFileSync(src, 'utf8')).toBe('new')
   }))
 
+  test('a copy that fails on the source leaves an existing destination alone', () => withDir(dir => {
+    const src = join(dir, 'missing'), dst = join(dir, 'dst')
+    writeFileSync(dst, 'old')
+    let caught: any
+    try {
+      moveFile(src, dst, () => { throw codeErr('EXDEV', 'EXDEV') })
+    } catch (e) { caught = e }
+    expect(caught?.code).toBe('ENOENT')
+    expect(readFileSync(dst, 'utf8')).toBe('old')
+  }))
+
   test('processOne moves the temp file with moveFile', () => {
     const text = readFileSync(join(import.meta.dir, '..', 'src', 'teams', 'attachments.ts'), 'utf8')
     expect(text).not.toContain('renameSync(tempPath')

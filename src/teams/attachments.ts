@@ -63,10 +63,14 @@ export function moveFile(src: string, dst: string, rename: (from: string, to: st
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code !== 'EXDEV') throw err
   }
+  // A failed copy may only remove its own partial file. The copy can fail on the source
+  // (ENOENT, EACCES) before it ever reaches the destination, so EEXIST alone does not say
+  // whether a destination was there before.
+  const existed = existsSync(dst)
   try {
     copyFileSync(src, dst, constants.COPYFILE_EXCL)
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+    if (!existed && (err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
       try { unlinkSync(dst) } catch {}
     }
     throw err
