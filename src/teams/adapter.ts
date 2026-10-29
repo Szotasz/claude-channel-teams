@@ -569,6 +569,13 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       if (deps.config.tenantId && evTenant && evTenant.toLowerCase() !== deps.config.tenantId.toLowerCase()) return
       const evConversation = a.conversation?.id
       if (!evConversation) return
+      // No sender to allowlist: the team itself must be opted in (TEAMS_CHANNEL_EVENT_TEAMS, no wildcard).
+      // A '*' entry matches nothing, not even a team whose id is literally '*'; an event without a team id is dropped.
+      const evTeam = channelEvent.teamId
+      if (evTeam === undefined || evTeam === '*' || deps.config.channelEventTeams?.has(evTeam) !== true) {
+        process.stderr.write('teams channel: drop — channel event from a team not in TEAMS_CHANNEL_EVENT_TEAMS\n')
+        return
+      }
       deps.onEvent({
         text: channelEventText(channelEvent),
         conversationId: evConversation,

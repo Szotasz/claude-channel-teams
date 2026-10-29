@@ -13,10 +13,13 @@ channel event to Claude:
 
 Other conversation updates (members added or removed, team renamed) are not delivered.
 
-## Off by default
+## Off by default, and only for listed teams
 
-Set `TEAMS_CHANNEL_EVENTS=1` (or `true`) to turn it on. The bot gets these events in the teams where it is installed;
-no extra permission is needed.
+Set `TEAMS_CHANNEL_EVENTS=1` (or `true`) to turn it on, and list the teams whose channel events are delivered in
+`TEAMS_CHANNEL_EVENT_TEAMS`: comma-separated team ids, as Teams sends them in `channelData.team.id` (they look like
+`19:...@thread.tacv2`). An empty or missing list delivers no channel event, and there is no wildcard: `*` matches no
+team. An event that carries no team id is not delivered. With the flag on and the list empty, the plugin writes one
+warning at startup. The bot gets these events in the teams where it is installed; no extra permission is needed.
 
 ## Names are user content
 

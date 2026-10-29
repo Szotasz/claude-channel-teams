@@ -8,7 +8,7 @@ import { channelEventFrom, channelEventText, cleanEventName, MAX_EVENT_NAME } fr
 import { makeTurnHandler } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
-import { loadConfig, parseFlag } from '../src/config'
+import { channelEventsWarning, loadConfig, parseFlag } from '../src/config'
 
 describe('cleanEventName', () => {
   test('control, C1, line separator and bidi characters become spaces, trimmed', () => {
@@ -101,6 +101,7 @@ const TENANT_ID = '00000000-0000-4000-8000-000000000002'
 const CONV = '19:c@thread.tacv2;messageid=1'
 const FOREIGN_TENANT = 'ffffffff-0000-4000-8000-000000000009'
 const LETTERED_TENANT = 'abcdef00-0000-4000-8000-00000000000a'
+const TEAM = '19:t@thread.tacv2'
 
 function act(o: Record<string, unknown> = {}): Activity {
   return {
@@ -114,14 +115,18 @@ function act(o: Record<string, unknown> = {}): Activity {
     channelData: {
       eventType: 'channelCreated',
       channel: { id: '19:c@thread.tacv2', name: 'Project X' },
-      team: { id: '19:t@thread.tacv2', name: 'Example Team' },
+      team: { id: TEAM, name: 'Example Team' },
       tenant: { id: TENANT_ID },
     },
     ...o,
   } as unknown as Activity
 }
 
-function setup(channelEvents: boolean, tenantId = TENANT_ID) {
+function setup(
+  channelEvents: boolean,
+  tenantId = TENANT_ID,
+  teams: { channelEventTeams?: ReadonlySet<string> } = { channelEventTeams: new Set([TEAM]) },
+) {
   const dir = mkdtempSync(join(tmpdir(), 'cct-chev-'))
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   const events: any[] = []
@@ -130,6 +135,7 @@ function setup(channelEvents: boolean, tenantId = TENANT_ID) {
     stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p',
     appType: 'SingleTenant', tenantId, bindHost: '127.0.0.1', port: 0,
     receivedFilesDir: '/tmp/unused',
+    ...teams,
   }
   const turn = makeTurnHandler({
     config: config as any,
@@ -244,6 +250,54 @@ describe('adapter channel events', () => {
   })
 })
 
+describe('adapter channel events: team allowlist', () => {
+  const data = (team?: unknown) => {
+    const { team: _t, ...rest } = act().channelData as Record<string, unknown>
+    return team === undefined ? rest : { ...rest, team }
+  }
+  test('a listed team -> delivered', async () => {
+    const s = setup(true, TENANT_ID)
+    await s.run(act())
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].channelEvent.teamId).toBe(TEAM)
+  })
+  test('a team that is not listed -> no event', async () => {
+    const s = setup(true, TENANT_ID, { channelEventTeams: new Set(['19:other@thread.tacv2']) })
+    await s.run(act())
+    expect(s.events.length).toBe(0)
+  })
+  test('an empty list -> no event', async () => {
+    const s = setup(true, TENANT_ID, { channelEventTeams: new Set() })
+    await s.run(act())
+    expect(s.events.length).toBe(0)
+  })
+  test('no list at all -> no event', async () => {
+    const s = setup(true, TENANT_ID, {})
+    await s.run(act())
+    expect(s.events.length).toBe(0)
+  })
+  test("'*' in the list matches no team", async () => {
+    const s = setup(true, TENANT_ID, { channelEventTeams: new Set(['*']) })
+    await s.run(act())
+    expect(s.events.length).toBe(0)
+  })
+  test("'*' does not match a team whose id is literally '*'", async () => {
+    const s = setup(true, TENANT_ID, { channelEventTeams: new Set(['*']) })
+    await s.run(act({ channelData: data({ id: '*', name: 'Example Team' }) }))
+    expect(s.events.length).toBe(0)
+  })
+  test('an event without a team id -> no event even when the list is set', async () => {
+    const s = setup(true, TENANT_ID)
+    await s.run(act({ channelData: data() }))
+    expect(s.events.length).toBe(0)
+  })
+  test('the list does not turn the feature on', async () => {
+    const s = setup(false, TENANT_ID)
+    await s.run(act())
+    expect(s.events.length).toBe(0)
+  })
+})
+
 describe('config channelEvents', () => {
   test('parseFlag', () => {
     expect(parseFlag('1')).toBe(true)
@@ -272,5 +326,32 @@ describe('config channelEvents', () => {
         else process.env[k] = saved[k]
       }
     }
+  })
+  test('loadConfig channelEventTeams', () => {
+    const keys = ['TEAMS_CHANNEL_EVENT_TEAMS', 'TEAMS_STATE_DIR', 'TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID']
+    const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]))
+    try {
+      process.env.TEAMS_STATE_DIR = mkdtempSync(join(tmpdir(), 'cct-cfg-'))
+      process.env.TEAMS_BOT_APP_ID = 'a'
+      process.env.TEAMS_BOT_APP_PASSWORD = 'p'
+      process.env.TEAMS_BOT_TENANT_ID = TENANT_ID
+      process.env.TEAMS_CHANNEL_EVENT_TEAMS = ' 19:a@thread.tacv2 , ,19:b@thread.tacv2 '
+      expect([...loadConfig().channelEventTeams!].sort()).toEqual(['19:a@thread.tacv2', '19:b@thread.tacv2'])
+      delete process.env.TEAMS_CHANNEL_EVENT_TEAMS
+      expect(loadConfig().channelEventTeams!.size).toBe(0)
+    } finally {
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k]
+        else process.env[k] = saved[k]
+      }
+    }
+  })
+  test('channelEventsWarning', () => {
+    expect(channelEventsWarning({ channelEvents: false })).toBeUndefined()
+    expect(channelEventsWarning({ channelEvents: false, channelEventTeams: new Set(['*']) })).toBeUndefined()
+    expect(channelEventsWarning({ channelEvents: true })).toContain('TEAMS_CHANNEL_EVENT_TEAMS is empty')
+    expect(channelEventsWarning({ channelEvents: true, channelEventTeams: new Set() })).toContain('TEAMS_CHANNEL_EVENT_TEAMS is empty')
+    expect(channelEventsWarning({ channelEvents: true, channelEventTeams: new Set(['*', '19:a@thread.tacv2']) })).toContain('takes no wildcard')
+    expect(channelEventsWarning({ channelEvents: true, channelEventTeams: new Set(['19:a@thread.tacv2']) })).toBeUndefined()
   })
 })

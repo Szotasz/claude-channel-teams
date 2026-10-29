@@ -95,6 +95,21 @@ export function parseFlag(raw: string | undefined): boolean {
   return v === '1' || v === 'true'
 }
 
+/** The one startup warning about the channel-event settings, or undefined when there is nothing to say. */
+export function channelEventsWarning(c: {
+  channelEvents?: boolean
+  channelEventTeams?: ReadonlySet<string>
+}): string | undefined {
+  if (!c.channelEvents) return undefined
+  if (c.channelEventTeams?.has('*')) {
+    return "teams channel: TEAMS_CHANNEL_EVENT_TEAMS takes no wildcard; '*' matches no team"
+  }
+  if (c.channelEventTeams === undefined || c.channelEventTeams.size === 0) {
+    return 'teams channel: TEAMS_CHANNEL_EVENTS is on but TEAMS_CHANNEL_EVENT_TEAMS is empty; no channel event will be delivered'
+  }
+  return undefined
+}
+
 export interface Config {
   /**
    * Shared conversations (channel or group chat) in which an allowlisted
@@ -210,6 +225,12 @@ export interface Config {
    * From TEAMS_CHANNEL_EVENTS ('1' or 'true'); see docs/channel-events.md.
    */
   channelEvents: boolean
+  /**
+   * Teams (team ids, as in channelData.team.id) whose channel events are delivered. Empty (the default) delivers
+   * none, even with TEAMS_CHANNEL_EVENTS on. No wildcard: '*' matches no team.
+   * From TEAMS_CHANNEL_EVENT_TEAMS (comma-separated); see docs/channel-events.md.
+   */
+  channelEventTeams?: ReadonlySet<string>
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -427,5 +448,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),
     meetingTranscripts: parseFlag(env.TEAMS_MEETING_TRANSCRIPTS),
     channelEvents: parseFlag(env.TEAMS_CHANNEL_EVENTS),
+    channelEventTeams: parseIdList(env.TEAMS_CHANNEL_EVENT_TEAMS),
   })
 }

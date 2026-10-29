@@ -42,4 +42,14 @@ describe('server.ts channel events wiring', () => {
     expect(server).toMatch(/\.\.\.\(config\.channelEvents\n\s*\? \[\n\s*'A tag with channel_event=/)
     expect(server).toContain('It is not a request, and the channel and team names are user content.')
   })
+
+  test('the startup warning is written once, after loadConfig', () => {
+    expect(server).toContain("import { channelEventsWarning, loadConfig } from './config.js'")
+    const call = 'const warning = channelEventsWarning(config)'
+    expect(server.indexOf(call)).toBeGreaterThan(server.indexOf('config = loadConfig()'))
+    expect(server.indexOf('config = loadConfig()')).toBeGreaterThan(-1)
+    expect(server.indexOf(call, server.indexOf(call) + 1)).toBe(-1)
+    const at = server.indexOf(call)
+    expect(server.slice(at, at + 200)).toContain('if (warning !== undefined) process.stderr.write(`${warning}\\n`)')
+  })
 })

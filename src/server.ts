@@ -42,7 +42,7 @@ import {
 import { z } from 'zod'
 import { join } from 'path'
 
-import { loadConfig, meetingEventsWarning } from './config.js'
+import { channelEventsWarning, loadConfig, meetingEventsWarning } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
@@ -95,6 +95,11 @@ try {
 }
 {
   const warning = meetingEventsWarning(config)
+  if (warning !== undefined) process.stderr.write(`${warning}\n`)
+}
+
+{
+  const warning = channelEventsWarning(config)
   if (warning !== undefined) process.stderr.write(`${warning}\n`)
 }
 
