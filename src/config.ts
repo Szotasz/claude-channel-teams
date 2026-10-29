@@ -28,6 +28,21 @@ export function parseIdList(raw: string | undefined): ReadonlySet<string> {
   return new Set((raw ?? '').split(',').map(s => s.trim()).filter(s => s.length > 0))
 }
 
+export function parseAckText(raw: string | undefined): string | undefined | null {
+  const text = raw?.trim() ?? ''
+  if (text === '') return undefined
+  if (text.length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(text)) return null
+  return text
+}
+
+export function parseAckDelayMs(raw: string | undefined): number | null {
+  const text = raw?.trim() ?? ''
+  if (text === '') return 3000
+  if (!/^\d+$/.test(text)) return null
+  const n = Number(text)
+  return n <= 10000 ? n : null
+}
+
 /**
  * Planner plan ids from an env var (comma-separated, like parseIdList). Every
  * entry must look like a Graph plan id; one bad entry makes the whole list
@@ -166,6 +181,14 @@ export interface Config {
    * TEAMS_STATUS_UPDATES ('1' or 'true'); see docs/status-updates.md.
    */
   statusUpdates: boolean
+  /**
+   * Text of the acknowledgement sent when Claude has not replied within
+   * ackDelayMs; the next reply overwrites it. From TEAMS_ACK_TEXT; unset = off.
+   * See docs/ack-placeholder.md.
+   */
+  ackText: string | undefined
+  /** From TEAMS_ACK_DELAY_MS (0-10000, default 3000). */
+  ackDelayMs: number
 }
 
 /**
@@ -329,6 +352,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     plannerPlanIds = new Set()
   }
 
+  let ackText = parseAckText(env.TEAMS_ACK_TEXT)
+  if (ackText === null) {
+    process.stderr.write(
+      'teams channel: TEAMS_ACK_TEXT must be 1-200 characters without control characters; the acknowledgement stays off\n',
+    )
+    ackText = undefined
+  }
+  let ackDelayMs = parseAckDelayMs(env.TEAMS_ACK_DELAY_MS)
+  if (ackDelayMs === null) {
+    process.stderr.write('teams channel: TEAMS_ACK_DELAY_MS must be an integer from 0 to 10000; using 3000\n')
+    ackDelayMs = 3000
+  }
+
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
     stateDir,
@@ -349,5 +385,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     filesBaseUrl: resolveFilesBaseUrl(env),
     plannerPlanIds,
     statusUpdates: parseFlag(env.TEAMS_STATUS_UPDATES),
+    ackText,
+    ackDelayMs,
   })
 }

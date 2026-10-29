@@ -373,6 +373,8 @@ otherwise a model-written button could post text in the name of the user who
 clicks it.
 
 In 1:1 chats Claude can also show a status line while it works (`status_update`, opt-in); see docs/status-updates.md.
+With TEAMS_ACK_TEXT set, a reply can overwrite an acknowledgement the plugin
+sent while Claude was working; see docs/ack-placeholder.md.
 
 `reply` can also mark a message as AI-generated (`ai_generated`) and attach
 numbered source citations (`citations`, at most 20; name ≤ 80, abstract ≤ 160
