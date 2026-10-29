@@ -366,15 +366,21 @@ the exit line says how many were; a second signal during the wait does not end i
 `reply` returns the sent message's id (`message_id`) so Claude can pass it to
 `edit_message`. It can also carry an Adaptive Card (version 1.0–1.5, at most
 28000 characters as JSON, https-only URLs and images), which is checked before
-anything is sent. Actions that post back to the bot (Action.Submit,
-Action.Execute, msteams imBack / messageBack / signin) are refused anywhere in
-the card until the plugin can receive a card click as its own, marked event:
-otherwise a model-written button could post text in the name of the user who
-clicks it.
+anything is sent. A click on an Action.Submit or Action.Execute button comes back as a channel event marked card_action (with action_verb),
+whose text starts with [Card action] and carries the button's title, verb and data; it is never matched as a permission
+reply, and an Action.Execute click gets a short invoke response. msteams imBack / messageBack / signin actions are still
+refused anywhere in the card: they would post text in the name of the user who clicks it, and so is a
+card refresh, whose Action.Execute fires without a click (an automatic invoke is answered and ignored). Every
+Action.Execute invoke gets an invoke response, also when it is dropped. Known limit: a click is not checked
+against a record of the cards this bot sent; the event's message_id is the card's message id (the activity's
+replyToId) when Teams sends one, which can be compared with the message_id that reply returned.
 
 In 1:1 chats Claude can also show a status line while it works (`status_update`, opt-in); see docs/status-updates.md.
 With TEAMS_ACK_TEXT set, a reply can overwrite an acknowledgement the plugin
 sent while Claude was working; see docs/ack-placeholder.md.
+`reply` can also give some people their own card (`user_cards`), using the card's `refresh` property; see docs/user-views.md.
+That refresh is the one the plugin adds itself, with a reserved verb: its invoke is answered with a card instead of
+being ignored, and a card from Claude may not use that verb.
 
 `reply` can also mark a message as AI-generated (`ai_generated`) and attach
 numbered source citations (`citations`, at most 20; name ≤ 80, abstract ≤ 160
