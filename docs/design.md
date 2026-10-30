@@ -78,7 +78,7 @@
   for the deployment shapes we document.
 - Recommendation: a small persistent reverse proxy (Caddy is the simplest
   config) that terminates TLS using the operator's hostname and forwards to
-  `127.0.0.1:3978`. For dev work, a tunnel (Cloudflare Tunnel, ngrok) is
+  `127.0.0.1:3979`. For dev work, a tunnel (Cloudflare Tunnel, ngrok) is
   documented as an alternative.
 - Why no built-in TLS listener: TLS termination drags in certificate
   lifecycle (ACME, renewal, file permissions on the private key). Out of
@@ -107,9 +107,13 @@ environment winning. `.env` is chmod-0600 on every load.
 | `TEAMS_BOT_APP_PASSWORD` | Yes | — | Client secret. Treat as a high-value credential. |
 | `TEAMS_BOT_APP_TYPE` | Yes | `SingleTenant` | One of `SingleTenant`, `MultiTenant`, `UserAssignedMSI`. |
 | `TEAMS_BOT_TENANT_ID` | When SingleTenant | — | Tenant GUID. |
-| `TEAMS_BOT_LISTEN_HOST` | No | `127.0.0.1` | Loopback by default. |
-| `TEAMS_BOT_LISTEN_PORT` | No | `3978` | Standard Bot Framework default. |
-| `TEAMS_BOT_ENDPOINT_URL` | No (recommended) | — | Public HTTPS URL on the Azure Bot resource. Diagnostics + status output. |
+| `TEAMS_PLUGIN_BIND_HOST` | No | `127.0.0.1` | Loopback by default. |
+| `TEAMS_PLUGIN_PORT` | No | `3979` | Standard Bot Framework default. |
+| `TEAMS_BOT_ENDPOINT_URL` | No (recommended) | none | Public HTTPS URL on the Azure Bot resource. Diagnostics + status output, and the base of `send_file` download links (origin + `/files`); without it `send_file` is disabled. |
+| `TEAMS_PROACTIVE_CHANNELS` | No | empty | Comma-separated channel ids (no `;messageid=`, no wildcard) where the `post_to_channel` tool may open a new top-level post. The route is learned from an allowlisted user's message in the channel and kept in `channel-refs.json` (0600) in the state dir. |
+| `TEAMS_FILES_BASE_URL` | No | origin of `TEAMS_BOT_ENDPOINT_URL` + `/files` | Override for the `send_file` download-link base. https only. |
+| `TEAMS_UNMENTIONED_CONVERSATIONS` | No | empty | Comma-separated shared conversation ids (without `;messageid=`) or `*`, where allowlisted senders' messages are delivered without an @mention. Non-allowlisted senders are not paired from unmentioned messages. |
+| `TEAMS_INBOUND_DEBOUNCE_MS` | No | `0` (off) | Inbound debounce window in milliseconds (recommended `1500`) — see [Inbound debounce (opt-in)](#inbound-debounce-opt-in). A whole number, capped at 10000; anything else turns debouncing off with one stderr line. |
 | `TEAMS_STATE_DIR` | No | `~/.claude/channels/teams` | For multi-instance setups. |
 | `TEAMS_ACCESS_MODE` | No | — | `static` pins access at boot, disables pairing. |
 
@@ -129,6 +133,12 @@ Location matches the official channels' convention
 `HOME` — Claude Code itself doesn't pass a "plugin data dir" through the
 MCP wire. Telegram's source confirms this: `homedir()` + path join, no
 helper from the SDK.
+
+Conversation references are kept in `<state dir>/conversation-refs.json`
+(mode 0600) so replies, the permission relay and proactive posts survive a
+restart. They are re-checked against the allowlist on load, entries whose
+service host is not the Teams one (`smba.*.trafficmanager.net` over https) are
+dropped, and at most 1000 are kept (most recently seen).
 
 ### `~/.claude/settings.json` snippet (operator-side)
 
@@ -156,6 +166,10 @@ operators on Pro/Max launch with
 ## C. Pairing flow
 
 Mirrors the Telegram model. Differences are noted inline.
+
+The permission prompt goes only to the most recent 1:1 chat with an allowlisted sender, never to a team channel or group
+chat. An unknown sender in a shared conversation gets no pairing code there, only a one-time hint to message the bot 1:1;
+pairing happens in the 1:1 chat.
 
 ### Step by step
 
@@ -289,7 +303,7 @@ We point at Microsoft's documentation for these in
 
 1. Teams client sends activity to Microsoft.
 2. Bot Connector signs and POSTs to `<TEAMS_BOT_ENDPOINT_URL>/api/messages`.
-3. Operator's reverse proxy forwards to `127.0.0.1:<TEAMS_BOT_LISTEN_PORT>`.
+3. Operator's reverse proxy forwards to `127.0.0.1:<TEAMS_PLUGIN_PORT>`.
 4. CloudAdapter handles JWT validation. Failure → 401 / drop.
 5. Plugin's turn handler reads `{ from.aadObjectId, conversation.id,
    conversation.tenantId, text, attachments, id, timestamp }`.
@@ -308,12 +322,23 @@ We point at Microsoft's documentation for these in
      - `user` (sanitised `activity.from.name`).
      - `aad_object_id`.
      - `ts` (ISO-8601 from `activity.timestamp`).
+     - `is_group` (`true` / `false`), and in a team channel or group chat, when Teams sends them, `team_id`, `team_name`,
+       `channel_id`, `channel_name` (`channelData.team` / `channelData.channel`), `thread_id` (the `;messageid=` root of a
+       channel thread), `reply_to_id` and `mentions` (display names of the other people @mentioned, comma-separated, whole
+       names up to 200 characters in all). Names are untrusted: double quotes, angle brackets, control characters and bidi
+       controls are replaced and each value is capped at 200 characters.
 9. Permission-reply intercept: if the text matches the
    `^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$` regex, emit
    `notifications/claude/channel/permission` with the parsed verdict —
    never forward as chat. (Sender is already gate-approved; allowlist
    members are trusted with permission verdicts.)
 10. Otherwise emit `notifications/claude/channel`.
+
+**Edit / delete / restore events.** `messageUpdate` (`editMessage`, `undeleteMessage`) and `messageDelete` (`softDeleteMessage`) activities are forwarded as channel events with `message_event="edited" | "restored" | "deleted"` and the id of the affected message. The delivered-message rule: the plugin keeps a bounded in-memory record (500 ids per conversation, 1000 conversations) of messages it delivered, with their sender. An update is forwarded only if that record has the message (keeps the @mention gate meaningful), the sender is the original sender and is still allowlisted. Anything else is dropped; these events never pair and never send anything to Teams.
+
+**Repeated deliveries.** Teams may deliver the same activity again (for example when a turn takes longer than 15 seconds). A message whose id was already received in the same conversation is dropped before anything else happens. The id is noted on arrival, so a repeat that comes while the first is still being processed is dropped too, and it is forgotten again if the turn fails, so a retry that arrives after the failure still goes through (at most 500 ids per conversation and 1000 conversations). Edit, delete and restore events are not filtered.
+
+**Slow turns.** A message turn that is still running after 5 seconds (for example while large attachments download) gets its HTTP request answered and goes on in the background, so Teams does not need to send it again; a failure after that point is logged. Messages of one conversation are handed to the turn handler one after another, in the order in which botbuilder passes them on; other conversations do not wait. Other activities (edit and delete events, conversation updates) are not changed.
 
 ### Outbound (Claude → Teams)
 
@@ -326,6 +351,67 @@ We point at Microsoft's documentation for these in
 5. Inside the turn, `await ctx.sendActivity({ type: 'message', text })` —
    optionally with `replyToId` when `reply_to` is set.
 6. Return the activity ID to Claude as the tool result.
+
+**Retries.** The Bot Framework SDK already retries 408 and 5xx answers (except 501 and 505), and 429 answers that
+carry a usable Retry-After header. The plugin retries only what the SDK does not: 412, and 429 without a usable
+Retry-After, for the reply, its edit, send_file and the pairing / permission messages (not the typing indicator). At
+most 3 attempts, exponential backoff with jitter (0.5-1 s, then 1-2 s), and no new attempt more than 10 s after the
+first (src/teams/sendRetry.ts).
+
+**Shutdown.** When the plugin shuts down (stdin closed, a signal, or the orphan watchdog), it waits up to 5 seconds
+for sends that are still in progress, including their retries, before it exits; with no send in progress it does not
+wait. The token request that precedes a send is not counted. A send still retrying after the 5 seconds is cut off, and
+the exit line says how many were; a second signal during the wait does not end it sooner.
+
+`reply` returns the sent message's id (`message_id`) so Claude can pass it to
+`edit_message`. It can also carry an Adaptive Card (version 1.0–1.5, at most
+28000 characters as JSON, https-only URLs and images), which is checked before
+anything is sent. A click on an Action.Submit or Action.Execute button comes back as a channel event marked card_action (with action_verb),
+whose text starts with [Card action] and carries the button's title, verb and data; it is never matched as a permission
+reply, and an Action.Execute click gets a short invoke response. msteams imBack / messageBack / signin actions are still
+refused anywhere in the card: they would post text in the name of the user who clicks it, and so is a
+card refresh, whose Action.Execute fires without a click (an automatic invoke is answered and ignored). Every
+Action.Execute invoke gets an invoke response, also when it is dropped. Known limit: a click is not checked
+against a record of the cards this bot sent; the event's message_id is the card's message id (the activity's
+replyToId) when Teams sends one, which can be compared with the message_id that reply returned.
+
+In 1:1 chats Claude can also show a status line while it works (`status_update`, opt-in); see docs/status-updates.md.
+With TEAMS_ACK_TEXT set, a reply can overwrite an acknowledgement the plugin
+sent while Claude was working; see docs/ack-placeholder.md.
+`reply` can also give some people their own card (`user_cards`), using the card's `refresh` property; see docs/user-views.md.
+That refresh is the one the plugin adds itself, with a reserved verb: its invoke is answered with a card instead of
+being ignored, and a card from Claude may not use that verb.
+
+`reply` can also mark a message as AI-generated (`ai_generated`) and attach
+numbered source citations (`citations`, at most 20; name ≤ 80, abstract ≤ 160
+characters, optional http(s) url, ≤ 3 keywords of ≤ 28 characters, optional
+unique position). Both go into one root-level `https://schema.org/Message`
+entity (`additionalType: ["AIGeneratedContent"]`, `citation: [...]`); the text
+refers to a citation as `[1]`, `[2]`. Citations are validated before anything is
+sent and nothing is truncated.
+
+`dm_member` sends a 1:1 message to a person instead of a conversation: Claude
+passes an Entra object id (the `aad_object_id` from `list_access` or an inbound
+message) and only allowlisted ids are accepted. When the bot already has a 1:1
+chat with that user it is reused through the normal `reply` path; otherwise the
+plugin asks the Bot Connector to open one, using the Entra object id as the
+member (that works in personal scope only) on the service URL of the most
+recently seen reference. The app must already be installed for that user: a 403
+is translated into an explanatory error that distinguishes a blocked or removed
+bot from a missing personal install. The new chat is stored in the conversation
+ref store before the first send, so `reply` works right away and the user's
+first answer updates the stored reference. The plugin never installs the app
+proactively: that would need `TeamsAppInstallation.ReadWriteSelfForUser.All`
+with admin consent and an app published to the catalog, so the user is asked to
+open the bot in Teams once instead.
+
+The `react` tool adds or removes the bot's own emoji reaction through the same
+gate: a PUT (or DELETE with `remove: true`) on
+`/v3/conversations/{id}/activities/{id}/reactions/{type}`, sent through the
+bot's connector client (about 2 changes per second). Inbound, a user's
+`messageReaction` from an allowlisted sender is forwarded as a `[Reaction]
+added: …` / `[Reaction] removed: …` channel event for the reacted-to message,
+marked `message_event="reaction"` like the edit / delete / restore events.
 
 ### Error paths
 
@@ -529,3 +615,45 @@ plugins' patterns:
 - [ ] No third-party telemetry / phone-home.
 - [ ] License: MIT or Apache 2.0.
 - [ ] Generalised docs — no hard-coded tenant IDs, bot names, hostnames.
+
+## Planner tasks (`create_planner_task`)
+
+An opt-in MCP tool that creates a Microsoft Planner task through Graph with the
+bot's app-only token. It is off unless `TEAMS_PLANNER_PLAN_IDS` lists the plans
+it may write to, because the required `Tasks.ReadWrite.All` permission covers
+every plan in the tenant. Arguments are validated before any network call.
+See [planner.md](planner.md).
+
+## Inbound debounce (opt-in)
+
+People on a phone often send one request as two or three quick messages ("look
+at this" + a link + "urgent"). Delivered straight away, the first fragment alone
+starts a full agent turn on half a request. Claude Code already batches messages
+that arrive WHILE the agent is busy; `TEAMS_INBOUND_DEBOUNCE_MS` closes the gap
+for the opening fragments. It is off by default (`0`); `1500` is the
+recommended window.
+
+How it works (`src/teams/inboundDebounce.ts`, inserted between the turn handler
+and the channel notification):
+
+- Messages from one sender (`aadObjectId`, case-insensitive) in one
+  conversation are held for the window; each new fragment re-arms it, so a burst
+  lands as one event. A merged message waits at most three windows from the
+  first fragment, so a steady trickle still gets through.
+- The merged event is the LAST message (its `message_id`, `ts`, thread and
+  reply context are the ones to answer) with the texts joined by newlines in
+  arrival order. Buffers are per sender + conversation, so two people writing
+  at once never mix. `mentioned` is true when any fragment @mentioned the
+  bot, and `mentions` is the union of the names in arrival order (at most 20,
+  at most 200 characters joined, like a single message).
+- Never held back: edits / deletes / restores, messages with attachments, and
+  slash commands. Each flushes what that sender has pending and then goes
+  through unchanged, so order is preserved.
+- The channel tag reports what happened: `merged_count` and
+  `merged_message_ids` (at most 20 ids, the earliest ones, sanitised like every
+  other meta value).
+- On shutdown `stop()` runs first: it delivers whatever is held and lets every
+  later message (one still in flight in the listener) straight through, so
+  nothing buffered is lost when the process stops.
+- The three-window cap is measured on a monotonic clock, so a wall clock that
+  is set back does not stretch it.

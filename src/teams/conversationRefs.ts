@@ -6,10 +6,12 @@
  * activity that clears the allowlist gate, then look it up when Claude calls
  * the `reply` tool.
  *
- * Phase 2: in-memory only. A plugin restart loses the references. Operators
- * who depend on long-running threads will see this as `UnknownConversationError`
- * on the first reply after a restart — they need to send a new message to
- * re-seed the reference. Persistence is a stretch goal for a later phase.
+ * With a `file` option the references are persisted: they are what lets the
+ * bot answer after a restart. They are re-checked against the allowlist on
+ * load (and the existing outbound gate still checks every send), and a
+ * reference whose serviceUrl is not the Teams service host is never loaded.
+ * Without `file` the store is in-memory only. Only the fields needed to send are written (no display names),
+ * and a file that is a symlink, not a regular file, or another user's is ignored with one stderr line.
  *
  * We also track which AAD ObjectID originally seeded each reference. The
  * outbound gate (`assertAllowedConversation`) uses this mapping to refuse
@@ -19,6 +21,21 @@
  */
 
 import type { ConversationReference } from 'botbuilder'
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'fs'
+import { randomBytes } from 'crypto'
+import { dirname } from 'path'
+import { isAllowedInlineImageHost } from './attachments.js'
 
 interface StoredRef {
   /** The Bot Framework reference used by `continueConversationAsync`. */
@@ -27,10 +44,54 @@ interface StoredRef {
   aadObjectId: string
   /** Last time we saw an inbound from this conversation (ms epoch). */
   lastSeen: number
+  /** A chat the bot opened (dm_member) that the user has not written in yet: never the permission-relay target. */
+  botOpened?: boolean
+}
+
+/** A 1:1 chat with the bot. Shared conversations (team channels, group chats) are not personal. */
+export function isPersonalReference(ref: Partial<ConversationReference> | undefined): boolean {
+  const conv = ref?.conversation
+  if (!conv) return false
+  if (conv.conversationType === 'personal') return true
+  // Any other type ('channel', 'groupChat', or one this code does not know) is not 1:1: fail closed.
+  if (conv.conversationType !== undefined) return false
+  if ((conv as { isGroup?: boolean }).isGroup === true) return false
+  if (typeof conv.id === 'string' && conv.id.includes('@thread.')) return false
+  return true
+}
+
+/** The fields of a reference that are needed to send; no display names or other keys. */
+export function storedReference(ref: Partial<ConversationReference>): Partial<ConversationReference> {
+  const out: Record<string, unknown> = {}
+  const r = (ref ?? {}) as Record<string, any>
+  for (const k of ['activityId', 'channelId', 'locale', 'serviceUrl']) {
+    if (typeof r[k] === 'string') out[k] = r[k]
+  }
+  const conv = r.conversation
+  if (conv && typeof conv === 'object' && typeof conv.id === 'string') {
+    const c: Record<string, unknown> = { id: conv.id }
+    if (typeof conv.conversationType === 'string') c.conversationType = conv.conversationType
+    if (typeof conv.tenantId === 'string') c.tenantId = conv.tenantId
+    if (typeof conv.isGroup === 'boolean') c.isGroup = conv.isGroup
+    out.conversation = c
+  }
+  const bot = r.bot
+  if (bot && typeof bot === 'object' && typeof bot.id === 'string') out.bot = { id: bot.id }
+  const user = r.user
+  if (user && typeof user === 'object' && typeof user.id === 'string') {
+    const u: Record<string, unknown> = { id: user.id }
+    if (typeof user.aadObjectId === 'string') u.aadObjectId = user.aadObjectId
+    out.user = u
+  }
+  return out as Partial<ConversationReference>
 }
 
 export interface ConversationRefStore {
-  put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string): void
+  /**
+   * `opts.botOpened` marks a chat the BOT opened (dm_member): it is not activity from that user, so it must never
+   * become the permission-relay target. An inbound put (no opts) clears the mark.
+   */
+  put(conversationId: string, ref: Partial<ConversationReference>, aadObjectId: string, opts?: { botOpened?: boolean }): void
   get(conversationId: string): StoredRef | undefined
   size(): number
   /**
@@ -39,20 +100,197 @@ export interface ConversationRefStore {
    * (single-operator scope; see docs/security.md).
    */
   mostRecentConversationId(): string | undefined
+  /** Like mostRecentConversationId(), but only over 1:1 chats (isPersonalReference). */
+  mostRecentPersonalConversationId(): string | undefined
+  /**
+   * The conversation id of the most recently seen 1:1 chat with the given
+   * AAD Object ID (compared lowercase on both sides), or undefined when the
+   * bot has never seen a personal chat with that user. Used by `dm_member`
+   * to reuse an existing 1:1 conversation instead of opening a new one.
+   */
+  personalConversationIdFor(aadObjectId: string): string | undefined
+  /**
+   * The serviceUrl of the most recently seen stored reference. Every reference
+   * in the store was validated against the Teams service host on the way in,
+   * so any of them works as the endpoint for opening a new conversation.
+   * undefined when the store is empty — the connector then has no route.
+   */
+  serviceUrlHint(): string | undefined
 }
 
-export function createConversationRefStore(): ConversationRefStore {
+export interface RefStoreOptions {
+  /** When set, references are loaded from and saved to this JSON file (mode 0600, written atomically). */
+  file?: string
+  /** Re-checked on load: an entry whose sender is no longer allowed is dropped. */
+  isAllowed?: (aadObjectId: string) => boolean
+  /** Clock override for tests. */
+  now?: () => number
+  /** Keep at most this many references, the most recently seen ones (default 1000). */
+  maxEntries?: number
+  /** Owner check override for tests (default: process.getuid). */
+  uid?: () => number | undefined
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function isValidEntry(e: any): boolean {
+  if (!e || typeof e !== 'object') return false
+  const { conversationId, ref, aadObjectId, lastSeen } = e
+  if (typeof conversationId !== 'string' || conversationId.length === 0 || conversationId.length > 512) return false
+  if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return false
+  if (!ref.conversation || typeof ref.conversation !== 'object' || ref.conversation.id !== conversationId) return false
+  if (typeof ref.serviceUrl !== 'string' || !isAllowedInlineImageHost(ref.serviceUrl)) return false
+  if (typeof aadObjectId !== 'string' || aadObjectId.length === 0) return false
+  if (typeof lastSeen !== 'number' || !Number.isFinite(lastSeen)) return false
+  return true
+}
+
+export function createConversationRefStore(opts: RefStoreOptions = {}): ConversationRefStore {
   const store = new Map<string, StoredRef>()
+  const mostRecent = (accept: (stored: StoredRef) => boolean): string | undefined => {
+    let bestId: string | undefined
+    let bestTs = -Infinity
+    for (const [id, stored] of store) {
+      if (accept(stored) && stored.lastSeen > bestTs) {
+        bestTs = stored.lastSeen
+        bestId = id
+      }
+    }
+    return bestId
+  }
+  const now = opts.now ?? Date.now
+  const maxEntries = opts.maxEntries ?? 1000
+  const file = opts.file
+
+  /** Loads the file; returns its text when it was parsed (so the caller can rewrite it), else undefined. */
+  function load(path: string): string | undefined {
+    let fd: number
+    try {
+      // O_NONBLOCK: opening a FIFO here must not hang startup before the regular-file check below.
+      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') return undefined
+      process.stderr.write(`teams channel: conversation-refs file cannot be opened (${err?.code === 'ELOOP' ? 'a symlink' : errMsg(err)}), starting empty\n`)
+      return undefined
+    }
+    let text: string
+    try {
+      const st = fstatSync(fd)
+      if (!st.isFile()) {
+        process.stderr.write('teams channel: conversation-refs file is not a regular file, starting empty\n')
+        return undefined
+      }
+      const me = (opts.uid ?? (() => (typeof process.getuid === 'function' ? process.getuid() : undefined)))()
+      if (me !== undefined && st.uid !== me) {
+        process.stderr.write('teams channel: conversation-refs file belongs to another user, starting empty\n')
+        return undefined
+      }
+      text = readFileSync(fd, 'utf8')
+    } catch (err) {
+      process.stderr.write(`teams channel: conversation-refs file cannot be read (${errMsg(err)}), starting empty\n`)
+      return undefined
+    } finally {
+      // A failing close must not crash startup either.
+      try { closeSync(fd) } catch {}
+    }
+    let entries: unknown[]
+    try {
+      const parsed = JSON.parse(text)
+      if (!parsed || typeof parsed !== 'object' || parsed.version !== 1 || !Array.isArray(parsed.refs)) {
+        throw new Error('unexpected format')
+      }
+      entries = parsed.refs
+    } catch (err) {
+      process.stderr.write(
+        `teams channel: conversation-refs file unreadable, starting empty (${errMsg(err)})\n`,
+      )
+      return undefined
+    }
+    let dropped = 0
+    const kept: Array<[string, StoredRef]> = []
+    for (const e of entries as any[]) {
+      let ok = isValidEntry(e)
+      if (ok && opts.isAllowed) {
+        try {
+          ok = opts.isAllowed(e.aadObjectId)
+        } catch {
+          ok = false
+        }
+      }
+      if (!ok) {
+        dropped++
+        continue
+      }
+      kept.push([
+        e.conversationId,
+        // A file written before this version may hold full references; keep only the fields needed to send.
+        { ref: storedReference(e.ref), aadObjectId: String(e.aadObjectId).toLowerCase(), lastSeen: Math.min(e.lastSeen, now()), ...(e.botOpened === true ? { botOpened: true } : {}) },
+      ])
+    }
+    // Newest first; a conversation listed twice keeps its most recent entry.
+    kept.sort((a, b) => b[1].lastSeen - a[1].lastSeen)
+    for (const [id, stored] of kept) {
+      if (store.size >= maxEntries) break
+      if (!store.has(id)) store.set(id, stored)
+    }
+    if (dropped > 0) {
+      process.stderr.write(`teams channel: dropped ${dropped} stored conversation reference(s) on load\n`)
+    }
+    return text
+  }
+
+  function save(path: string, unlessSameAs?: string): void {
+    let tmp: string | undefined
+    try {
+      const refs = [...store].map(([conversationId, s]) => ({ conversationId, ...s, ref: storedReference(s.ref) }))
+      const content = JSON.stringify({ version: 1, refs })
+      if (content === unlessSameAs) return
+      const dir = dirname(path)
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+      tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`
+      writeFileSync(tmp, content, { mode: 0o600 })
+      renameSync(tmp, path)
+    } catch (err) {
+      if (tmp) {
+        try { rmSync(tmp, { force: true }) } catch {}
+      }
+      process.stderr.write(`teams channel: could not save conversation references (${errMsg(err)})\n`)
+    }
+  }
+
+  if (file) {
+    // Rewrite a parsed file at once when its content changes (fields an earlier version kept, dropped entries), so
+    // nothing that is not needed to send stays on disk. A refused or unparseable file is left alone.
+    const original = load(file)
+    if (original !== undefined) save(file, original)
+  }
+
   return {
-    put(conversationId, ref, aadObjectId) {
+    put(conversationId, ref, aadObjectId, opts) {
       // We index by conversation.id because that's what Claude will pass
       // back via the reply tool. Lowercase the AAD ID at storage time so
       // the outbound gate's compare is symmetric with the inbound store.
       store.set(conversationId, {
         ref,
         aadObjectId: aadObjectId.toLowerCase(),
-        lastSeen: Date.now(),
+        lastSeen: now(),
+        ...(opts?.botOpened === true ? { botOpened: true } : {}),
       })
+      while (store.size > maxEntries) {
+        let oldestId: string | undefined
+        let oldestTs = Infinity
+        for (const [id, stored] of store) {
+          if (stored.lastSeen < oldestTs) {
+            oldestTs = stored.lastSeen
+            oldestId = id
+          }
+        }
+        if (oldestId === undefined) break
+        store.delete(oldestId)
+      }
+      if (file) save(file)
     },
     get(conversationId) {
       return store.get(conversationId)
@@ -61,15 +299,26 @@ export function createConversationRefStore(): ConversationRefStore {
       return store.size
     },
     mostRecentConversationId(): string | undefined {
-      let bestId: string | undefined
-      let bestTs = -Infinity
-      for (const [id, stored] of store) {
-        if (stored.lastSeen > bestTs) {
-          bestTs = stored.lastSeen
-          bestId = id
-        }
-      }
-      return bestId
+      return mostRecent(() => true)
+    },
+    mostRecentPersonalConversationId(): string | undefined {
+      // A chat the bot opened and the user never wrote in is never the permission-relay target.
+      return mostRecent(stored => stored.botOpened !== true && isPersonalReference(stored.ref))
+    },
+    personalConversationIdFor(aadObjectId: string): string | undefined {
+      const target = aadObjectId.trim().toLowerCase()
+      return mostRecent(
+        stored =>
+          isPersonalReference(stored.ref) && stored.aadObjectId.trim().toLowerCase() === target,
+      )
+    },
+    serviceUrlHint(): string | undefined {
+      const hasUrl = (stored: StoredRef) =>
+        typeof stored.ref.serviceUrl === 'string' && stored.ref.serviceUrl.length > 0
+      const id = mostRecent(hasUrl)
+      if (id === undefined) return undefined
+      const url = store.get(id)?.ref.serviceUrl
+      return typeof url === 'string' && url.length > 0 ? url : undefined
     },
   }
 }

@@ -23,7 +23,94 @@ import { chmodSync, mkdirSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
+/** A comma-separated id list from an env var: trimmed, empty entries dropped. */
+export function parseIdList(raw: string | undefined): ReadonlySet<string> {
+  return new Set((raw ?? '').split(',').map(s => s.trim()).filter(s => s.length > 0))
+}
+
+export function parseAckText(raw: string | undefined): string | undefined | null {
+  const text = raw?.trim() ?? ''
+  if (text === '') return undefined
+  if (text.length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(text)) return null
+  return text
+}
+
+export function parseAckDelayMs(raw: string | undefined): number | null {
+  const text = raw?.trim() ?? ''
+  if (text === '') return 3000
+  if (!/^\d+$/.test(text)) return null
+  const n = Number(text)
+  return n <= 10000 ? n : null
+}
+
+/**
+ * Planner plan ids from an env var (comma-separated, like parseIdList). Every
+ * entry must look like a Graph plan id; one bad entry makes the whole list
+ * invalid (null) so a typo cannot silently widen or shrink the allow-list.
+ */
+export function parsePlannerPlanIds(raw: string | undefined): ReadonlySet<string> | null {
+  const ids = parseIdList(raw)
+  for (const id of ids) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return null
+  }
+  return ids
+}
+
+/** TEAMS_PROACTIVE_CHANNELS: explicit channel ids only; a '*' is dropped with a warning. */
+export function proactiveChannelsFrom(raw: string | undefined): ReadonlySet<string> {
+  const ids = parseIdList(raw)
+  if (ids.has('*')) {
+    process.stderr.write("teams channel: TEAMS_PROACTIVE_CHANNELS does not take '*' -- list channel ids; ignoring it\n")
+  }
+  return new Set([...ids].filter(id => id !== '*'))
+}
+
+/** Ceiling for TEAMS_INBOUND_DEBOUNCE_MS — a typo must not swallow a minute of traffic. */
+export const MAX_INBOUND_DEBOUNCE_MS = 10000
+
+/**
+ * TEAMS_INBOUND_DEBOUNCE_MS — how long the inbound debouncer
+ * (src/teams/inboundDebounce.ts) holds a message while more fragments from the
+ * same sender may arrive. Unset / empty / invalid → 0, i.e. debouncing off and
+ * every message delivered as its own event. A whole number of milliseconds is
+ * capped at MAX_INBOUND_DEBOUNCE_MS; anything else draws one warning line and
+ * turns the feature off rather than guessing.
+ */
+export function parseInboundDebounceMs(
+  raw: string | undefined,
+  warn: (m: string) => void = m => process.stderr.write(`${m}\n`),
+): number {
+  const value = raw?.trim() ?? ''
+  if (value.length === 0) return 0
+  if (!/^\d+$/.test(value)) {
+    warn('teams channel: TEAMS_INBOUND_DEBOUNCE_MS must be a whole number of milliseconds; debouncing is off')
+    return 0
+  }
+  return Math.min(Number.parseInt(value, 10), MAX_INBOUND_DEBOUNCE_MS)
+}
+
+/** A boolean env flag: true only for '1' or 'true' (trimmed, case-insensitive). */
+export function parseFlag(raw: string | undefined): boolean {
+  const v = (raw ?? '').trim().toLowerCase()
+  return v === '1' || v === 'true'
+}
+
 export interface Config {
+  /**
+   * Shared conversations (channel or group chat) in which an allowlisted
+   * sender's message is delivered without an @mention of the bot. Entries are
+   * conversation ids without any ';messageid=...' suffix; '*' means every
+   * shared conversation. Empty (the default) keeps the mention requirement
+   * everywhere. From TEAMS_UNMENTIONED_CONVERSATIONS (comma-separated).
+   */
+  unmentionedConversations?: ReadonlySet<string>
+  /**
+   * Channel ids (the conversation id without ';messageid=...') where the
+   * post_to_channel tool may start a new top-level post. Empty (the default)
+   * disables the tool. From TEAMS_PROACTIVE_CHANNELS (comma-separated; no
+   * wildcard).
+   */
+  proactiveChannels?: ReadonlySet<string>
   /** Persistent state dir — credentials, allowlist, future inbox. Mode 0700. */
   stateDir: string
   /** Path to `<stateDir>/allowlist.json`. */
@@ -43,10 +130,16 @@ export interface Config {
   /** Port for the local HTTP listener. */
   port: number
   /**
+   * Inbound debounce window in milliseconds (see src/teams/inboundDebounce.ts):
+   * quick successive messages from one sender are merged into one event.
+   * 0 (the default) delivers every message immediately. From
+   * TEAMS_INBOUND_DEBOUNCE_MS, capped at 10000.
+   */
+  inboundDebounceMs: number
+  /**
    * Where downloaded Teams attachments are saved. Configurable via the
-   * `RECEIVED_FILES_DIR` env var. Defaults to
-   * `/home/ccuser/workspace/received-files` — deliberately OUTSIDE the
-   * plugin repo so a `git clean -fdx` can't wipe received work.
+   * `RECEIVED_FILES_DIR` env var. Defaults to `<stateDir>/files/received-files`
+   * (under the sendable root so received attachments can be re-sent).
    */
   receivedFilesDir: string
   /**
@@ -61,9 +154,41 @@ export interface Config {
    * Root directory under which `send_file` is allowed to source files from.
    * A path argument outside this root is refused — defence against a
    * prompt-injected Claude being talked into exfiltrating system files.
-   * Configurable via `SENDABLE_FILES_ROOT`. Default `/home/ccuser/workspace/`.
+   * Configurable via `SENDABLE_FILES_ROOT`. Default `<stateDir>/files` (a SUBDIR,
+   * so the state-dir secrets .env/access.json stay outside the send boundary).
    */
   sendableFilesRoot: string
+  /**
+   * Public base URL the `send_file` download links are built on, e.g.
+   * `https://<host>.<tailnet>.ts.net/files`. The token gets appended.
+   *
+   * Derived from THIS install's own public endpoint so the link reaches the
+   * plugin's `/files/<token>` route through the same tunnel Azure already
+   * uses: `TEAMS_FILES_BASE_URL` when set, else the origin of
+   * `TEAMS_BOT_ENDPOINT_URL` (which setup-azure-bot.sh writes) + `/files`.
+   * `null` when neither yields an https URL; `send_file` then refuses
+   * instead of minting a token behind a link that cannot work.
+   */
+  filesBaseUrl: string | null
+  /**
+   * Planner plans the `create_planner_task` tool may write to. Empty (the
+   * default) keeps the tool off. From TEAMS_PLANNER_PLAN_IDS (comma-separated);
+   * see docs/planner.md.
+   */
+  plannerPlanIds: ReadonlySet<string>
+  /**
+   * Whether the status_update tool is offered (1:1 chats only). From
+   * TEAMS_STATUS_UPDATES ('1' or 'true'); see docs/status-updates.md.
+   */
+  statusUpdates: boolean
+  /**
+   * Text of the acknowledgement sent when Claude has not replied within
+   * ackDelayMs; the next reply overwrites it. From TEAMS_ACK_TEXT; unset = off.
+   * See docs/ack-placeholder.md.
+   */
+  ackText: string | undefined
+  /** From TEAMS_ACK_DELAY_MS (0-10000, default 3000). */
+  ackDelayMs: number
 }
 
 /**
@@ -118,6 +243,47 @@ function loadEnvFile(envFile: string): void {
   }
 }
 
+/**
+ * Resolve the public base URL for outbound file downloads (see
+ * `Config.filesBaseUrl`). Never falls back to a fixed host: a link to any
+ * host other than this install's own would send the download token (and,
+ * through Microsoft's link prefetch, the request itself) to a third party.
+ * Returns `null` and writes one stderr line when nothing usable is set.
+ */
+export function resolveFilesBaseUrl(env: NodeJS.ProcessEnv): string | null {
+  const explicit = env.TEAMS_FILES_BASE_URL?.trim()
+  if (explicit) {
+    const url = parseHttpsUrl(explicit)
+    if (url) return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+    process.stderr.write(
+      `teams channel: TEAMS_FILES_BASE_URL is not an https URL (got ${explicit}); send_file disabled\n`,
+    )
+    return null
+  }
+  const endpoint = env.TEAMS_BOT_ENDPOINT_URL?.trim()
+  if (endpoint) {
+    const url = parseHttpsUrl(endpoint)
+    if (url) return `${url.origin}/files`
+    process.stderr.write(
+      `teams channel: TEAMS_BOT_ENDPOINT_URL is not an https URL (got ${endpoint}); send_file disabled\n`,
+    )
+    return null
+  }
+  process.stderr.write(
+    'teams channel: no TEAMS_BOT_ENDPOINT_URL or TEAMS_FILES_BASE_URL set; send_file disabled\n',
+  )
+  return null
+}
+
+function parseHttpsUrl(raw: string): URL | null {
+  try {
+    const url = new URL(raw)
+    return url.protocol === 'https:' && url.hostname ? url : null
+  } catch {
+    return null
+  }
+}
+
 function required(env: NodeJS.ProcessEnv, key: string): string {
   const v = env[key]
   if (!v || v.trim() === '') {
@@ -155,13 +321,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`teams channel: TEAMS_PLUGIN_PORT must be 1..65535 (got ${portStr})`)
   }
 
-  const receivedFilesDir =
-    env.RECEIVED_FILES_DIR?.trim() || '/home/ccuser/workspace/received-files'
-
+  // File dirs default UNDER the state dir, not the upstream
+  // '/home/ccuser/workspace/...' hardcode (the cand1 author's path) -- that
+  // crashes (ENOTSUP mkdir /home/ccuser) on every host where the user is not
+  // 'ccuser' (i.e. all of them). The sendable root is a SUBDIR ('files'), so the
+  // secrets in the state-dir root (.env, access.json, pending.json) stay OUTSIDE
+  // the send boundary and cannot be exfiltrated; received + outbox live under it
+  // so they remain re-sendable.
+  const filesRoot = join(stateDir, 'files')
   const sendableFilesRoot =
-    env.SENDABLE_FILES_ROOT?.trim() || '/home/ccuser/workspace/'
+    env.SENDABLE_FILES_ROOT?.trim() || filesRoot
+  const receivedFilesDir =
+    env.RECEIVED_FILES_DIR?.trim() || join(filesRoot, 'received-files')
   const outboxDir =
-    env.OUTBOX_DIR?.trim() || '/home/ccuser/workspace/outbox'
+    env.OUTBOX_DIR?.trim() || join(filesRoot, 'outbox')
 
   const outboxTtlStr = env.OUTBOX_TTL_SECONDS?.trim() || '1800'
   const outboxTtlSeconds = Number.parseInt(outboxTtlStr, 10)
@@ -171,8 +344,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     )
   }
 
+  let plannerPlanIds = parsePlannerPlanIds(env.TEAMS_PLANNER_PLAN_IDS)
+  if (plannerPlanIds === null) {
+    process.stderr.write(
+      'teams channel: TEAMS_PLANNER_PLAN_IDS has an invalid plan id; create_planner_task stays off\n',
+    )
+    plannerPlanIds = new Set()
+  }
+
+  let ackText = parseAckText(env.TEAMS_ACK_TEXT)
+  if (ackText === null) {
+    process.stderr.write(
+      'teams channel: TEAMS_ACK_TEXT must be 1-200 characters without control characters; the acknowledgement stays off\n',
+    )
+    ackText = undefined
+  }
+  let ackDelayMs = parseAckDelayMs(env.TEAMS_ACK_DELAY_MS)
+  if (ackDelayMs === null) {
+    process.stderr.write('teams channel: TEAMS_ACK_DELAY_MS must be an integer from 0 to 10000; using 3000\n')
+    ackDelayMs = 3000
+  }
+
   return Object.freeze({
+    unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
     stateDir,
+    proactiveChannels: proactiveChannelsFrom(env.TEAMS_PROACTIVE_CHANNELS),
     allowlistFile: join(stateDir, 'allowlist.json'),
     pendingFile: join(stateDir, 'pending.json'),
     appId,
@@ -181,9 +377,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tenantId,
     bindHost,
     port,
+    inboundDebounceMs: parseInboundDebounceMs(env.TEAMS_INBOUND_DEBOUNCE_MS),
     receivedFilesDir,
     outboxDir,
     outboxTtlSeconds,
     sendableFilesRoot,
+    filesBaseUrl: resolveFilesBaseUrl(env),
+    plannerPlanIds,
+    statusUpdates: parseFlag(env.TEAMS_STATUS_UPDATES),
+    ackText,
+    ackDelayMs,
   })
 }

@@ -3,8 +3,8 @@
 End-user- and operator-facing description of how access is bootstrapped,
 mirroring the Telegram model. Two audiences:
 
-- **The person being added** (the "user") — what they see in Teams.
-- **The operator** running Claude Code — what they see in their terminal.
+- **The person being added** (the "user"): what they see in Teams.
+- **The operator** running Claude Code: what they see in their terminal.
 
 This is the document you point a colleague at when you want to add them
 as a sender.
@@ -41,7 +41,7 @@ pending entry."
 
 ```
 You (Teams):       hi
-Bot:               Hi — this bot is gated. Ask the operator to run
+Bot:               Hi, this bot is gated. Ask the operator to run
                    /teams:access pair K7P3X2 in their terminal.
                    Show this code: K7P3X2.
 
@@ -50,7 +50,7 @@ Bot:               Hi — this bot is gated. Ask the operator to run
 Bot:               Paired. Say hi to Claude.
 ```
 
-If the bot doesn't reply to your second DM, that's expected — see the
+If the bot doesn't reply to your second DM, that's expected, see the
 "What can go wrong" table below. You get an initial DM, then one reminder
 ten minutes later. After that the bot goes silent until the operator
 acts.
@@ -82,7 +82,7 @@ Next: /teams:access pair <pair_id> <code>
 approved aad_object_id=00000000-0000-4000-8000-00000000000a
 ```
 
-(Exact formatting is up to Claude — the skill prose asks for a tabular
+(Exact formatting is up to Claude, the skill prose asks for a tabular
 render but the underlying tools just return JSON.)
 
 ## Edge cases
@@ -90,12 +90,12 @@ render but the underlying tools just return JSON.)
 | Symptom                                                | Cause / fix                                                                                                                              |
 | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | Bot only DMs the user once, then goes quiet            | After the initial DM + one reminder (10 min later) the bot stops. The operator needs to act, or the pending row sits until removed.     |
-| Operator types `pair <pair_id>` without the code       | Skill prompts for the missing half. Never auto-fills — that's the injection-defence wall.                                               |
+| Operator types `pair <pair_id>` without the code       | Skill prompts for the missing half. Never auto-fills, that's the injection-defence wall.                                               |
 | Operator types `pair <wrong_pair_id> <right_code>`     | Server returns "no pending pair with pair_id…". Re-run `/teams:access` to see the right pair_id.                                        |
-| Operator types `pair <right_pair_id> <wrong_code>`     | Server returns "code does not match pair_id…" — the pending entry is preserved so the operator can retry with the correct value.       |
-| User says "I never got a Paired DM" after approval     | The conversation reference was lost (plugin restart between DM and approval). Ask the user to send a fresh DM — it will pass the gate. |
+| Operator types `pair <right_pair_id> <wrong_code>`     | Server returns "code does not match pair_id…", the pending entry is preserved so the operator can retry with the correct value.       |
+| User says "I never got a Paired DM" after approval     | The conversation reference was lost (plugin restart between DM and approval). Ask the user to send a fresh DM, it will pass the gate. |
 | Bot DMs the same user with a different code next week  | Codes don't expire on a clock; pending rows survive across restarts. If the row was removed (by deny, or by hand), a fresh DM starts again. |
-| Operator runs `revoke <aad_object_id>` — user notices? | No. Revocation is silent by design. Future DMs from that AAD ID are dropped without reply.                                              |
+| Operator runs `revoke <aad_object_id>`, user notices? | No. Revocation is silent by design. Future DMs from that AAD ID are dropped without reply.                                              |
 | User says "I asked the bot to approve me"              | Refuse. Mutation only happens from the operator's terminal. The skill is hardened to ignore those instructions; verify by hand.        |
 
 ## After pairing
@@ -108,7 +108,7 @@ with `yes <id>` or `no <id>`.
 ## Permission prompts
 
 If the operator's Claude Code session is configured to use the channel
-for tool approvals (it is by default — the
+for tool approvals (it is by default, the
 `claude/channel/permission` capability is declared), prompts arrive as
 plain text DMs:
 
@@ -116,13 +116,13 @@ plain text DMs:
 > Reply 'yes abcde' or 'no abcde'.
 
 Reply with the exact format. The strict regex (`yes abcde` / `no abcde`,
-nothing more) is on purpose — bare "yes" would be ambiguous with a normal
+nothing more) is on purpose, bare "yes" would be ambiguous with a normal
 reply.
 
 **Trust model.** Allowlist members are session-equivalent in this respect:
 they can authorise tool calls that affect the operator's local
 environment. Allowlist accordingly. The v1 design routes the prompt to a
-single conversation — the most-recently-active allowlisted one. If you
+single conversation, the most-recently-active allowlisted one. If you
 need multi-operator broadcast or per-prompt routing, watch Phase 5.
 
 ## Revocation
@@ -133,7 +133,7 @@ The operator can revoke a user with:
 /teams:access revoke <aad_object_id>
 ```
 
-The user gets no notification — silent revocation is intentional. Their
+The user gets no notification, silent revocation is intentional. Their
 DMs are dropped from that point on. To re-add them, they DM the bot again
 and the pairing flow restarts.
 
@@ -146,4 +146,4 @@ configure skill.
 The bot only sees messages addressed to it (DMs in v1; groups in a
 future release would have stricter @-mention requirements). It does not
 read your other Teams conversations or your inbox. The operator does see
-every message you DM the bot — that's the whole point of the bridge.
+every message you DM the bot, that's the whole point of the bridge.
