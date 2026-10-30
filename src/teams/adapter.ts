@@ -514,12 +514,14 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       })
       // Remember the meeting's Graph id and organizer so get_meeting_transcript can find its transcript later. A failed
       // lookup must not affect the delivered event, and a hanging one must not hold the turn open.
-      if (deps.meetingStore && meetingId !== undefined && meeting.meetingId !== undefined) {
+      // makeEarlyAckTurn queues only message turns, so a meeting event keeps its whole context; this narrows the type.
+      const fullCtx = 'sendActivity' in ctx ? ctx : undefined
+      if (deps.meetingStore && meetingId !== undefined && meeting.meetingId !== undefined && fullCtx) {
         let timedOut = false
         let stopTimer = (): void => {}
         try {
           // Inside the try, so a lookup that throws synchronously is a failed lookup too.
-          const lookup = (deps.getMeetingInfo ?? ((c: TurnContext, id: string) => TeamsInfo.getMeetingInfo(c, id)))(ctx, meeting.meetingId)
+          const lookup = (deps.getMeetingInfo ?? ((c: TurnContext, id: string) => TeamsInfo.getMeetingInfo(c, id)))(fullCtx, meeting.meetingId)
           const info = await new Promise<unknown>((resolve, reject) => {
             const timer = setTimeout(() => {
               timedOut = true
