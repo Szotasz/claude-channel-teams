@@ -26,8 +26,11 @@ function run(...extra: string[]) {
     { env: { ...process.env, PATH: `${tmp}:${process.env.PATH}`, HOME: tmp } },
   )
   const manifest = r.exitCode === 0 ? JSON.parse(readFileSync(out, 'utf8')) : undefined
-  return { code: r.exitCode, stdout: r.stdout.toString(), manifest }
+  return { code: r.exitCode, stdout: r.stdout.toString(), stderr: r.stderr.toString(), manifest }
 }
+
+/** A golden manifest: the bytes the script writes for a given option set. */
+const golden = (name: string) => resolve(import.meta.dir, 'fixtures', 'manifest-golden', `${name}.json`)
 
 describe('make-teams-manifest.sh --rsc-all-messages', () => {
   test('T1 without the flag', () => {
@@ -102,5 +105,87 @@ describe('make-teams-manifest.sh --rsc-meeting-events', () => {
     const r = run()
     expect(r.manifest.webApplicationInfo).toBeUndefined()
     expect('authorization' in r.manifest).toBe(false)
+  })
+})
+
+describe('make-teams-manifest.sh --rsc-meeting-transcripts', () => {
+  const TRANSCRIPT = [{ name: 'OnlineMeetingTranscript.Read.Chat', type: 'Application' }]
+
+  test('T9 alone: webApplicationInfo and exactly the transcript permission', () => {
+    const r = run('--rsc-meeting-transcripts')
+    expect(r.code).toBe(0)
+    expect(r.manifest.webApplicationInfo).toEqual({ id: APP_ID, resource: 'https://RscBasedStoreApp' })
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual(TRANSCRIPT)
+    expect(r.manifest.manifestVersion).toBe('1.16')
+    expect(r.stdout.split('\n').some(l => l.startsWith('RSC:') && l.includes('OnlineMeetingTranscript.Read.Chat'))).toBe(true)
+  })
+
+  test('T10 all three options: the five permissions, the transcript one last', () => {
+    const r = run('--rsc-all-messages', '--rsc-meeting-events', '--rsc-meeting-transcripts')
+    expect(r.code).toBe(0)
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual([
+      { name: 'ChannelMessage.Read.Group', type: 'Application' },
+      { name: 'ChatMessage.Read.Chat', type: 'Application' },
+      { name: 'OnlineMeeting.ReadBasic.Chat', type: 'Application' },
+      { name: 'ChannelMeeting.ReadBasic.Group', type: 'Application' },
+      ...TRANSCRIPT,
+    ])
+  })
+
+  test('T11 with --rsc-meeting-events: the three meeting permissions in order', () => {
+    const r = run('--rsc-meeting-events', '--rsc-meeting-transcripts')
+    expect(r.code).toBe(0)
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual([
+      { name: 'OnlineMeeting.ReadBasic.Chat', type: 'Application' },
+      { name: 'ChannelMeeting.ReadBasic.Group', type: 'Application' },
+      ...TRANSCRIPT,
+    ])
+  })
+
+  test('T12 alone it warns on stderr, and the manifest is still written', () => {
+    const r = run('--rsc-meeting-transcripts')
+    expect(r.code).toBe(0)
+    expect(r.stderr).toContain('warning: --rsc-meeting-transcripts without --rsc-meeting-events')
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual(TRANSCRIPT)
+  })
+
+  test('T13 with --rsc-meeting-events there is no such warning', () => {
+    const r = run('--rsc-meeting-events', '--rsc-meeting-transcripts')
+    expect(r.code).toBe(0)
+    expect(r.stderr).not.toContain('--rsc-meeting-transcripts without')
+  })
+})
+
+describe('make-teams-manifest.sh without --rsc-meeting-transcripts is byte-identical', () => {
+  test('G1 no option', () => {
+    const r = run()
+    expect(r.code).toBe(0)
+    expect(readFileSync(join(tmp, 'out.zip'), 'utf8')).toBe(readFileSync(golden('none'), 'utf8'))
+  })
+
+  test('G2 --rsc-all-messages', () => {
+    const r = run('--rsc-all-messages')
+    expect(r.code).toBe(0)
+    expect(readFileSync(join(tmp, 'out.zip'), 'utf8')).toBe(readFileSync(golden('all-messages'), 'utf8'))
+  })
+
+  test('G3 --rsc-meeting-events', () => {
+    const r = run('--rsc-meeting-events')
+    expect(r.code).toBe(0)
+    expect(readFileSync(join(tmp, 'out.zip'), 'utf8')).toBe(readFileSync(golden('meeting-events'), 'utf8'))
+  })
+
+  test('G4 --rsc-all-messages --rsc-meeting-events', () => {
+    const r = run('--rsc-all-messages', '--rsc-meeting-events')
+    expect(r.code).toBe(0)
+    expect(readFileSync(join(tmp, 'out.zip'), 'utf8')).toBe(
+      readFileSync(golden('all-messages-meeting-events'), 'utf8'),
+    )
+  })
+
+  test('G5 --command', () => {
+    const r = run('--command', 'help: Show help')
+    expect(r.code).toBe(0)
+    expect(readFileSync(join(tmp, 'out.zip'), 'utf8')).toBe(readFileSync(golden('command'), 'utf8'))
   })
 })

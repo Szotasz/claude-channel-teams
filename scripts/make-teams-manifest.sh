@@ -12,7 +12,7 @@
 # Usage:
 #   make-teams-manifest.sh [--app-id <guid>] [--name "Marveen"] \
 #       [--env-file ~/.claude/channels/teams/.env] [--out ./teams-app.zip] \
-#       [--rsc-all-messages] [--rsc-meeting-events] [--command "<title>: <description>"]... \
+#       [--rsc-all-messages] [--rsc-meeting-events] [--rsc-meeting-transcripts] [--command "<title>: <description>"]... \
 #       [--prompt "<title>: <prompt>"]...
 #
 # --rsc-all-messages adds the RSC permissions ChannelMessage.Read.Group and ChatMessage.Read.Chat (application) and the
@@ -28,6 +28,12 @@
 # scheduled and channel meetings in the chats and teams where the app is installed; the plugin delivers them only
 # with TEAMS_MEETING_EVENTS (see docs/meeting-events.md). A chat member or meeting organizer consents at install; an
 # installed app must be upgraded with the new permissions. Not tested in a Teams tenant.
+#
+# --rsc-meeting-transcripts adds the RSC permission OnlineMeetingTranscript.Read.Chat (application) and the
+# webApplicationInfo block, so the bot can read the transcripts of scheduled private chat meetings in the chats where
+# the app is installed (not channel meetings); the plugin uses it only with TEAMS_MEETING_TRANSCRIPTS (see
+# docs/meeting-transcripts.md). Given without --rsc-meeting-events the script warns on stderr and still writes the
+# manifest. Not tested in a Teams tenant.
 #
 # --command "<title>: <description>" declares a Teams slash command (repeatable, order kept, max 12). The value is split at
 # the first ": "; one leading "/" on the title is dropped, the title must match [A-Za-z0-9][A-Za-z0-9_-]* (max 128 bytes) and
@@ -56,6 +62,7 @@ ENV_FILE="${HOME}/.claude/channels/teams/.env"
 OUT="./teams-app.zip"
 RSC_ALL=0
 RSC_MEETING=0
+RSC_TRANSCRIPTS=0
 CMD_RAW=()
 PROMPT_RAW=()
 
@@ -67,6 +74,7 @@ while [ $# -gt 0 ]; do
     --out) OUT="$2"; shift 2 ;;
     --rsc-all-messages) RSC_ALL=1; shift ;;
     --rsc-meeting-events) RSC_MEETING=1; shift ;;
+    --rsc-meeting-transcripts) RSC_TRANSCRIPTS=1; shift ;;
     --command)
       [ $# -ge 2 ] || { echo "--command needs a value: '<title>: <description>'" >&2; exit 2; }
       CMD_RAW+=("$2"); shift 2 ;;
@@ -77,6 +85,12 @@ while [ $# -gt 0 ]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# The transcript tool reads only meetings the plugin saw a start or end event for, and those events come with
+# --rsc-meeting-events: warn, but still write the manifest (the owner may add the other option later).
+if [ "$RSC_TRANSCRIPTS" = 1 ] && [ "$RSC_MEETING" != 1 ]; then
+  echo "warning: --rsc-meeting-transcripts without --rsc-meeting-events: the plugin keeps a meeting only from its start or end events, so the transcript tool will find none" >&2
+fi
 
 # Validate every --command before anything is written. Byte semantics: LC_ALL=C.
 CMD_TITLES=()
@@ -190,7 +204,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 RSC_BLOCK=""
-if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ]; then
+if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ] || [ "$RSC_TRANSCRIPTS" = 1 ]; then
   RSC_PERMS=""
   if [ "$RSC_ALL" = 1 ]; then
     RSC_PERMS="        { \"name\": \"ChannelMessage.Read.Group\", \"type\": \"Application\" },
@@ -201,6 +215,11 @@ if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ]; then
 "
     RSC_PERMS="${RSC_PERMS}        { \"name\": \"OnlineMeeting.ReadBasic.Chat\", \"type\": \"Application\" },
         { \"name\": \"ChannelMeeting.ReadBasic.Group\", \"type\": \"Application\" }"
+  fi
+  if [ "$RSC_TRANSCRIPTS" = 1 ]; then
+    [ -z "$RSC_PERMS" ] || RSC_PERMS="${RSC_PERMS},
+"
+    RSC_PERMS="${RSC_PERMS}        { \"name\": \"OnlineMeetingTranscript.Read.Chat\", \"type\": \"Application\" }"
   fi
   RSC_BLOCK=",
   \"webApplicationInfo\": {
@@ -328,6 +347,9 @@ if [ "$RSC_ALL" = 1 ]; then
 fi
 if [ "$RSC_MEETING" = 1 ]; then
   echo "RSC: requests OnlineMeeting.ReadBasic.Chat and ChannelMeeting.ReadBasic.Group for meeting events; a chat member or the meeting organizer consents at install."
+fi
+if [ "$RSC_TRANSCRIPTS" = 1 ]; then
+  echo "RSC: requests OnlineMeetingTranscript.Read.Chat for meeting transcripts; a chat member or the meeting organizer consents at install."
 fi
 if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
   echo "COMMANDS: declares ${#CMD_TITLES[@]} slash command(s); the manifest is version 1.29. Re-upload or upgrade an already installed app."

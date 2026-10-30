@@ -30,6 +30,7 @@
 
 import {
   CloudAdapter,
+  TeamsInfo,
   TurnContext,
   type Activity,
   type ConversationReference,
@@ -53,6 +54,7 @@ import { cardActionFrom, cardActionText } from './cardAction.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
 import { userViewInvokeFrom } from './userViews.js'
 import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
+import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -233,6 +235,14 @@ export interface AdapterDeps {
   /** Whether meeting start / end events are delivered (TEAMS_MEETING_EVENTS). Optional so existing
    *  tests still wire. */
   meetingEvents?: boolean
+  /** Meetings this channel saw an event for, so get_meeting_transcript can find their transcript. Optional so existing
+   *  tests still wire. */
+  meetingStore?: MeetingStore
+  /** Looks up a meeting's Graph id and organizer; defaults to TeamsInfo.getMeetingInfo. Injectable for tests. */
+  getMeetingInfo?: (ctx: TurnContext, meetingId: string) => Promise<unknown>
+  /** How long the meeting-info lookup after a meeting event may take, in milliseconds (default 5000).
+   *  A lookup that takes longer is given up on. Injectable so tests can use a short one. */
+  meetingInfoTimeoutMs?: number
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -502,6 +512,37 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
           ...(meeting.time !== undefined ? { time: meeting.time } : {}),
         },
       })
+      // Remember the meeting's Graph id and organizer so get_meeting_transcript can find its transcript later. A failed
+      // lookup must not affect the delivered event, and a hanging one must not hold the turn open.
+      // makeEarlyAckTurn queues only message turns, so a meeting event keeps its whole context; this narrows the type.
+      const fullCtx = 'sendActivity' in ctx ? ctx : undefined
+      if (deps.meetingStore && meetingId !== undefined && meeting.meetingId !== undefined && fullCtx) {
+        let timedOut = false
+        let stopTimer = (): void => {}
+        try {
+          // Inside the try, so a lookup that throws synchronously is a failed lookup too.
+          const lookup = (deps.getMeetingInfo ?? ((c: TurnContext, id: string) => TeamsInfo.getMeetingInfo(c, id)))(fullCtx, meeting.meetingId)
+          const info = await new Promise<unknown>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              timedOut = true
+              process.stderr.write('teams channel: meeting info lookup timed out\n')
+              resolve(undefined)
+            }, deps.meetingInfoTimeoutMs ?? 5000)
+            stopTimer = () => clearTimeout(timer)
+            lookup.then(resolve, reject)
+          })
+          stopTimer()
+          // A result (or a rejection) that arrives after the timeout is ignored.
+          if (!timedOut) {
+            const m = meetingFromInfo(info)
+            if (m) deps.meetingStore.put(meetingId, { ...m, conversationId: evConversation, ...(evTenant ? { tenantId: evTenant } : {}) })
+            else process.stderr.write('teams channel: meeting info without a usable Graph id or organizer\n')
+          }
+        } catch {
+          stopTimer()
+          process.stderr.write('teams channel: meeting info lookup failed\n')
+        }
+      }
       return
     }
     if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card) return

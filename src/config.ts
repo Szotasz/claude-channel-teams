@@ -200,6 +200,11 @@ export interface Config {
    * From TEAMS_MEETING_CONVERSATIONS (comma-separated); see docs/meeting-events.md.
    */
   meetingConversations?: ReadonlySet<string>
+  /**
+   * Whether Claude can read meeting transcripts (get_meeting_transcript). From TEAMS_MEETING_TRANSCRIPTS ('1' or 'true');
+   * it works only together with TEAMS_MEETING_EVENTS. See docs/meeting-transcripts.md.
+   */
+  meetingTranscripts: boolean
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -415,5 +420,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ackDelayMs,
     meetingEvents: parseFlag(env.TEAMS_MEETING_EVENTS),
     meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),
+    meetingTranscripts: parseFlag(env.TEAMS_MEETING_TRANSCRIPTS),
   })
 }
