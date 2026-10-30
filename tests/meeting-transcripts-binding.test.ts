@@ -3,8 +3,8 @@
  * invisible characters. The tool case in src/server.ts runs on import, so the request check is a function
  * (resolveTranscriptRequest) tested directly, and the server side is read from the source, scoped to the case.
  */
-import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync } from 'fs'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -17,6 +17,17 @@ import {
   vttToText,
 } from '../src/teams/meetingTranscripts'
 
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
+
 const BASE = '19:meeting@thread.v2'
 const CONVERSATION_ID = `${BASE};messageid=42`
 const OTHER = '19:other@thread.v2'
@@ -24,7 +35,7 @@ const ORGANIZER = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 const LISTED: ReadonlySet<string> = new Set([BASE])
 
 function storeWithMeeting() {
-  const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-binding-')), 'meetings.json'))
+  const store = createMeetingStore(join(tempDir('cct-binding-'), 'meetings.json'))
   store.put('MEETING-ID', { graphMeetingId: 'graph-id-1', organizerId: ORGANIZER, conversationId: CONVERSATION_ID })
   return store
 }
@@ -77,7 +88,7 @@ describe('resolveTranscriptRequest', () => {
   })
 
   test("B6b '*' on the list matches no conversation, not even one whose id is literally '*'", () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-binding-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir('cct-binding-'), 'meetings.json'))
     store.put('STAR-MEETING', { graphMeetingId: 'graph-id-2', organizerId: ORGANIZER, conversationId: '*' })
     for (const list of [new Set(['*']), new Set(['*', BASE])]) {
       expect(errorOf(() => resolveTranscriptRequest({ meeting_id: 'STAR-MEETING', conversation_id: '*' }, store, list)))
