@@ -66,3 +66,41 @@ describe('make-teams-manifest.sh --rsc-all-messages', () => {
     expect(r.exitCode).toBe(2)
   })
 })
+
+describe('make-teams-manifest.sh --rsc-meeting-events', () => {
+  const MEETING = [
+    { name: 'OnlineMeeting.ReadBasic.Chat', type: 'Application' },
+    { name: 'ChannelMeeting.ReadBasic.Group', type: 'Application' },
+  ]
+  const MESSAGES = [
+    { name: 'ChannelMessage.Read.Group', type: 'Application' },
+    { name: 'ChatMessage.Read.Chat', type: 'Application' },
+  ]
+
+  test('T5 alone: webApplicationInfo and exactly the two meeting permissions', () => {
+    const r = run('--rsc-meeting-events')
+    expect(r.code).toBe(0)
+    expect(r.manifest.webApplicationInfo).toEqual({ id: APP_ID, resource: 'https://RscBasedStoreApp' })
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual(MEETING)
+    expect(r.manifest.manifestVersion).toBe('1.16')
+    expect(r.stdout.split('\n').some(l => l.startsWith('RSC:') && l.includes('OnlineMeeting.ReadBasic.Chat'))).toBe(true)
+  })
+
+  test('T6 with --rsc-all-messages too: all four, messages first', () => {
+    const r = run('--rsc-all-messages', '--rsc-meeting-events')
+    expect(r.code).toBe(0)
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual([...MESSAGES, ...MEETING])
+  })
+
+  test('T7 --rsc-all-messages alone is unchanged: exactly the two message permissions', () => {
+    const r = run('--rsc-all-messages')
+    expect(r.manifest.authorization.permissions.resourceSpecific).toEqual(MESSAGES)
+    expect(r.stdout.split('\n').some(l => l.startsWith('RSC:') && l.includes('OnlineMeeting.ReadBasic.Chat'))).toBe(false)
+  })
+
+  test('T8 with no option there is no authorization key', () => {
+    const r = run()
+    expect(r.manifest.webApplicationInfo).toBeUndefined()
+    expect('authorization' in r.manifest).toBe(false)
+  })
+})
