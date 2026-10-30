@@ -1,5 +1,5 @@
-import { describe, expect, test, beforeEach } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -28,6 +28,9 @@ describe('reply citations / AI label', () => {
   let dir: string
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'cct-replycite-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
   })
 
   function setup() {

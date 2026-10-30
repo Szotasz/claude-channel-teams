@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync } from 'fs'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
@@ -9,6 +9,16 @@ import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { createDeliveredMessages } from '../src/teams/deliveredMessages'
 import { createInboundIds, MAX_ID_CONVERSATIONS, MAX_IDS_PER_CONVERSATION } from '../src/teams/inboundIds'
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const USER = '00000000-0000-4000-8000-000000000001'
 const TENANT_ID = '00000000-0000-4000-8000-000000000002'
@@ -42,7 +52,7 @@ const edit = (o: Record<string, unknown> = {}) =>
 
 function setup(opts: { inboundIds?: boolean; onEventThrowsOnce?: boolean; attachmentsGate?: Promise<void>; onAttachments?: () => void } = {}) {
   let pairings = 0
-  const dir = mkdtempSync(join(tmpdir(), 'cct-dedupe-'))
+  const dir = tempDir('cct-dedupe-')
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(USER)
   const events: any[] = []

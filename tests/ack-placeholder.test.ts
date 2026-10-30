@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync } from 'fs'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -9,6 +9,16 @@ import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { createReplySender } from '../src/teams/reply'
 import { createStatusStreams } from '../src/teams/statusStream'
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const FIXTURE_ID = '00000000-0000-4000-8000-000000000001'
 const TENANT_ID = '00000000-0000-4000-8000-000000000002'
@@ -40,7 +50,7 @@ describe('ack config', () => {
     const saved = { ...process.env }
     for (const k of ['TEAMS_ACK_TEXT', 'TEAMS_ACK_DELAY_MS']) delete process.env[k]
     Object.assign(process.env, {
-      TEAMS_STATE_DIR: mkdtempSync(join(tmpdir(), 'cct-ack-')),
+      TEAMS_STATE_DIR: tempDir('cct-ack-'),
       TEAMS_BOT_APP_ID: 'app',
       TEAMS_BOT_APP_PASSWORD: 'pw',
       TEAMS_BOT_TENANT_ID: TENANT_ID,
@@ -223,7 +233,7 @@ describe('createAckPlaceholders', () => {
 
 describe('reply with acknowledgement', () => {
   function make(takeResult: string | undefined, updateThrows = false, allowed = true, realAcks?: ReturnType<typeof createAckPlaceholders>) {
-    const dir = mkdtempSync(join(tmpdir(), 'cct-ackreply-'))
+    const dir = tempDir('cct-ackreply-')
     const allowlist = createAllowlist(join(dir, 'allowlist.json'))
     if (allowed) allowlist.addEntry(FIXTURE_ID)
     const refs = createConversationRefStore()
@@ -371,7 +381,7 @@ describe('server wiring', () => {
 
 describe('reply with acknowledgement and a status stream', () => {
   function make() {
-    const dir = mkdtempSync(join(tmpdir(), 'cct-ackstream-'))
+    const dir = tempDir('cct-ackstream-')
     const allowlist = createAllowlist(join(dir, 'allowlist.json'))
     allowlist.addEntry(FIXTURE_ID)
     const refs = createConversationRefStore()

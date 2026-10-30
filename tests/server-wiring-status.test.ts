@@ -1,9 +1,19 @@
-import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'node:fs'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, parseFlag } from '../src/config'
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
 
@@ -46,7 +56,7 @@ describe('TEAMS_STATUS_UPDATES', () => {
     const keys = ['TEAMS_STATUS_UPDATES', 'TEAMS_PLUGIN_STATE_DIR', 'TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID']
     const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]))
     try {
-      process.env.TEAMS_PLUGIN_STATE_DIR = mkdtempSync(join(tmpdir(), 'cct-cfg-'))
+      process.env.TEAMS_PLUGIN_STATE_DIR = tempDir('cct-cfg-')
       process.env.TEAMS_BOT_APP_ID = 'id'
       process.env.TEAMS_BOT_APP_PASSWORD = 'pw'
       process.env.TEAMS_BOT_TENANT_ID = 'tenant'
