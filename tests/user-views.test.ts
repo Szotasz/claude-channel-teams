@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -17,6 +17,16 @@ import {
   validateUserCards,
   withRefresh,
 } from '../src/teams/userViews'
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const SENDER = '00000000-0000-4000-8000-000000000001'
 const OTHER = '00000000-0000-4000-8000-000000000003'
@@ -227,7 +237,7 @@ function act(overrides: Record<string, unknown> = {}): Activity {
 }
 
 function setup() {
-  const dir = mkdtempSync(join(tmpdir(), 'cct-uv-'))
+  const dir = tempDir('cct-uv-')
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(SENDER)
   const pending = createPendingStore(join(dir, 'pending.json'))
@@ -344,7 +354,7 @@ describe('adapter: user views', () => {
 
 describe('reply: user_cards', () => {
   function rsetup() {
-    const dir = mkdtempSync(join(tmpdir(), 'cct-uvreply-'))
+    const dir = tempDir('cct-uvreply-')
     const allowlist = createAllowlist(join(dir, 'allowlist.json'))
     allowlist.addEntry(SENDER)
     const refs = createConversationRefStore()

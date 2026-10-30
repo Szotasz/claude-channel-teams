@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
@@ -8,6 +8,16 @@ import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { ConversationNotAllowedError, createReplySender } from '../src/teams/reply'
 import { channelEventMeta, makeTurnHandler, reactionEventText } from '../src/teams/adapter'
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const ID = '00000000-0000-4000-8000-000000000001'
 const UNKNOWN = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -17,7 +27,7 @@ const CONV = '19:abc@thread.tacv2;messageid=1'
 const config: any = { appId: 'app', appPassword: 'pw', appType: 'SingleTenant', tenantId: TENANT, bindHost: '127.0.0.1', port: 0 }
 
 function setup(status = 200, allowed = true) {
-  const dir = mkdtempSync(join(tmpdir(), 'cct-react-'))
+  const dir = tempDir('cct-react-')
   const allowlist = createAllowlist(join(dir, 'a.json'))
   allowlist.addEntry(ID)
   const refs = createConversationRefStore()
@@ -101,7 +111,7 @@ function act(o: Partial<Activity> = {}): Activity {
 
 describe('adapter reactions', () => {
   function build() {
-    const dir = mkdtempSync(join(tmpdir(), 'cct-react-ad-'))
+    const dir = tempDir('cct-react-ad-')
     const allowlist = createAllowlist(join(dir, 'a.json'))
     allowlist.addEntry(ID)
     const events: any[] = []

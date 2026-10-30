@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from 'bun:test'
+import { afterAll, describe, expect, test, beforeEach } from 'bun:test'
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -11,6 +11,16 @@ import { createChannelRefStore } from '../src/teams/channelRefs'
 import { createChannelPoster, ChannelNotEnabledError, UnknownChannelError } from '../src/teams/channelPost'
 import { ConversationNotAllowedError } from '../src/teams/reply'
 import { proactiveChannelsFrom } from '../src/config'
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const FIXTURE_ID = '00000000-0000-4000-8000-000000000001'
 const OTHER_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -44,7 +54,7 @@ function makeConfig(overrides = {}) {
 describe('post_to_channel', () => {
   let dir: string
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'cct-chanpost-'))
+    dir = tempDir('cct-chanpost-')
   })
 
   function setup(sendResult: any = [{ conversation: { id: `${CHAN};messageid=999` }, serviceUrl: 'https://smba.example/' }, 'act-1']) {

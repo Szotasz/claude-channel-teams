@@ -1,5 +1,5 @@
-import { describe, expect, test, beforeEach } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { afterAll, describe, expect, test, beforeEach } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -7,6 +7,16 @@ import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { ConversationNotAllowedError, createReplySender } from '../src/teams/reply'
 import { createStatusStreams } from '../src/teams/statusStream'
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const FIXTURE_ID = '00000000-0000-4000-8000-000000000001'
 const TENANT_ID = '00000000-0000-4000-8000-000000000002'
@@ -27,7 +37,7 @@ function makeConfig() {
 describe('status updates in replies', () => {
   let dir: string
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'cct-replystatus-'))
+    dir = tempDir('cct-replystatus-')
   })
 
   function setup(opts: { streams?: boolean; failFinal?: unknown; onSleep?: () => void } = {}) {
