@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'fs'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
@@ -20,6 +20,17 @@ import {
   transcriptTools,
   vttToText,
 } from '../src/teams/meetingTranscripts'
+
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'cct-transcripts-'))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const USER = '00000000-0000-4000-8000-000000000001'
 const TENANT_ID = '00000000-0000-4000-8000-000000000002'
@@ -304,7 +315,7 @@ describe('meetingFromInfo', () => {
 
 describe('createMeetingStore', () => {
   function tempFile(name = 'meetings.json'): string {
-    return join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), name)
+    return join(tempDir(), name)
   }
 
   test('S1 put/get round trip, and a second store on the same path reads it back', () => {
@@ -368,7 +379,7 @@ describe('createMeetingStore', () => {
   })
 
   test('F9 a save failure logs one line with only a well-formed code', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'no-such-dir', 'meetings.json')
+    const path = join(tempDir(), 'no-such-dir', 'meetings.json')
     const lines: string[] = []
     const write = process.stderr.write
     process.stderr.write = ((chunk: unknown) => { lines.push(String(chunk)); return true }) as typeof process.stderr.write
@@ -923,7 +934,7 @@ function setup(opts: {
   /** TEAMS_MEETING_CONVERSATIONS; null leaves the key out. Default: the fixture conversation. */
   meetingConversations?: ReadonlySet<string> | null
 }) {
-  const dir = mkdtempSync(join(tmpdir(), 'cct-transcripts-'))
+  const dir = tempDir()
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(USER)
   const events: any[] = []
@@ -955,7 +966,7 @@ function setup(opts: {
 
 describe('the meeting block stores the meeting for get_meeting_transcript', () => {
   test('A1 a valid meeting info is stored under the cleaned meeting id', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({
       meetingEvents: true,
       meetingStore: store,
@@ -976,7 +987,7 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
   })
 
   test('A2 a throwing meeting-info lookup: the event is still delivered, nothing stored', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({
       meetingEvents: true,
       meetingStore: store,
@@ -988,7 +999,7 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
   })
 
   test('A8 a lookup that throws synchronously: the event is still delivered, nothing stored', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({
       meetingEvents: true,
       meetingStore: store,
@@ -1008,7 +1019,7 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
   })
 
   test('A3 a meeting info without a usable id: delivered, nothing stored', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({
       meetingEvents: true,
       meetingStore: store,
@@ -1027,7 +1038,7 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
   })
 
   test('A5 meetingEvents off: no lookup, nothing delivered', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({ meetingEvents: false, meetingStore: store, getMeetingInfo: async () => VALID_INFO })
     await s.run(meetingActivity())
     expect(s.infoCalls.length).toBe(0)
@@ -1036,7 +1047,7 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
   })
 
   test('A6 the lookup gets the raw meeting id, the store the cleaned one', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({ meetingEvents: true, meetingStore: store, getMeetingInfo: async () => VALID_INFO })
     // metaText turns 'M"Q<1>' into 'M Q 1' — the raw id must go to Teams, the cleaned one must be the key.
     await s.run(meetingActivity({ channelData: { tenant: { id: TENANT_ID }, meeting: { id: 'M"Q<1>' } } }))
@@ -1046,7 +1057,7 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
   })
 
   test('A7 a hanging lookup: the turn still ends after the timeout, nothing is stored', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({
       meetingEvents: true,
       meetingStore: store,
@@ -1067,7 +1078,7 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
   })
 
   test('A9 a lookup that resolves after the timeout: nothing stored, only the timeout line', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({
       meetingEvents: true,
       meetingStore: store,
@@ -1090,7 +1101,7 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
   })
 
   test('A10 a lookup that resolves at once is stored, and no timeout is logged', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({
       meetingEvents: true,
       meetingStore: store,
@@ -1113,7 +1124,7 @@ describe('the meeting block stores the meeting for get_meeting_transcript', () =
 
 describe('the meeting store and TEAMS_MEETING_CONVERSATIONS', () => {
   test('A11 a conversation not on the list: no lookup, nothing stored, nothing delivered', async () => {
-    const store = createMeetingStore(join(mkdtempSync(join(tmpdir(), 'cct-transcripts-')), 'meetings.json'))
+    const store = createMeetingStore(join(tempDir(), 'meetings.json'))
     const s = setup({
       meetingEvents: true,
       meetingStore: store,
