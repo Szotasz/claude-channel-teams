@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { describe, expect, test, afterAll } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
@@ -45,8 +45,14 @@ function act(o: Record<string, unknown> = {}): Activity {
 const edit = (o: Record<string, unknown> = {}) =>
   act({ type: 'messageUpdate', channelData: { eventType: 'editMessage' }, text: 'new text', ...o })
 
+const tmpDirs: string[] = []
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
+
 function setup(wire = true) {
   const dir = mkdtempSync(join(tmpdir(), 'cct-edit-'))
+  tmpDirs.push(dir)
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(USER)
   allowlist.addEntry(OTHER)

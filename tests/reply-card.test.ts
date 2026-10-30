@@ -1,5 +1,5 @@
-import { describe, expect, test, beforeEach } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -36,6 +36,9 @@ describe('reply with card / message id', () => {
   let dir: string
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'cct-replycard-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
   })
 
   function setup(sendResult: unknown, allowed = true) {

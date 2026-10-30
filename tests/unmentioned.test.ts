@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { describe, expect, test, afterAll } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
@@ -36,8 +36,14 @@ function makeActivity(overrides: Partial<Activity> = {}): Activity {
   } as unknown as Activity
 }
 
+const tmpDirs: string[] = []
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
+
 function setup(unmentioned?: Set<string>, extra: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cct-unmentioned-'))
+  tmpDirs.push(dir)
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(FIXTURE_ID)
   const refs = createConversationRefStore()
