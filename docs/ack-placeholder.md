@@ -6,7 +6,7 @@ text in `TEAMS_ACK_TEXT` (for example "Got it, working on it..."). The next
 reply overwrites that message in place, so there is no second message.
 
 - One acknowledgement per conversation at a time.
-- Not sent for edit / delete events, or for channel messages not addressed to the bot.
+- Not sent for edit / delete events, meeting start / end events, or for channel messages not addressed to the bot.
 - A file sent with `send_file` cancels a pending acknowledgement (one already sent is left alone).
 - An acknowledgement older than 10 minutes is not overwritten; the reply is sent as a new message.
 - If overwriting fails, the reply is sent as a new message. (If Teams applied the overwrite but the call still
