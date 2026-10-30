@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
@@ -8,6 +8,17 @@ import { channelEventMeta, makeTurnHandler, metaText } from '../src/teams/adapte
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { meetingEventFrom, meetingEventText } from '../src/teams/meetingEvents'
+
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const USER = '00000000-0000-4000-8000-000000000001'
 const TENANT_ID = '00000000-0000-4000-8000-000000000002'
@@ -122,7 +133,7 @@ function setup(
   // null: no meetingConversations key at all (undefined would take this default).
   meetingConversations: ReadonlySet<string> | null = new Set([BASE_CONVERSATION_ID]),
 ) {
-  const dir = mkdtempSync(join(tmpdir(), 'cct-meeting-'))
+  const dir = tempDir('cct-meeting-')
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(USER)
   const events: any[] = []
