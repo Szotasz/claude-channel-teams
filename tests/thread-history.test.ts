@@ -148,6 +148,11 @@ describe('fetchThreadHistory', () => {
     expect(out[1]).toMatchObject({ id: 'bob', allowlisted: false, fromAadObjectId: 'bbb' })
     expect(out[2]).toMatchObject({ from: 'Bot', fromAadObjectId: null, allowlisted: false })
   })
+  test('H9b without an isAllowed dep nobody is allowlisted', async () => {
+    const f = fakeFetch(url => (url.includes('/replies') ? J({ value: [] }) : J(msg('r1', '0'))))
+    const out = await fetchThreadHistory(P, { getToken: tok, fetch: f.fn })
+    expect(out[0]).toMatchObject({ fromAadObjectId: 'aaa-1', allowlisted: false })
+  })
   test('H10 bad limits', async () => {
     const f = fakeFetch(() => J({}))
     for (const limit of [0, 101, 1.5]) {
@@ -161,6 +166,18 @@ test('H15 the tool result goes through withInvisibleStripped', () => {
   const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
   const c = server.slice(server.indexOf("case 'get_thread_history'"), server.indexOf("case 'reply'"))
   expect(c).toContain('text: withInvisibleStripped({ text: JSON.stringify(list, null, 2) }).text')
+})
+
+test('H16 the tool and the listener are wired', () => {
+  const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+  const c = server.slice(server.indexOf("case 'get_thread_history'"), server.indexOf("case 'reply'"))
+  const check = c.indexOf('replier.assertAllowedConversation(conversationId)')
+  expect(check).toBeGreaterThan(-1)
+  expect(check).toBeLessThan(c.indexOf('parseChannelThread(conversationId)'))
+  expect(c).toContain("if (limit !== undefined && typeof limit !== 'number') throw new Error(")
+  expect(c).toContain('isAllowed: id => allowlist.isAllowed(id) }')
+  const l = server.slice(server.indexOf('const listener = startListener({'))
+  expect(l.slice(0, l.indexOf('\n})'))).toContain('\n  teamGroups,\n')
 })
 
 test('H14 parseChannelThread', () => {
