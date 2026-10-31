@@ -23,6 +23,13 @@ import type { AckPlaceholders } from './ackPlaceholder.js'
 import { withSendRetry } from './sendRetry.js'
 import { isStreamClosedError, type StatusStreams } from './statusStream.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
+import {
+  isChannelReference,
+  mentionEntity,
+  teamsMemberLookup,
+  validateMentions,
+  type MemberLookup,
+} from './mentions.js'
 import { createPipelineRequest } from '@azure/core-rest-pipeline'
 import { USER_VIEW_VERB, usesReservedVerb, validateUserCards, type UserCard } from './userViews.js'
 
@@ -152,6 +159,10 @@ export interface ReplyDeps {
   knownUsers?: { get(aadObjectId: string): string | undefined }
   /** Stored user-specific views (user_cards). */
   userViews?: { create(baseCard: Record<string, unknown>, userCards: UserCard[], userMris: string[]): { id: string; base: Record<string, unknown> } }
+  /** Team tags that may be mentioned (name -> tag id). Optional so existing tests still wire. */
+  mentionTags?: ReadonlyMap<string, string>
+  /** Membership check for mentioned people; defaults to TeamsInfo.getMember. Injected by tests. */
+  lookupMember?: MemberLookup
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -182,7 +193,7 @@ export function createReplySender(deps: ReplyDeps) {
     conversationId: string,
     text: string,
     card?: unknown,
-    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown },
+    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown; mentions?: unknown },
   ): Promise<string | undefined> {
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
@@ -208,6 +219,9 @@ export function createReplySender(deps: ReplyDeps) {
     }
     const entity = buildMessageEntity(opts ?? {})
     const { ref } = assertAllowedConversation(conversationId)
+    const mentions = opts?.mentions !== undefined
+      ? validateMentions(opts.mentions, text, deps.mentionTags ?? new Map(), isChannelReference(ref))
+      : []
     // Stop the typing pump first. We do this before the network send so the
     // indicator clears even if the connector call throws — flapping
     // "is typing…" forever after a failure is worse than the failure itself.
@@ -227,6 +241,21 @@ export function createReplySender(deps: ReplyDeps) {
         deps.config.appId,
         current,
         async turnContext => {
+          const mentionEntities: ReturnType<typeof mentionEntity>[] = []
+          const notMembers: string[] = []
+          for (const m of mentions) {
+            if (m.type === 'tag') {
+              mentionEntities.push(mentionEntity(m.name, m.id, true))
+              continue
+            }
+            const memberId = await (deps.lookupMember ?? teamsMemberLookup)(turnContext, m.aadObjectId)
+            if (memberId === undefined) notMembers.push(m.name)
+            else mentionEntities.push(mentionEntity(m.name, memberId, false))
+          }
+          if (notMembers.length > 0) {
+            throw new Error(`mentions: not a member of this conversation: ${notMembers.join(', ')}`)
+          }
+          const entities = [...mentionEntities, ...(entity ? [entity] : [])]
           const activity = {
             type: 'message',
             text,
@@ -234,7 +263,7 @@ export function createReplySender(deps: ReplyDeps) {
             ...(outCard !== undefined
               ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: outCard }] }
               : {}),
-            ...(entity ? { entities: [entity as { type: string }] } : {}),
+            ...(entities.length > 0 ? { entities: entities as { type: string }[] } : {}),
           }
           // Streaming is 1:1 only: close the stream only if the conversation is still 1:1 now.
           const closes = stream && isPersonalReference(current) ? stream : undefined
@@ -274,7 +303,7 @@ export function createReplySender(deps: ReplyDeps) {
     if (deps.statusStreams && isPersonalReference(ref)) await deps.statusStreams.withStream(conversationId, send)
     else await send(undefined)
     process.stderr.write(
-      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${closedStream ? ' stream=closed' : ''}${views > 0 ? ` views=${views}` : ''}\n`,
+      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${closedStream ? ' stream=closed' : ''}${views > 0 ? ` views=${views}` : ''}${mentions.length > 0 ? ` mentions=${mentions.length}` : ''}\n`,
     )
     return sentId
   }
