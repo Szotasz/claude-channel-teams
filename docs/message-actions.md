@@ -47,6 +47,10 @@ everyone there sees it.
 
 Only allowlisted users. An action from anyone else is dropped (one stderr line) and never starts pairing.
 
+The server delivers message actions only when `TEAMS_MESSAGE_ACTIONS=1` (or `true`) is set in the plugin `.env`. Without
+it every `composeExtension/submitAction` is answered with the empty 200 and dropped (one stderr line), whoever sends it,
+and Claude is not told about message actions in its instructions. So turning them off needs no new app package.
+
 ## Response
 
 Teams requires an answer to the invoke within five seconds. The bot answers every `composeExtension/*` invoke at once
