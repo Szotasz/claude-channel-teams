@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
 
-import { inboundQuote, makeTurnHandler, stripQuotePlaceholders } from '../src/teams/adapter'
+import { channelEventMeta, inboundQuote, makeTurnHandler, stripQuotePlaceholders } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { createReplySender, parseQuoteArg } from '../src/teams/reply'
@@ -217,5 +217,24 @@ describe('adapter remembers seen ids', () => {
     await run('hi', ent({ messageId: 'q-9' }), t)
     expect(t.has('conv-abc', 'msg-1')).toBe(true)
     expect(t.has('conv-abc', 'q-9')).toBe(false)
+  })
+})
+
+describe('quote wiring', () => {
+  test('channelEventMeta carries quoted_message_id', () => {
+    const event = { text: 't', conversationId: 'c', aadObjectId: ID, tenantId: TENANT, fromName: 'n' }
+    expect(channelEventMeta({ ...event, quotedMessageId: '1:abc' }).quoted_message_id).toBe('1:abc')
+    expect('quoted_message_id' in channelEventMeta(event)).toBe(false)
+  })
+  test('server.ts parses quote_message_id and shares one seenMessages between the replier and the listener', () => {
+    const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+    const start = server.indexOf("      case 'reply': {")
+    const reply = server.slice(start, server.indexOf("\n      case '", start + 1))
+    expect(reply).toContain('const quoteMessageId = parseQuoteArg(args.quote_message_id)')
+    expect(reply).toContain('...(quoteMessageId !== undefined ? { quoteMessageId } : {}),')
+    expect(server).toContain('const seenMessages = createSeenMessages()')
+    expect(server).toMatch(/const replier = createReplySender\(\{[^}]*\bseenMessages\b[^}]*\}\)/)
+    const lstart = server.indexOf('const listener = startListener({')
+    expect(server.slice(lstart, server.indexOf('\n})', lstart))).toMatch(/\n  seenMessages,\n/)
   })
 })
