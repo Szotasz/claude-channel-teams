@@ -375,15 +375,19 @@ export function createReplySender(deps: ReplyDeps) {
    * Edit a message the bot previously sent. Mirrors sendReply's gate exactly
    * (re-check the allowlist on the way out), then updates the activity in place
    * via the same conversation reference. Used for interim progress updates.
+   * An edit is a public post too: right after a private (targeted) inbound it
+   * is refused unless isPublic, like sendReply.
    */
   async function editReply(
     conversationId: string,
     messageId: string,
     text: string,
+    isPublic?: boolean,
   ): Promise<void> {
     if (deps.targetedInbound?.isSentTargeted(messageId)) {
       throw new Error('editing a targeted message is not supported')
     }
+    assertPublicAllowed(conversationId, isPublic)
     const { ref } = assertAllowedConversation(conversationId)
     await deps.adapter.continueConversationAsync(
       deps.config.appId,
