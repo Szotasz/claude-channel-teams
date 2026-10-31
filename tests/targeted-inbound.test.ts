@@ -270,6 +270,17 @@ describe('targeted reply', () => {
     expect(s.edits.length).toBe(0)
   })
 
+  test('B22 editing an earlier public reply right after a targeted inbound is refused unless public', async () => {
+    const s = setup()
+    await s.run(mentionActivity({ id: 'msg-0' }))
+    const id = await s.replier.sendReply(CHAN, 'x')
+    await s.run(makeActivity())
+    await expect(s.replier.editReply(CHAN, id!, 'y')).rejects.toThrow(LATEST_PRIVATE_MESSAGE)
+    expect(s.edits.length).toBe(0)
+    await s.replier.editReply(CHAN, id!, 'y', true)
+    expect(s.edits.length).toBe(1)
+  })
+
   test('B15 targeted_message_id together with public throws', async () => {
     const s = setup()
     await s.run(makeActivity())
@@ -381,5 +392,7 @@ describe('targeted wiring', () => {
     expect(reply).toContain('...(isPublic ? { public: true } : {}),')
     const sendFileCase = server.slice(server.indexOf("case 'send_file': {"))
     expect(sendFileCase.slice(0, sendFileCase.indexOf('return {'))).toContain('...(args.public === true ? { public: true } : {}),')
+    const edit = server.slice(server.indexOf("case 'edit_message': {"), server.indexOf("case 'react': {"))
+    expect(edit).toContain('await replier.editReply(conversationId, messageId, text, args.public === true)')
   })
 })

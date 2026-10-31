@@ -495,6 +495,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'The message_id that reply returned for a message this bot sent.',
           },
           text: { type: 'string', description: 'New message text. Rendered as markdown.' },
+          public: {
+            type: 'boolean',
+            description: 'edit publicly even though the latest message in this conversation was a private (targeted) one',
+          },
         },
         required: ['conversation_id', 'message_id', 'text'],
       },
@@ -737,7 +741,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (typeof text !== 'string' || text.length === 0) {
           throw new Error('edit_message requires a non-empty text string')
         }
-        await replier.editReply(conversationId, messageId, text)
+        await replier.editReply(conversationId, messageId, text, args.public === true)
         return { content: [{ type: 'text', text: `edited (conv=${conversationId}, id=${messageId})` }] }
       }
 
