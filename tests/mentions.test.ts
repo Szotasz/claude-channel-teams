@@ -27,7 +27,7 @@ describe('parseMentionTags', () => {
     expect([...parseMentionTags(' Finance = QUJD ')!]).toEqual([['Finance', 'QUJD']])
   })
   test('bad entries give null', () => {
-    for (const s of ['Finance', 'Fin<x>=QUJD', 'Finance=not base64!', 'Finance=QUJD,Finance=REVG']) {
+    for (const s of ['Finance', 'Fin<x>=QUJD', 'Finance=not base64!', 'Finance=QUJD,Finance=REVG', 'Finance=QUJD===']) {
       expect(parseMentionTags(s)).toBeNull()
     }
   })
@@ -42,6 +42,7 @@ describe('validateMentions', () => {
     expect(() => v([[]])).toThrow('mentions[0] must be an object')
     expect(() => v([{ type: 'x' }])).toThrow('mentions[0].type must be "user" or "tag"')
     expect(() => v([user({ aad_object_id: 'nope' })])).toThrow('mentions[0].aad_object_id must be an AAD object id')
+    expect(() => v([user({ aad_object_id: 'x' + AAD })])).toThrow('mentions[0].aad_object_id must be an AAD object id')
     expect(() => v([user({ name: 'A<b' })])).toThrow('mentions[0].name must be 1-100 characters without < > , =')
     expect(() => v([user({ name: ' Ann' })])).toThrow('mentions[0].name must be 1-100 characters without < > , =')
     expect(() => v([{ type: 'tag', tag: 'Finance' }], 'x', new Map())).toThrow(
@@ -136,6 +137,7 @@ describe('createMemberLookup', () => {
   })
   test('no id', async () => {
     expect(await lookup(async () => ({}))(ctx, AAD)).toBeUndefined()
+    expect(await lookup(async () => ({ id: '' }))(ctx, AAD)).toBeUndefined()
   })
 })
 
