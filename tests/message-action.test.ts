@@ -82,6 +82,8 @@ describe('messageActionFrom', () => {
     expect(r1.text).toBe('[Message action] command="ask"\nfrom: Anna\nnote: please check\nmessage:\n> hello')
     const r2 = messageActionFrom(invoke(value({}, { linkToMessage: 'https://evil.example/x' })))!
     expect(r2.text).not.toContain('link:')
+    const r3 = messageActionFrom(invoke(value({}, { linkToMessage: 'https://teams.microsoft.com/l/message/19:abc/123\u0085x' })))!
+    expect(r3.text).not.toContain('link:')
   })
 
   test('long body and long note are cut', () => {
@@ -131,6 +133,8 @@ describe('messageActionFrom', () => {
   test('sender name is cleaned', () => {
     const r = messageActionFrom(invoke(value({}, { from: { user: { displayName: ' A"n<n>a\n\t  B\u0007 ' } } })))!
     expect(r.text.split('\n')[1]).toBe('from: Anna B')
+    const c1 = messageActionFrom(invoke(value({}, { from: { user: { displayName: 'An\u0085n\u009ba' } } })))!
+    expect(c1.text.split('\n')[1]).toBe('from: Anna')
   })
 
   test('odd command ids', () => {
@@ -183,6 +187,7 @@ describe('message action turn handler', () => {
     expect(s.events[0].messageId).toBe('orig-1')
     expect(s.events[0].aadObjectId).toBe(USER)
     expect(s.events[0].text).toStartWith('[Message action] command="ask"')
+    expect(s.refs.size()).toBe(1)
     expect(s.responses().map((r: any) => ({ type: r.type, value: r.value }))).toEqual([{ type: 'invokeResponse', value: { status: 200 } }])
   })
 
