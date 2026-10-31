@@ -460,5 +460,5 @@ if [ "${#PROMPT_TITLES[@]}" -gt 0 ]; then
   echo "PROMPTS: declares ${#PROMPT_TITLES[@]} prompt starter(s); the manifest is version 1.29. Re-upload or upgrade an already installed app."
 fi
 if [ "${#MA_IDS[@]}" -gt 0 ]; then
-  echo "MESSAGE ACTIONS: declares ${#MA_IDS[@]} message action(s) in the \"...\" menu. Re-upload or upgrade an already installed app."
+  echo "MESSAGE ACTIONS: declares ${#MA_IDS[@]} message action(s) in the \"...\" menu. Re-upload or upgrade an already installed app, and set TEAMS_MESSAGE_ACTIONS=1 in the plugin .env so the server delivers them."
 fi
