@@ -858,9 +858,15 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         if (typeof team?.aadGroupId === 'string' && team.aadGroupId) {
           groups.set(channelKey, team.aadGroupId)
         } else if (typeof team?.id === 'string' && team.id && !groups.get(channelKey)) {
-          // getTeamDetails reads the connector client from ctx synchronously,
-          // before the turn ends and the context is revoked.
-          TeamsInfo.getTeamDetails(ctx, team.id).then(
+          // A queued message turn carries only its activity (makeEarlyAckTurn), so the lookup goes through a
+          // proactive context, like every send outside the turn.
+          const teamId = team.id
+          const lookup = new Promise<Awaited<ReturnType<typeof TeamsInfo.getTeamDetails>>>((resolve, reject) => {
+            deps.adapter
+              .continueConversationAsync(deps.config.appId, ref, async c => resolve(await TeamsInfo.getTeamDetails(c, teamId)))
+              .catch(reject)
+          })
+          lookup.then(
             details => {
               // An id that arrived directly in the meantime wins over this late answer.
               if (typeof details?.aadGroupId === 'string' && details.aadGroupId && !groups.get(channelKey)) {
