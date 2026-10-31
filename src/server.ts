@@ -581,6 +581,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             enum: ['markdown', 'extendedmarkdown'],
             description: 'Optional. extendedmarkdown lets Teams render tables, task lists and block quotes; omitted or null means markdown.',
           },
+          public: {
+            type: 'boolean',
+            description: 'edit publicly even though the latest message in this conversation was a private (targeted) one',
+          },
         },
         required: ['conversation_id', 'message_id', 'text'],
       },
@@ -864,7 +868,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           throw new Error('edit_message requires a non-empty text string')
         }
         const format = parseReplyFormat(args.format)
-        await replier.editReply(conversationId, messageId, text, format)
+        await replier.editReply(conversationId, messageId, text, format, args.public === true)
         return { content: [{ type: 'text', text: `edited (conv=${conversationId}, id=${messageId})` }] }
       }
 
