@@ -50,6 +50,7 @@ function setup(sender = SENDER, extra: Record<string, unknown> = {}) {
   const pending = createPendingStore(join(dir, 'pending.json'))
   const events: any[] = []
   const bot = new RecordingAdapter()
+  const refs = createConversationRefStore()
   const turn = makeTurnHandler({
     config: {
       stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p', appType: 'SingleTenant',
@@ -57,13 +58,13 @@ function setup(sender = SENDER, extra: Record<string, unknown> = {}) {
     } as any,
     adapter: {} as any,
     allowlist,
-    refs: createConversationRefStore(),
+    refs,
     onEvent: e => events.push(e),
     pending,
     ...extra,
   })
   const run = (a: Activity) => turn(new TurnContext(bot as any, a))
-  return { run, turn, events, bot, pending, cleanup: () => rmSync(dir, { recursive: true }) }
+  return { run, turn, events, bot, pending, refs, cleanup: () => rmSync(dir, { recursive: true }) }
 }
 
 describe('adapter: card actions', () => {
@@ -124,6 +125,16 @@ describe('adapter: card actions', () => {
     await t.run(act({ name: 'composeExtension/query' }))
     expect(t.events).toEqual([])
     expect(t.bot.sent).toEqual([])
+    t.cleanup()
+  })
+
+  test('A10 a Submit click from a sender not on the allowlist is dropped', async () => {
+    const t = setup()
+    await t.run(act({ type: 'message', name: undefined, text: '', value: { text: 'y abcde' }, from: { id: 'u2', name: 'Eve', aadObjectId: UNKNOWN } }))
+    expect(t.events).toEqual([])
+    expect(t.bot.sent).toEqual([])
+    expect(t.pending.list?.() ?? []).toEqual([])
+    expect(t.refs.get('conv-abc')).toBeUndefined()
     t.cleanup()
   })
 })

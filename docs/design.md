@@ -661,3 +661,7 @@ and the channel notification):
   nothing buffered is lost when the process stops.
 - The three-window cap is measured on a monotonic clock, so a wall clock that
   is set back does not stretch it.
+
+## Dialogs from card buttons
+
+A card button (`Action.Submit` with `"msteams": {"type": "task/fetch"}`) can open a Teams dialog; its submit reaches Claude as a `[Dialog submit]` event with `card_action="dialog"`. See [dialogs.md](dialogs.md).
