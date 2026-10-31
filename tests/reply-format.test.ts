@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -76,5 +76,24 @@ describe('parseReplyFormat', () => {
     for (const bad of ['plain', '', 'xml', 42, true, {}]) {
       expect(() => parseReplyFormat(bad)).toThrow('format must be markdown or extendedmarkdown')
     }
+  })
+})
+
+describe('server.ts format wiring', () => {
+  const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+  const caseBody = (name: string) => {
+    const start = server.indexOf(`      case '${name}': {`)
+    expect(start).toBeGreaterThan(-1)
+    return server.slice(start, server.indexOf("\n      case '", start + 1))
+  }
+  test('reply parses args.format and passes a non-default format in the options', () => {
+    const body = caseBody('reply')
+    expect(body).toContain('const format = parseReplyFormat(args.format)')
+    expect(body).toContain("...(format !== 'markdown' ? { format } : {}),")
+  })
+  test('edit_message parses args.format and passes it to editReply', () => {
+    const body = caseBody('edit_message')
+    expect(body).toContain('const format = parseReplyFormat(args.format)')
+    expect(body).toContain('await replier.editReply(conversationId, messageId, text, format)')
   })
 })
