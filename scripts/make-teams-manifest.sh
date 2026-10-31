@@ -12,7 +12,7 @@
 # Usage:
 #   make-teams-manifest.sh [--app-id <guid>] [--name "Marveen"] \
 #       [--env-file ~/.claude/channels/teams/.env] [--out ./teams-app.zip] \
-#       [--rsc-all-messages] [--rsc-meeting-events] [--rsc-meeting-transcripts] [--command "<title>: <description>"]... \
+#       [--rsc-all-messages] [--rsc-meeting-events] [--rsc-meeting-transcripts] [--rsc-channel-create] [--command "<title>: <description>"]... \
 #       [--prompt "<title>: <prompt>"]...
 #
 # --rsc-all-messages adds the RSC permissions ChannelMessage.Read.Group and ChatMessage.Read.Chat (application) and the
@@ -34,6 +34,10 @@
 # the app is installed (not channel meetings); the plugin uses it only with TEAMS_MEETING_TRANSCRIPTS (see
 # docs/meeting-transcripts.md). Given without --rsc-meeting-events the script warns on stderr and still writes the
 # manifest. Not tested in a Teams tenant.
+#
+# --rsc-channel-create adds the RSC permission Channel.Create.Group (application), which the create_channel tool needs
+# (see docs/create-channel.md). The team owner consents at install; an installed app must be upgraded with the new
+# permission. Not tested in a Teams tenant.
 #
 # --command "<title>: <description>" declares a Teams slash command (repeatable, order kept, max 12). The value is split at
 # the first ": "; one leading "/" on the title is dropped, the title must match [A-Za-z0-9][A-Za-z0-9_-]* (max 128 bytes) and
@@ -65,6 +69,7 @@ RSC_MEETING=0
 RSC_TRANSCRIPTS=0
 CMD_RAW=()
 PROMPT_RAW=()
+RSC_CHANNEL_CREATE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,6 +80,7 @@ while [ $# -gt 0 ]; do
     --rsc-all-messages) RSC_ALL=1; shift ;;
     --rsc-meeting-events) RSC_MEETING=1; shift ;;
     --rsc-meeting-transcripts) RSC_TRANSCRIPTS=1; shift ;;
+    --rsc-channel-create) RSC_CHANNEL_CREATE=1; shift ;;
     --command)
       [ $# -ge 2 ] || { echo "--command needs a value: '<title>: <description>'" >&2; exit 2; }
       CMD_RAW+=("$2"); shift 2 ;;
@@ -204,7 +210,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 RSC_BLOCK=""
-if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ] || [ "$RSC_TRANSCRIPTS" = 1 ]; then
+if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ] || [ "$RSC_TRANSCRIPTS" = 1 ] || [ "$RSC_CHANNEL_CREATE" = 1 ]; then
   RSC_PERMS=""
   if [ "$RSC_ALL" = 1 ]; then
     RSC_PERMS="        { \"name\": \"ChannelMessage.Read.Group\", \"type\": \"Application\" },
@@ -220,6 +226,11 @@ if [ "$RSC_ALL" = 1 ] || [ "$RSC_MEETING" = 1 ] || [ "$RSC_TRANSCRIPTS" = 1 ]; t
     [ -z "$RSC_PERMS" ] || RSC_PERMS="${RSC_PERMS},
 "
     RSC_PERMS="${RSC_PERMS}        { \"name\": \"OnlineMeetingTranscript.Read.Chat\", \"type\": \"Application\" }"
+  fi
+  if [ "$RSC_CHANNEL_CREATE" = 1 ]; then
+    [ -z "$RSC_PERMS" ] || RSC_PERMS="${RSC_PERMS},
+"
+    RSC_PERMS="${RSC_PERMS}        { \"name\": \"Channel.Create.Group\", \"type\": \"Application\" }"
   fi
   RSC_BLOCK=",
   \"webApplicationInfo\": {
@@ -350,6 +361,9 @@ if [ "$RSC_MEETING" = 1 ]; then
 fi
 if [ "$RSC_TRANSCRIPTS" = 1 ]; then
   echo "RSC: requests OnlineMeetingTranscript.Read.Chat for meeting transcripts; a chat member or the meeting organizer consents at install."
+fi
+if [ "$RSC_CHANNEL_CREATE" = 1 ]; then
+  echo "RSC: requests Channel.Create.Group for create_channel; the team owner consents at install."
 fi
 if [ "${#CMD_TITLES[@]}" -gt 0 ]; then
   echo "COMMANDS: declares ${#CMD_TITLES[@]} slash command(s); the manifest is version 1.29. Re-upload or upgrade an already installed app."
