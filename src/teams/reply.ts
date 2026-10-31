@@ -268,6 +268,10 @@ export function createReplySender(deps: ReplyDeps) {
     if (opts.targetedMessageId !== undefined && opts.public === true) {
       throw new Error('targeted_message_id and public cannot be combined')
     }
+    // The private path posts one activity to the sender only; per-user card views would be dropped silently.
+    if (opts.targetedMessageId !== undefined && opts.userCards !== undefined) {
+      throw new Error('targeted_message_id and user_cards cannot be combined')
+    }
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
       if (!checked.ok) throw new Error(`invalid card: ${checked.error}`)
