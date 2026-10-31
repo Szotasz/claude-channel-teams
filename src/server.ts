@@ -637,7 +637,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           { teamId, channelId, rootMessageId, ...(limit !== undefined ? { limit } : {}) },
           { getToken: () => graphToken.getToken(), isAllowed: id => allowlist.isAllowed(id) },
         )
-        return { content: [{ type: 'text', text: JSON.stringify(list, null, 2) }] }
+        // Other people's messages: the model must not see invisible characters in them (as on the inbound path).
+        return { content: [{ type: 'text', text: withInvisibleStripped({ text: JSON.stringify(list, null, 2) }).text }] }
       }
 
       case 'reply': {
