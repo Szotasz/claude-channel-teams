@@ -23,6 +23,12 @@ import { chmodSync, mkdirSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
+/** True only when TEAMS_MESSAGE_ACTIONS is '1' or 'true' (case-insensitive, trimmed). */
+export function messageActionsEnabled(env: NodeJS.ProcessEnv): boolean {
+  const v = env.TEAMS_MESSAGE_ACTIONS?.trim().toLowerCase()
+  return v === '1' || v === 'true'
+}
+
 /** A comma-separated id list from an env var: trimmed, empty entries dropped. */
 export function parseIdList(raw: string | undefined): ReadonlySet<string> {
   return new Set((raw ?? '').split(',').map(s => s.trim()).filter(s => s.length > 0))
@@ -96,6 +102,12 @@ export function parseFlag(raw: string | undefined): boolean {
 }
 
 export interface Config {
+  /**
+   * Deliver message actions (the "..." menu, `composeExtension/submitAction`). Off by default; env
+   * `TEAMS_MESSAGE_ACTIONS=1`. The manifest option --message-action declares them in Teams; this switch decides
+   * whether the server delivers them, so turning them off needs no new app package.
+   */
+  messageActions: boolean
   /**
    * Shared conversations (channel or group chat) in which an allowlisted
    * sender's message is delivered without an @mention of the bot. Entries are
@@ -398,6 +410,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
+    messageActions: messageActionsEnabled(env),
     stateDir,
     proactiveChannels: proactiveChannelsFrom(env.TEAMS_PROACTIVE_CHANNELS),
     allowlistFile: join(stateDir, 'allowlist.json'),
