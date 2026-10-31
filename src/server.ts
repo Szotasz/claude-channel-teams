@@ -939,7 +939,8 @@ const onEvent: ChannelEventSink = event => {
     .then(() => {
       process.stderr.write('teams channel: notify ok\n')
       // Only a message that reached Claude gets an acknowledgement; a meeting start or end event is not one.
-      if (acks && !event.messageEvent && !event.meetingEvent && event.mentioned !== false) acks.arm(event.conversationId)
+      // A private (targeted) message gets none: the acknowledgement is a public post in the shared conversation.
+      if (acks && !event.messageEvent && !event.meetingEvent && event.mentioned !== false && !event.targeted) acks.arm(event.conversationId)
     })
     .catch(err => {
       // Notifications are fire-and-forget per the channels reference. We log
