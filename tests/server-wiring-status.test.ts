@@ -36,7 +36,7 @@ describe('server.ts status wiring', () => {
   })
   test('statusStreams only when enabled and passed to the reply sender', () => {
     expect(server).toContain('const statusStreams = config.statusUpdates ? createStatusStreams() : undefined')
-    expect(block(server, 'const replier = createReplySender(')).toMatch(/\bstatusStreams\b/)
+    expect(block(server, 'const replier = createReplySender(')).toMatch(/[{,]\s*statusStreams\s*[,}]/)
     expect(server.indexOf('const statusStreams =')).toBeLessThan(server.indexOf('const replier = createReplySender'))
   })
   test("the 'status_update' case calls replier.sendStatus", () => {

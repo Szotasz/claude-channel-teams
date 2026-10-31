@@ -11,7 +11,7 @@
  * Each event is held for `windowMs`, and every new fragment from the same
  * sender re-arms that window, so a burst lands as one event. A message that
  * must not wait — an edit / delete / restore, a message with attachments, a
- * slash command, a card button click — flushes what is pending for that sender first and then goes
+ * slash command, a card button click, a feedback click — flushes what is pending for that sender first and then goes
  * through unchanged, so per-sender order is preserved. The merged event is a
  * shallow copy of the LAST message (that is the one to answer) with the texts
  * joined by '\n' and `merged = { count, messageIds }`. `mentioned` is true when
@@ -38,6 +38,7 @@ function isImmediate(event: Ev): boolean {
   return (
     event.messageEvent !== undefined ||
     event.cardAction !== undefined ||
+    event.feedback !== undefined ||
     event.hasAttachments === true ||
     // Read the command the way the model will see it: onEvent strips invisible characters after this, so a
     // zero-width character in front of the slash must not turn a command into a held fragment.

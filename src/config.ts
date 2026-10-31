@@ -205,6 +205,11 @@ export interface Config {
    * it works only together with TEAMS_MEETING_EVENTS. See docs/meeting-transcripts.md.
    */
   meetingTranscripts: boolean
+  /**
+   * Whether replies carry Teams' thumbs up / down buttons and clicks are
+   * delivered. From TEAMS_FEEDBACK ('1' or 'true'); see docs/feedback.md.
+   */
+  feedback: boolean
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -421,5 +426,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     meetingEvents: parseFlag(env.TEAMS_MEETING_EVENTS),
     meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),
     meetingTranscripts: parseFlag(env.TEAMS_MEETING_TRANSCRIPTS),
+    feedback: parseFlag(env.TEAMS_FEEDBACK),
   })
 }

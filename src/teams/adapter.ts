@@ -36,6 +36,7 @@ import {
   type ConversationReference,
 } from 'botbuilder'
 import type { Attachment } from 'botframework-schema'
+import { isFeedbackInvoke, parseFeedback, feedbackEventText } from './feedback.js'
 import type { Config } from '../config.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { PendingStore } from '../pairing/pair.js'
@@ -105,6 +106,8 @@ export type ChannelEventSink = (event: {
   cardAction?: { kind: 'execute' | 'submit'; verb?: string }
   /** Set when the event is a Teams meeting start or end (not a message). Values are already cleaned. */
   meetingEvent?: { kind: 'started' | 'ended'; title?: string; meetingType?: string; meetingId?: string; time?: string }
+  /** Set when the event is a feedback click on an earlier bot message (message_id). */
+  feedback?: 'like' | 'dislike'
 }) => void
 
 // The most mention names one event carries.
@@ -163,6 +166,7 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.messageId ? { message_id: event.messageId } : {}),
     ...(event.ts ? { ts: event.ts } : {}),
     ...(event.messageEvent ? { message_event: event.messageEvent } : {}),
+    ...(event.feedback ? { feedback: event.feedback } : {}),
     ...(event.mentioned !== undefined ? { mentioned: event.mentioned ? 'true' : 'false' } : {}),
     ...(event.cardAction ? { card_action: event.cardAction.kind, ...(event.cardAction.verb ? { action_verb: event.cardAction.verb } : {}) } : {}),
     ...(event.isGroup !== undefined ? { is_group: String(event.isGroup) } : {}),
@@ -194,6 +198,8 @@ export type PairingDmSender = (
 ) => Promise<void>
 
 export interface AdapterDeps {
+  /** Whether feedback clicks are delivered (TEAMS_FEEDBACK). Optional so existing tests still wire. */
+  feedback?: boolean
   config: Config
   adapter: CloudAdapter
   allowlist: Allowlist
@@ -543,6 +549,37 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
           process.stderr.write('teams channel: meeting info lookup failed\n')
         }
       }
+      return
+    }
+    if (isFeedbackInvoke(a)) {
+      // Teams waits for an answer to every feedback click, also one we do not deliver.
+      const reply = invokeContext(ctx)
+      if (reply) await reply.sendActivity({ type: 'invokeResponse', value: { status: 200 } } as Partial<Activity>)
+      else process.stderr.write('teams channel: feedback click without an invoke context, not answered\n')
+      if (!deps.feedback) return
+      const fbAad = a.from?.aadObjectId?.toLowerCase()
+      const fbTenant = a.conversation?.tenantId
+      const fbConversation = a.conversation?.id
+      // A click is about one bot message: without it there is nothing to rate.
+      const fbMessageId = typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : undefined
+      if (!fbAad || !fbConversation || !fbMessageId) return
+      if (deps.config.tenantId && fbTenant && fbTenant.toLowerCase() !== deps.config.tenantId.toLowerCase()) return
+      if (!deps.allowlist.isAllowed(fbAad)) {
+        process.stderr.write(`teams channel: drop feedback from a sender not on the allowlist (${fbAad})\n`)
+        return
+      }
+      const parsed = parseFeedback(a.value)
+      if (!parsed) return
+      deps.onEvent({
+        text: feedbackEventText(parsed),
+        conversationId: fbConversation,
+        aadObjectId: fbAad,
+        tenantId: fbTenant ?? deps.config.tenantId,
+        fromName: a.from?.name ?? '',
+        messageId: fbMessageId,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        feedback: parsed.reaction,
+      })
       return
     }
     if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card) return
