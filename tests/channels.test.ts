@@ -50,6 +50,8 @@ describe('parseTeamIds', () => {
   })
   test('one bad entry -> null', () => {
     expect(parseTeamIds(`${T1},nope`)).toBeNull()
+    expect(parseTeamIds(`x${T1}`)).toBeNull()
+    expect(parseTeamIds(`${T1}x`)).toBeNull()
   })
 })
 
@@ -143,6 +145,10 @@ describe('createChannel', () => {
   test('no id', async () => {
     const f = makeFetch({ status: 201, json: { displayName: 'x' } })
     await expect(createChannel(input, { getToken: async () => 'TOK', fetch: f.fn })).rejects.toThrow(
+      'Graph returned no channel id',
+    )
+    const e = makeFetch({ status: 201, json: { id: '' } })
+    await expect(createChannel(input, { getToken: async () => 'TOK', fetch: e.fn })).rejects.toThrow(
       'Graph returned no channel id',
     )
   })
