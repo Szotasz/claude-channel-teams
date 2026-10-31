@@ -56,11 +56,12 @@ import { createAckPlaceholders } from './teams/ackPlaceholder.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { withSendRetry, sendTracker, SHUTDOWN_SEND_WAIT_MS } from './teams/sendRetry.js'
-import { createFileSender } from './teams/sendFile.js'
+import { createFileSender, sendFileResultText } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createInboundIds } from './teams/inboundIds.js'
 import { createInboundDebouncer } from './teams/inboundDebounce.js'
 import { withInvisibleStripped } from './teams/invisibleChars.js'
+import { createSharePointUploader } from './teams/sharepoint.js'
 import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
@@ -255,6 +256,15 @@ const sendFile = createFileSender({
   refs,
   outbox,
   downloadBaseUrl: config.filesBaseUrl,
+  sharePoint: config.sharePoint
+    ? createSharePointUploader({
+        tenantId: config.tenantId,
+        appId: config.appId,
+        appPassword: config.appPassword,
+        siteId: config.sharePoint.siteId,
+        folder: config.sharePoint.folder,
+      })
+    : undefined,
 })
 
 /**
@@ -695,7 +705,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           content: [
             {
               type: 'text',
-              text: `sent file (conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes}, token=${result.token.slice(0, 8)}…)`,
+              text: sendFileResultText(conversationId, result),
             },
           ],
         }

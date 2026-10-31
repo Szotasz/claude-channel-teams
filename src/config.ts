@@ -205,6 +205,10 @@ export interface Config {
    * it works only together with TEAMS_MEETING_EVENTS. See docs/meeting-transcripts.md.
    */
   meetingTranscripts: boolean
+  /**
+   * Opt-in SharePoint target for send_file in team channels and group chats (TEAMS_SHAREPOINT_SITE_ID, TEAMS_SHAREPOINT_FOLDER); null = off. See docs/sharepoint.md.
+   */
+  sharePoint: { siteId: string; folder: string } | null
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -304,6 +308,33 @@ export function resolveFilesBaseUrl(env: NodeJS.ProcessEnv): string | null {
     'teams channel: no TEAMS_BOT_ENDPOINT_URL or TEAMS_FILES_BASE_URL set; send_file disabled\n',
   )
   return null
+}
+
+export function resolveSharePoint(
+  env: NodeJS.ProcessEnv,
+): { siteId: string; folder: string } | null {
+  const siteId = env.TEAMS_SHAREPOINT_SITE_ID?.trim()
+  if (!siteId) return null
+  // A Graph site id: hostname,site-guid,web-guid.
+  const guid = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+  const label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+  if (!new RegExp(`^${label}(?:\\.${label})+,${guid},${guid}$`).test(siteId) || (siteId.split(',')[0] ?? '').length > 253) {
+    process.stderr.write(
+      'teams channel: TEAMS_SHAREPOINT_SITE_ID is not a Graph site id; SharePoint upload stays off\n',
+    )
+    return null
+  }
+  const rawFolder = env.TEAMS_SHAREPOINT_FOLDER?.trim() || 'Teams bot files'
+  const segments = rawFolder.split('/').filter(seg => seg !== '')
+  const bad = (seg: string) =>
+    seg === '.' || seg === '..' || /[\\:*?"<>|\x00-\x1f\x7f]/.test(seg)
+  if (segments.length === 0 || segments.some(bad)) {
+    process.stderr.write(
+      'teams channel: TEAMS_SHAREPOINT_FOLDER is not a plain folder path; SharePoint upload stays off\n',
+    )
+    return null
+  }
+  return { siteId, folder: segments.join('/') }
 }
 
 function parseHttpsUrl(raw: string): URL | null {
@@ -421,5 +452,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     meetingEvents: parseFlag(env.TEAMS_MEETING_EVENTS),
     meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),
     meetingTranscripts: parseFlag(env.TEAMS_MEETING_TRANSCRIPTS),
+    sharePoint: resolveSharePoint(env),
   })
 }
