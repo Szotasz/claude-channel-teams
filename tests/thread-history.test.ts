@@ -8,7 +8,7 @@ import {
 import { baseConversationId, makeTurnHandler } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -155,6 +155,12 @@ describe('fetchThreadHistory', () => {
     }
     expect(f.calls.length).toBe(0)
   })
+})
+
+test('H15 the tool result goes through withInvisibleStripped', () => {
+  const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+  const c = server.slice(server.indexOf("case 'get_thread_history'"), server.indexOf("case 'reply'"))
+  expect(c).toContain('text: withInvisibleStripped({ text: JSON.stringify(list, null, 2) }).text')
 })
 
 test('H14 parseChannelThread', () => {
