@@ -55,6 +55,7 @@ import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
 import { userViewInvokeFrom } from './userViews.js'
 import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
 import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
+import type { TargetedInbound } from './targetedInbound.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -105,6 +106,8 @@ export type ChannelEventSink = (event: {
   cardAction?: { kind: 'execute' | 'submit'; verb?: string }
   /** Set when the event is a Teams meeting start or end (not a message). Values are already cleaned. */
   meetingEvent?: { kind: 'started' | 'ended'; title?: string; meetingType?: string; meetingId?: string; time?: string }
+  /** Shared conversation only: the message was a targeted (private) one. */
+  targeted?: boolean
 }) => void
 
 // The most mention names one event carries.
@@ -164,6 +167,7 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.ts ? { ts: event.ts } : {}),
     ...(event.messageEvent ? { message_event: event.messageEvent } : {}),
     ...(event.mentioned !== undefined ? { mentioned: event.mentioned ? 'true' : 'false' } : {}),
+    ...(event.targeted ? { targeted: 'true' } : {}),
     ...(event.cardAction ? { card_action: event.cardAction.kind, ...(event.cardAction.verb ? { action_verb: event.cardAction.verb } : {}) } : {}),
     ...(event.isGroup !== undefined ? { is_group: String(event.isGroup) } : {}),
     ...(event.teamId !== undefined ? { team_id: event.teamId } : {}),
@@ -193,6 +197,18 @@ export type PairingDmSender = (
   text: string,
 ) => Promise<void>
 
+function pairingText(decision: {
+  action: string
+  entry: { code: string }
+}): string {
+  const lead = decision.action === 'send_reminder' ? 'Still pending' : 'Hi'
+  return (
+    `${lead} — this bot is gated. Ask the operator to run ` +
+    `/teams:access pair ${decision.entry.code} in their terminal. ` +
+    `Show this code: ${decision.entry.code}.`
+  )
+}
+
 export interface AdapterDeps {
   config: Config
   adapter: CloudAdapter
@@ -205,6 +221,11 @@ export interface AdapterDeps {
   permission?: PermissionRelay
   /** Phase 3 — send a pairing DM through CloudAdapter. Optional for tests. */
   sendPairingDm?: PairingDmSender
+  /**
+   * Send the pairing code as a targeted message to the sender inside a shared
+   * conversation. Undefined = targeted messages off.
+   */
+  sendPairingTargeted?: PairingDmSender
   /**
    * Attachment handler. When set, attachments on inbound messages are
    * downloaded and an annotation per file is appended to the text. Optional
@@ -243,6 +264,8 @@ export interface AdapterDeps {
   /** How long the meeting-info lookup after a meeting event may take, in milliseconds (default 5000).
    *  A lookup that takes longer is given up on. Injectable so tests can use a short one. */
   meetingInfoTimeoutMs?: number
+  /** Memory of inbound targeted messages. Optional so existing tests still wire. */
+  targetedInbound?: TargetedInbound
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -734,9 +757,13 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     // must not disagree because the allowlist changed between two reads.
     const senderAllowed = deps.allowlist.isAllowed(aadObjectId)
     let mentioned: boolean | undefined
+    // A targeted message (only the bot and the sender see it) is addressed to the bot. 1:1: flag ignored.
+    const targeted = isGroupContext && (a.recipient as { isTargeted?: boolean } | undefined)?.isTargeted === true
     if (isGroupContext) {
       const botId = a.recipient?.id
-      mentioned = botId
+      mentioned = targeted
+        ? true
+        : botId
         ? (a.entities ?? []).some(
             (e) =>
               (e as { type?: string }).type === 'mention' &&
@@ -773,21 +800,57 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         // Shared by the adapter's own detection, or by the relay's rule (isPersonalReference: an untyped
         // '@thread.' id is a group chat). An explicit 'personal' type stays 1:1. The @mention gate is not changed.
         if (isGroupContext || !isPersonalReference(ref)) {
-          // Never put a pairing code in a conversation other people read.
-          if (!groupPairingHinted.has(aadObjectId)) {
-            groupPairingHinted.add(aadObjectId)
-            process.stderr.write(
-              `teams channel: pairing not offered in a shared conversation (aad=${aadObjectId})\n`,
-            )
-            deps.sendPairingDm(
-              ref,
-              'This bot is gated. To pair, send me a direct (1:1) message.',
-            ).catch(err => {
+          const sendHint = () => {
+            // Never put a pairing code in a conversation other people read.
+            if (!groupPairingHinted.has(aadObjectId)) {
+              groupPairingHinted.add(aadObjectId)
               process.stderr.write(
-                `teams channel: pairing DM send failed: ${err}\n`,
+                `teams channel: pairing not offered in a shared conversation (aad=${aadObjectId})\n`,
               )
-            })
+              deps.sendPairingDm!(
+                ref,
+                'This bot is gated. To pair, send me a direct (1:1) message.',
+              ).catch(err => {
+                process.stderr.write(
+                  `teams channel: pairing DM send failed: ${err}\n`,
+                )
+              })
+            }
           }
+          if (deps.sendPairingTargeted) {
+            const decision = deps.pending.recordIncoming({
+              aadObjectId,
+              tenantId: tenantId ?? deps.config.tenantId,
+              fromName,
+              conversationId,
+            })
+            if (decision.action === 'suppress') {
+              if (!rejectedSeen.has(aadObjectId)) {
+                rejectedSeen.add(aadObjectId)
+                process.stderr.write(
+                  `teams channel: pairing suppressed for ${aadObjectId} (${decision.reason})\n`,
+                )
+              }
+              return
+            }
+            process.stderr.write(
+              `teams channel: pairing ${decision.action} (targeted) pair_id=${decision.entry.pair_id} aad=${aadObjectId}\n`,
+            )
+            deps.sendPairingTargeted(ref, pairingText(decision)).catch(err => {
+              process.stderr.write(
+                `teams channel: targeted pairing message failed: ${err}\n`,
+              )
+              // Forget the entry so the sender's next 1:1 message starts a fresh pairing, unless it changed
+              // since (a reminder while this send hung may have delivered the code elsewhere).
+              const current = deps.pending!.findByPairId(decision.entry.pair_id)
+              if (decision.action === 'send_initial' && current?.reply_count === decision.entry.reply_count) {
+                deps.pending!.remove(decision.entry.pair_id)
+              }
+              sendHint()
+            })
+            return
+          }
+          sendHint()
           return
         }
         const decision = deps.pending.recordIncoming({
@@ -808,12 +871,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
           }
           return
         }
-        const lead =
-          decision.action === 'send_reminder' ? 'Still pending' : 'Hi'
-        const text =
-          `${lead} — this bot is gated. Ask the operator to run ` +
-          `/teams:access pair ${decision.entry.code} in their terminal. ` +
-          `Show this code: ${decision.entry.code}.`
+        const text = pairingText(decision)
         process.stderr.write(
           `teams channel: pairing ${decision.action} pair_id=${decision.entry.pair_id} aad=${aadObjectId}\n`,
         )
@@ -844,6 +902,9 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       if (deps.config.proactiveChannels?.has(channelId)) deps.channelRefs.put(channelId, ref, aadObjectId)
     }
     if (typeof a.from?.id === 'string' && a.from.id) deps.knownUsers?.set(aadObjectId, a.from.id)
+    if (targeted && a.id) {
+      deps.targetedInbound?.remember(conversationId, a.id, ref, aadObjectId, Date.now())
+    }
 
     // Start the typing-indicator pump as early as possible — the user sees
     // "is typing…" while attachments are processed and Claude is notified.
@@ -911,6 +972,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     if (typeof messageId === 'string' && messageId.length > 0) {
       deps.deliveredMessages?.remember(baseConversationId(conversationId), messageId, aadObjectId)
     }
+    if (isGroupContext) deps.targetedInbound?.noteDelivered(conversationId, targeted, Date.now())
     // Team, channel, thread, reply and mention context only in a team channel or group chat.
     const cd: any = isGroupContext ? a.channelData : undefined
     const obj = (v: unknown): any => (v !== null && typeof v === 'object' ? v : undefined)
@@ -950,6 +1012,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       threadId: isGroupContext ? threadIdFromConversationId(conversationId) : undefined,
       replyToId: isGroupContext ? metaText(a.replyToId) : undefined,
       mentions: mentionNames.length > 0 ? mentionNames : undefined,
+      ...(targeted ? { targeted: true } : {}),
     })
   }
 

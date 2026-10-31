@@ -184,6 +184,8 @@ describe('inbound debounce', () => {
       { label: 'slash command', event: fragment({ text: '/status' }) },
       { label: 'indented slash command', event: fragment({ text: '   /status' }) },
       { label: 'card button click', event: fragment({ text: '[Card action] approve', messageId: 'bot-1', cardAction: { kind: 'execute', verb: 'approve' } }) },
+      // A private message is never merged into a public one.
+      { label: 'private (targeted) message', event: fragment({ text: 'only for you', targeted: true }) },
     ]
     for (const { label, event } of immediates) {
       const { clock, delivered, debouncer } = makeHarness({ windowMs: 1500 })

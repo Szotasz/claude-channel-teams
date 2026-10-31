@@ -46,13 +46,20 @@ import { loadConfig, meetingEventsWarning } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
-import { createReplySender } from './teams/reply.js'
-import { createConversationRefStore } from './teams/conversationRefs.js'
+import { createReplySender, parseTargetedMessageId } from './teams/reply.js'
+import { createConversationRefStore, isPersonalReference } from './teams/conversationRefs.js'
 import { createChannelRefStore } from './teams/channelRefs.js'
 import { createChannelPoster } from './teams/channelPost.js'
 import { createDirectMessenger } from './teams/directMessage.js'
 import { createStatusStreams, statusTools } from './teams/statusStream.js'
 import { createAckPlaceholders } from './teams/ackPlaceholder.js'
+import {
+  createTargetedSender,
+  deliverPrompt,
+  selectPromptConversation,
+  type PromptDelivery,
+} from './teams/targeted.js'
+import { createTargetedInbound } from './teams/targetedInbound.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { withSendRetry, sendTracker, SHUTDOWN_SEND_WAIT_MS } from './teams/sendRetry.js'
@@ -175,6 +182,7 @@ const mcp = new Server(
       'In a channel or group chat the tag also carries mentioned="true" or "false". mentioned="false" means the message was NOT addressed to you (the operator opted that conversation in so you can follow it): reply only when you are clearly expected to.',
       '',
       'A tag with message_event="edited", "restored" or "deleted" is about an earlier message (message_id); edited/restored carry its new text. message_event="reaction" is a user\'s emoji reaction to that message. Neither is a new request.',
+      'A tag with targeted="true" is a private message only you and the sender see (for example a slash command). Answer it with the reply tool and pass its message_id as targeted_message_id, so the answer is private too.',
       '',
       ...(config.meetingEvents
         ? [
@@ -244,7 +252,8 @@ const acks = config.ackText
   : undefined
 const knownUsers = createKnownUsers()
 const userViews = createUserViewStore()
-const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews })
+const targetedInbound = createTargetedInbound()
+const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews, targetedInbound })
 const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
 const directMessenger = createDirectMessenger({ config, adapter, allowlist, refs, replier })
 
@@ -255,6 +264,7 @@ const sendFile = createFileSender({
   refs,
   outbox,
   downloadBaseUrl: config.filesBaseUrl,
+  targetedInbound,
 })
 
 /**
@@ -277,29 +287,25 @@ async function sendActivityRaw(
   )
 }
 
+const sendTargeted = config.targetedMessages
+  ? createTargetedSender(adapter, config.appId)
+  : undefined
+const promptDelivery: PromptDelivery = {
+  refs,
+  isAllowed: id => allowlist.isAllowed(id),
+  sendPlain: (ref, text) => sendActivityRaw(ref, text),
+  sendTargeted,
+}
+
 // ── Permission relay ────────────────────────────────────────────────────────
 
 const permission = createPermissionRelay({
   // The "primary operator" is the most-recently-active allowlisted
   // conversation. v1 single-operator scope (see docs/security.md).
-  resolveTargetConversation: () => {
-    // Only a 1:1 chat: the prompt shows the tool call, which must not land in a channel or group chat other people read.
-    const id = refs.mostRecentPersonalConversationId()
-    if (!id) return undefined
-    const stored = refs.get(id)
-    if (!stored) return undefined
-    // Defence: re-check the allowlist at the time of relay. An operator who
-    // got revoked between their last DM and now should not get prompted.
-    if (!allowlist.isAllowed(stored.aadObjectId)) return undefined
-    return id
-  },
-  sendDm: async (conversationId, text) => {
-    const stored = refs.get(conversationId)
-    if (!stored) {
-      throw new Error(`no conversation reference for ${conversationId}`)
-    }
-    await sendActivityRaw(stored.ref, text)
-  },
+  // The prompt shows the tool call, so a shared conversation only ever gets it as a targeted message.
+  resolveTargetConversation: () => selectPromptConversation(promptDelivery),
+  sendDm: (conversationId, text) =>
+    deliverPrompt(promptDelivery, conversationId, text),
   emitVerdict: (request_id, behavior) => {
     mcp
       .notification({
@@ -397,6 +403,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               additionalProperties: false,
             },
           },
+          targeted_message_id: {
+            type: 'string',
+            description: 'message_id of an inbound tag with targeted="true": the reply is then shown only to that sender',
+          },
+          public: {
+            type: 'boolean',
+            description: 'post publicly even though the latest message in this conversation was a private (targeted) one',
+          },
         },
         required: ['conversation_id', 'text'],
       },
@@ -455,6 +469,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Optional message text shown alongside the card.',
           },
+          public: {
+            type: 'boolean',
+            description: 'post publicly even though the latest message in this conversation was a private (targeted) one',
+          },
         },
         required: ['conversation_id'],
       },
@@ -477,6 +495,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'The message_id that reply returned for a message this bot sent.',
           },
           text: { type: 'string', description: 'New message text. Rendered as markdown.' },
+          public: {
+            type: 'boolean',
+            description: 'edit publicly even though the latest message in this conversation was a private (targeted) one',
+          },
         },
         required: ['conversation_id', 'message_id', 'text'],
       },
@@ -613,11 +635,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (rawUserCards !== undefined && !Array.isArray(rawUserCards)) {
           throw new Error('user_cards must be an array')
         }
-        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined
+        const targetedMessageId = parseTargetedMessageId(args.targeted_message_id)
+        const isPublic = args.public === true
+        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || targetedMessageId !== undefined || isPublic
           ? await replier.sendReply(conversationId, text, card, {
               ...(aiGenerated ? { aiGenerated } : {}),
               ...(rawCitations !== undefined ? { citations: rawCitations } : {}),
               ...(rawUserCards !== undefined ? { userCards: rawUserCards } : {}),
+              ...(targetedMessageId !== undefined ? { targetedMessageId } : {}),
+              ...(isPublic ? { public: true } : {}),
             })
           : card !== undefined
             ? await replier.sendReply(conversationId, text, card)
@@ -690,6 +716,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           filename,
           mime,
           caption,
+          ...(args.public === true ? { public: true } : {}),
         })
         return {
           content: [
@@ -714,7 +741,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (typeof text !== 'string' || text.length === 0) {
           throw new Error('edit_message requires a non-empty text string')
         }
-        await replier.editReply(conversationId, messageId, text)
+        await replier.editReply(conversationId, messageId, text, args.public === true)
         return { content: [{ type: 'text', text: `edited (conv=${conversationId}, id=${messageId})` }] }
       }
 
@@ -781,7 +808,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         pending.remove(entry.pair_id)
         // Send the confirmation DM through the captured conversation ref.
         const stored = refs.get(entry.conversation_id)
-        if (stored) {
+        if (stored && !isPersonalReference(stored.ref)) {
+          process.stderr.write(
+            `teams channel: pair confirmation skipped: ${entry.conversation_id} is a shared conversation\n`,
+          )
+        } else if (stored) {
           try {
             await sendActivityRaw(
               stored.ref,
@@ -912,7 +943,8 @@ const onEvent: ChannelEventSink = event => {
     .then(() => {
       process.stderr.write('teams channel: notify ok\n')
       // Only a message that reached Claude gets an acknowledgement; a meeting start or end event is not one.
-      if (acks && !event.messageEvent && !event.meetingEvent && event.mentioned !== false) acks.arm(event.conversationId)
+      // A private (targeted) message gets none: the acknowledgement is a public post in the shared conversation.
+      if (acks && !event.messageEvent && !event.meetingEvent && event.mentioned !== false && !event.targeted) acks.arm(event.conversationId)
     })
     .catch(err => {
       // Notifications are fire-and-forget per the channels reference. We log
@@ -933,6 +965,12 @@ const inboundDebouncer = createInboundDebouncer({ windowMs: config.inboundDeboun
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 
+if (config.targetedMessages) {
+  process.stderr.write(
+    'teams channel: targeted messages ON (permission prompt and pairing code in shared conversations)\n',
+  )
+}
+
 const listener = startListener({
   config,
   adapter,
@@ -940,6 +978,7 @@ const listener = startListener({
   refs,
   channelRefs,
   onEvent: inboundDebouncer.push,
+  targetedInbound,
   pending,
   permission,
   typingPump,
@@ -950,6 +989,7 @@ const listener = startListener({
   inboundIds,
   meetingEvents: config.meetingEvents,
   ...(transcriptsOn ? { meetingStore } : {}),
+  sendPairingTargeted: sendTargeted,
   sendPairingDm: async (ref, text) => {
     await sendActivityRaw(ref, text)
   },

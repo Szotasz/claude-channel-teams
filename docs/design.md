@@ -173,6 +173,10 @@ The permission prompt goes only to the most recent 1:1 chat with an allowlisted 
 chat. An unknown sender in a shared conversation gets no pairing code there, only a one-time hint to message the bot 1:1;
 pairing happens in the 1:1 chat.
 
+With `TEAMS_TARGETED_MESSAGES=1` the plugin uses Teams targeted messages (visible only to one member of a channel or group chat): the permission prompt may go to the shared conversation the operator used last, shown only to that operator (reply with an @mention of the bot), and an unknown sender in a shared conversation gets the pairing code as a targeted message there. If a targeted message fails, the prompt falls back to the operator's most recent 1:1 chat (none: not sent) and pairing falls back to the 1:1 hint. A shared conversation never gets the prompt or a code as a plain message. Off by default: the behaviour depends on Teams honouring targeted messages and has not been measured live.
+
+**Targeted (private) messages and slash commands.** A message in a channel or group chat that only the bot and the sender see (Teams slash commands arrive this way) has `recipient.isTargeted` set. In a shared conversation it counts as addressed to the bot (like an @mention; the allowlist is not relaxed) and reaches Claude with `targeted="true"`; in a 1:1 chat the flag is ignored. The plugin remembers such messages in memory only (24 hours, bounded). `reply` with `targeted_message_id` answers privately: one targeted POST to the sender, re-checking the allowlist for that message's sender, with no fallback to a public post, and it works with `TEAMS_TARGETED_MESSAGES` off. While the latest message of a conversation was targeted, `reply` and `send_file` without `targeted_message_id` refuse unless `public: true`, and a targeted reply cannot be edited with `edit_message`.
+
 ### Step by step
 
 1. **Operator adds the bot to Teams.** Either by installing the bot app
