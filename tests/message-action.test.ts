@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
 
 import { makeTurnHandler } from '../src/teams/adapter'
+import { loadConfig, messageActionsEnabled } from '../src/config'
 import { messageActionFrom } from '../src/teams/messageAction'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
@@ -145,7 +146,7 @@ describe('messageActionFrom', () => {
   })
 })
 
-function setup(opts: { throwing?: boolean; onEventSeen?: (sentSoFar: number) => void } = {}) {
+function setup(opts: { messageActions?: boolean; throwing?: boolean; onEventSeen?: (sentSoFar: number) => void } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cct-ma-'))
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(USER)
@@ -153,7 +154,7 @@ function setup(opts: { throwing?: boolean; onEventSeen?: (sentSoFar: number) => 
   const config = {
     stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p',
     appType: 'SingleTenant', tenantId: TENANT_ID, bindHost: '127.0.0.1', port: 0,
-    receivedFilesDir: '/tmp/unused',
+    receivedFilesDir: '/tmp/unused', messageActions: opts.messageActions ?? true,
   }
   const refs = createConversationRefStore()
   const turn = makeTurnHandler({
@@ -170,7 +171,7 @@ function setup(opts: { throwing?: boolean; onEventSeen?: (sentSoFar: number) => 
   const adapter = new RecordingAdapter()
   const run = (a: Activity) => turn(new TurnContext(adapter as any, a))
   const responses = () => adapter.sent.filter(x => x.type === 'invokeResponse')
-  return { run, events, responses, sent: adapter.sent }
+  return { run, events, responses, refs, sent: adapter.sent }
 }
 
 describe('message action turn handler', () => {
@@ -183,6 +184,15 @@ describe('message action turn handler', () => {
     expect(s.events[0].aadObjectId).toBe(USER)
     expect(s.events[0].text).toStartWith('[Message action] command="ask"')
     expect(s.responses().map((r: any) => ({ type: r.type, value: r.value }))).toEqual([{ type: 'invokeResponse', value: { status: 200 } }])
+  })
+
+  test('switch off: an allowlisted action is answered once with an empty 200 and not delivered', async () => {
+    const s = setup({ messageActions: false })
+    await s.run(invoke(value()))
+    expect(s.events.length).toBe(0)
+    expect(s.responses().length).toBe(1)
+    expect(s.responses()[0].value).toEqual({ status: 200 })
+    expect(s.refs.size()).toBe(0)
   })
 
   test('messageId falls back to the activity id', async () => {
@@ -233,5 +243,33 @@ describe('message action turn handler', () => {
     await s.run(invoke(value(), { type: 'message', name: undefined, text: 'hi' }))
     expect(s.events.length).toBe(1)
     expect(s.responses().length).toBe(0)
+  })
+})
+
+describe('messageActionsEnabled', () => {
+  test('accepts 1 and true only', () => {
+    for (const v of ['1', 'true', ' TRUE ', 'True']) expect(messageActionsEnabled({ TEAMS_MESSAGE_ACTIONS: v })).toBe(true)
+    expect(messageActionsEnabled({})).toBe(false)
+    for (const v of ['', '0', 'yes', 'on', ' 1x']) expect(messageActionsEnabled({ TEAMS_MESSAGE_ACTIONS: v })).toBe(false)
+  })
+
+  test('loadConfig exposes it', () => {
+    // loadConfig re-reads process.env after loading <stateDir>/.env, so the variables go through process.env.
+    const saved = { ...process.env }
+    const stateDir = mkdtempSync(join(tmpdir(), 'cct-ma-cfg-'))
+    try {
+      process.env.TEAMS_BOT_APP_ID = 'app'
+      process.env.TEAMS_BOT_APP_PASSWORD = 'pw'
+      process.env.TEAMS_BOT_TENANT_ID = TENANT_ID
+      process.env.TEAMS_PLUGIN_STATE_DIR = stateDir
+      delete process.env.TEAMS_MESSAGE_ACTIONS
+      expect(loadConfig(process.env).messageActions).toBe(false)
+      process.env.TEAMS_MESSAGE_ACTIONS = '1'
+      expect(loadConfig(process.env).messageActions).toBe(true)
+    } finally {
+      for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+      Object.assign(process.env, saved)
+      rmSync(stateDir, { recursive: true, force: true })
+    }
   })
 })

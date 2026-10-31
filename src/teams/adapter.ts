@@ -562,6 +562,11 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       return
     }
     const action = messageActionFrom(a)
+    if (action && !deps.config.messageActions) {
+      process.stderr.write('teams channel: drop message action: TEAMS_MESSAGE_ACTIONS is not on\n')
+      await answer(invoke, respondEmptyInvoke)
+      return
+    }
     if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card && !action) return
     const answerInvoke = (message: string) => answer(invoke, c => respondToCardInvoke(c, message))
 
