@@ -46,7 +46,7 @@ import { loadConfig, meetingEventsWarning } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
-import { createReplySender } from './teams/reply.js'
+import { createReplySender, parseReplyFormat } from './teams/reply.js'
 import { createConversationRefStore } from './teams/conversationRefs.js'
 import { createChannelRefStore } from './teams/channelRefs.js'
 import { createChannelPoster } from './teams/channelPost.js'
@@ -349,7 +349,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Reply on Microsoft Teams. Pass conversation_id from the inbound message. ' +
         'Text is rendered as markdown — Teams supports bold, italic, headers, ' +
         'bullet/numbered lists, links, inline code, code blocks, and blockquotes. ' +
-        'Tables and HTML are not reliably supported across Teams clients.' +
+        'Tables render with format: extendedmarkdown; HTML is not reliably supported across Teams clients.' +
         ' Returns the message_id of the sent message; pass it to edit_message to update that message.',
       inputSchema: {
         type: 'object',
@@ -396,6 +396,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               required: ['name', 'abstract'],
               additionalProperties: false,
             },
+          },
+          format: {
+            type: 'string',
+            enum: ['markdown', 'extendedmarkdown'],
+            description: 'Optional. extendedmarkdown lets Teams render tables, task lists and block quotes; omitted or null means markdown.',
           },
         },
         required: ['conversation_id', 'text'],
@@ -477,6 +482,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'The message_id that reply returned for a message this bot sent.',
           },
           text: { type: 'string', description: 'New message text. Rendered as markdown.' },
+          format: {
+            type: 'string',
+            enum: ['markdown', 'extendedmarkdown'],
+            description: 'Optional. extendedmarkdown lets Teams render tables, task lists and block quotes; omitted or null means markdown.',
+          },
         },
         required: ['conversation_id', 'message_id', 'text'],
       },
@@ -613,11 +623,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (rawUserCards !== undefined && !Array.isArray(rawUserCards)) {
           throw new Error('user_cards must be an array')
         }
-        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined
+        const format = parseReplyFormat(args.format)
+        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown'
           ? await replier.sendReply(conversationId, text, card, {
               ...(aiGenerated ? { aiGenerated } : {}),
               ...(rawCitations !== undefined ? { citations: rawCitations } : {}),
               ...(rawUserCards !== undefined ? { userCards: rawUserCards } : {}),
+              ...(format !== 'markdown' ? { format } : {}),
             })
           : card !== undefined
             ? await replier.sendReply(conversationId, text, card)
@@ -714,7 +726,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (typeof text !== 'string' || text.length === 0) {
           throw new Error('edit_message requires a non-empty text string')
         }
-        await replier.editReply(conversationId, messageId, text)
+        const format = parseReplyFormat(args.format)
+        await replier.editReply(conversationId, messageId, text, format)
         return { content: [{ type: 'text', text: `edited (conv=${conversationId}, id=${messageId})` }] }
       }
 
