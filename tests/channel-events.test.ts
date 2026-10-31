@@ -194,9 +194,23 @@ describe('adapter channel events', () => {
     expect(s.events.length).toBe(1)
     expect(s.events[0].tenantId).toBe(TENANT_ID)
   })
+  test('an empty or matching conversation tenant does not hide a foreign channelData tenant', async () => {
+    const s = setup(true)
+    const data = { ...(act().channelData as object), tenant: { id: FOREIGN_TENANT } }
+    await s.run(act({ conversation: { id: CONV, tenantId: '', conversationType: 'channel' }, channelData: data }))
+    await s.run(act({ conversation: { id: CONV, tenantId: TENANT_ID, conversationType: 'channel' }, channelData: data }))
+    expect(s.events.length).toBe(0)
+  })
+  test('a non-string conversation tenant does not throw', async () => {
+    const s = setup(true)
+    await s.run(act({ conversation: { id: CONV, tenantId: 5, conversationType: 'channel' } }))
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].tenantId).toBe(TENANT_ID)
+  })
   test('tenant ids are compared case-insensitively', async () => {
     const s = setup(true, LETTERED_TENANT)
-    await s.run(act({ conversation: { id: CONV, tenantId: LETTERED_TENANT.toUpperCase(), conversationType: 'channel' } }))
+    const data = { ...(act().channelData as object), tenant: { id: LETTERED_TENANT } }
+    await s.run(act({ conversation: { id: CONV, tenantId: LETTERED_TENANT.toUpperCase(), conversationType: 'channel' }, channelData: data }))
     expect(s.events.length).toBe(1)
   })
   test('no tenant on the event -> delivered with the pinned tenant, as for messages', async () => {
