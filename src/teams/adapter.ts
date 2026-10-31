@@ -398,10 +398,6 @@ export function baseConversationId(conversationId: string): string {
   return i === -1 ? conversationId : conversationId.slice(0, i)
 }
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
 /**
  * What a turn gets. A message turn gets only the activity, because makeEarlyAckTurn may run it after botbuilder
  * revoked the context; an invoke turn (a card Action.Execute) is never queued there and keeps the whole context,
@@ -565,8 +561,14 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     const channelEvent = channelEventFrom(a)
     if (channelEvent) {
       if (!deps.channelEvents) return
-      const evTenant = a.conversation?.tenantId ?? (isObject(a.channelData) && isObject(a.channelData.tenant) && typeof a.channelData.tenant.id === 'string' ? a.channelData.tenant.id : undefined)
-      if (deps.config.tenantId && evTenant && evTenant.toLowerCase() !== deps.config.tenantId.toLowerCase()) return
+      // As for meeting events: only a non-empty string counts, and either place that disagrees drops the event.
+      const rawConvTenant: unknown = a.conversation?.tenantId
+      const convTenant = typeof rawConvTenant === 'string' && rawConvTenant !== '' ? rawConvTenant : undefined
+      const dataTenant = isPlainObject(a.channelData) && isPlainObject(a.channelData.tenant)
+        && typeof a.channelData.tenant.id === 'string' && a.channelData.tenant.id !== '' ? a.channelData.tenant.id : undefined
+      const pinned = deps.config.tenantId ? deps.config.tenantId.toLowerCase() : undefined
+      if (pinned && [convTenant, dataTenant].some(t => t !== undefined && t.toLowerCase() !== pinned)) return
+      const evTenant = convTenant ?? dataTenant
       const evConversation = a.conversation?.id
       if (!evConversation) return
       // No sender to allowlist: the team itself must be opted in (TEAMS_CHANNEL_EVENT_TEAMS, no wildcard).
