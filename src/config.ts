@@ -89,6 +89,12 @@ export function parseInboundDebounceMs(
   return Math.min(Number.parseInt(value, 10), MAX_INBOUND_DEBOUNCE_MS)
 }
 
+/** True only when TEAMS_TARGETED_MESSAGES is '1' or 'true' (case-insensitive, trimmed). */
+export function targetedMessagesEnabled(env: NodeJS.ProcessEnv): boolean {
+  const v = env.TEAMS_TARGETED_MESSAGES?.trim().toLowerCase()
+  return v === '1' || v === 'true'
+}
+
 /** A boolean env flag: true only for '1' or 'true' (trimmed, case-insensitive). */
 export function parseFlag(raw: string | undefined): boolean {
   const v = (raw ?? '').trim().toLowerCase()
@@ -127,6 +133,11 @@ export interface Config {
   tenantId: string
   /** Address to bind the local HTTP listener (loopback by default). */
   bindHost: string
+  /**
+   * Use Teams targeted messages for the permission prompt and the pairing code
+   * in shared conversations. Off by default; env `TEAMS_TARGETED_MESSAGES=1`.
+   */
+  targetedMessages: boolean
   /** Port for the local HTTP listener. */
   port: number
   /**
@@ -407,6 +418,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appType: 'SingleTenant' as const,
     tenantId,
     bindHost,
+    targetedMessages: targetedMessagesEnabled(env),
     port,
     inboundDebounceMs: parseInboundDebounceMs(env.TEAMS_INBOUND_DEBOUNCE_MS),
     receivedFilesDir,
