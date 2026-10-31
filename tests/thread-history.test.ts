@@ -244,11 +244,14 @@ describe('H13 team details lookup (channelData.team.id only)', () => {
     async continueConversation(): Promise<void> {}
   }
   const original = TeamsInfo.getTeamDetails
+  const PROACTIVE = { proactive: true }
   function setup(lookup: () => Promise<unknown>) {
     let lookups = 0
     let events = 0
-    TeamsInfo.getTeamDetails = (async () => {
+    const contexts: unknown[] = []
+    TeamsInfo.getTeamDetails = (async (c: unknown) => {
       lookups++
+      contexts.push(c)
       return lookup()
     }) as any
     const dir = mkdtempSync(join(tmpdir(), 'th-'))
@@ -257,7 +260,8 @@ describe('H13 team details lookup (channelData.team.id only)', () => {
     const store = createTeamGroupStore()
     const turn = makeTurnHandler({
       config: { stateDir: dir, allowlistFile: join(dir, 'allow.json'), appId: 'a', appPassword: 'p', appType: 'SingleTenant', tenantId: TENANT, bindHost: '127.0.0.1', port: 0 } as any,
-      adapter: {} as any,
+      // The lookup runs in a proactive context (a queued message turn has no context of its own).
+      adapter: { continueConversationAsync: async (_app: string, _ref: unknown, logic: (c: unknown) => Promise<void>) => logic(PROACTIVE) } as any,
       allowlist,
       refs: createConversationRefStore(),
       onEvent: () => {
@@ -283,7 +287,9 @@ describe('H13 team details lookup (channelData.team.id only)', () => {
         turn(new TurnContext(new Noop(), act(id, channelData))).then(() => 'done'),
         new Promise(r => setTimeout(() => r('blocked'), 1000)),
       ])
-    return { store, run, events: () => events, lookups: () => lookups }
+    // How makeEarlyAckTurn runs a message turn: the activity only, no context.
+    const runQueued = (id = 'm1') => turn({ activity: act(id, { team: { id: '19:team@thread.tacv2' } }) })
+    return { store, run, runQueued, events: () => events, lookups: () => lookups, contexts }
   }
   const settle = () => new Promise(r => setTimeout(r, 10))
 
@@ -320,6 +326,17 @@ describe('H13 team details lookup (channelData.team.id only)', () => {
       answer({ aadGroupId: 'group-old' })
       await settle()
       expect(s.store.get('19:abc@thread.tacv2')).toBe('group-new')
+    } finally {
+      TeamsInfo.getTeamDetails = original
+    }
+  })
+  test('a queued turn (activity only) looks the team up through a proactive context', async () => {
+    try {
+      const s = setup(async () => ({ aadGroupId: 'group-3' }))
+      await s.runQueued()
+      await settle()
+      expect(s.contexts).toEqual([PROACTIVE])
+      expect(s.store.get('19:abc@thread.tacv2')).toBe('group-3')
     } finally {
       TeamsInfo.getTeamDetails = original
     }
