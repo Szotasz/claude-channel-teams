@@ -51,6 +51,8 @@ describe('feedback wiring', () => {
       process.env.TEAMS_BOT_TENANT_ID = 'tenant'
       process.env.TEAMS_FEEDBACK = '1'
       expect(loadConfig().feedback).toBe(true)
+      process.env.TEAMS_FEEDBACK = 'true'
+      expect(loadConfig().feedback).toBe(true)
       delete process.env.TEAMS_FEEDBACK
       expect(loadConfig().feedback).toBe(false)
     } finally {
