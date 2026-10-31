@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
 
-import { makeTurnHandler } from '../src/teams/adapter'
+import { channelEventMeta, makeTurnHandler } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import {
@@ -358,5 +358,28 @@ describe('review follow-ups', () => {
     for (const bad of [1716060180000, '', {}, true]) {
       expect(() => parseTargetedMessageId(bad)).toThrow('targeted_message_id must be')
     }
+  })
+})
+
+describe('targeted wiring', () => {
+  test('B20 a targeted event tells Claude it is private; a public one does not', async () => {
+    const s = setup()
+    await s.run(makeActivity())
+    expect(channelEventMeta(s.events[0]).targeted).toBe('true')
+    await s.run(makeActivity({ id: 'msg-2', conversation: { id: 'a:1xyz', tenantId: TENANT_ID, conversationType: 'personal' } as any }))
+    expect('targeted' in channelEventMeta(s.events[1])).toBe(false)
+  })
+
+  test('B21 server.ts hands targetedInbound to the replier, the file sender and the listener, and passes the tool flags on', () => {
+    const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+    const block = (start: string) => server.slice(server.indexOf(start), server.indexOf('\n})', server.indexOf(start)) + 1)
+    expect(server).toMatch(/const replier = createReplySender\(\{[^}]*\btargetedInbound \}\)/)
+    expect(block('const sendFile = createFileSender({')).toContain('\n  targetedInbound,\n')
+    expect(block('const listener = startListener({')).toContain('\n  targetedInbound,\n')
+    const reply = server.slice(server.indexOf("case 'reply': {"), server.indexOf("case 'send_file': {"))
+    expect(reply).toContain('...(targetedMessageId !== undefined ? { targetedMessageId } : {}),')
+    expect(reply).toContain('...(isPublic ? { public: true } : {}),')
+    const sendFileCase = server.slice(server.indexOf("case 'send_file': {"))
+    expect(sendFileCase.slice(0, sendFileCase.indexOf('return {'))).toContain('...(args.public === true ? { public: true } : {}),')
   })
 })
