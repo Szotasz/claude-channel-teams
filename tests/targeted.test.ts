@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
@@ -297,5 +297,23 @@ describe('adapter with targeted messages', () => {
     expect(dms[0]).toContain(`/teams:access pair ${pending.list()[0]!.code}`)
     expect(targeted.length).toBe(0)
     rmSync(dir, { recursive: true })
+  })
+})
+
+describe('T12 server.ts and config wiring', () => {
+  const src = (f: string) => readFileSync(join(import.meta.dir, '..', 'src', f), 'utf8')
+  test('the targeted sender exists only when TEAMS_TARGETED_MESSAGES is on, and reaches the listener', () => {
+    const server = src('server.ts')
+    expect(server).toContain('const sendTargeted = config.targetedMessages\n  ? createTargetedSender(adapter, config.appId)\n  : undefined')
+    const l = server.indexOf('const listener = startListener({')
+    expect(server.slice(l, server.indexOf('\n})', l))).toContain('\n  sendPairingTargeted: sendTargeted,\n')
+    expect(src('config.ts')).toContain('targetedMessages: targetedMessagesEnabled(env),')
+  })
+  test('the pairing confirmation is never sent into a shared conversation', () => {
+    const server = src('server.ts')
+    const guard = server.indexOf('if (stored && !isPersonalReference(stored.ref)) {')
+    const paired = server.indexOf("'Paired. Say hi to Claude.'")
+    expect(guard).toBeGreaterThan(-1)
+    expect(server.slice(guard, paired)).toContain('} else if (stored) {')
   })
 })
