@@ -279,6 +279,17 @@ describe('targeted reply', () => {
     expect(s.posts.length).toBe(0)
     expect(s.publicSends.length).toBe(0)
   })
+
+  test('B19 targeted_message_id together with user_cards throws: the private post would drop the views', async () => {
+    const s = setup()
+    await s.run(makeActivity())
+    const card = { type: 'AdaptiveCard', version: '1.5', body: [{ type: 'TextBlock', text: 'base' }] }
+    await expect(
+      s.replier.sendReply(CHAN, 'x', card, { targetedMessageId: 'msg-1', userCards: [{ aad_object_id: ALLOWED, card }] }),
+    ).rejects.toThrow('targeted_message_id and user_cards cannot be combined')
+    expect(s.posts.length).toBe(0)
+    expect(s.publicSends.length).toBe(0)
+  })
 })
 
 describe('targetedInbound memory', () => {
