@@ -96,15 +96,18 @@ describe('upload', () => {
   })
 
   test('the single PUT does not follow redirects, and a dot filename stays in the folder', async () => {
-    const s = setup([TOKEN(), ITEM(201), ITEM(201)])
+    const s = setup([TOKEN(), ITEM(201), ITEM(201), ITEM(201)])
     await s.up.upload('..', Buffer.from('x'))
     expect(s.calls[1].redirect).toBe('error')
     expect(s.calls[1].url).toContain('/Teams%20bot%20files/_:/content')
     await s.up.upload('.', Buffer.from('x'))
     expect(s.calls[2].url).toContain('/Teams%20bot%20files/_:/content')
+    // A backslash is a path separator too: it never reaches the item path.
+    await s.up.upload('a\\b.txt', Buffer.from('x'))
+    expect(s.calls[3].url).toContain('/Teams%20bot%20files/a_b.txt:/content')
   })
 
-  for (const bad of ['https://evil.example/up', 'http://x.sharepoint.com/up']) {
+  for (const bad of ['https://evil.example/up', 'http://x.sharepoint.com/up', 'https://evilsharepoint.com/up']) {
     test(`rejects upload url ${bad}`, async () => {
       const s = setup([TOKEN(), json(200, { uploadUrl: bad })])
       await expect(s.up.upload('big.bin', Buffer.alloc(5 * 1024 * 1024))).rejects.toThrow(
@@ -123,6 +126,8 @@ describe('resolveSharePoint', () => {
     const long253 = Array.from({ length: 4 }, () => 'a'.repeat(62)).join('.') + '.c'
     expect(long253.length).toBe(253)
     expect(resolveSharePoint({ TEAMS_SHAREPOINT_SITE_ID: long253 + ',' + id.split(',').slice(1).join(',') })).not.toBeNull()
+    // One character more and it stays off.
+    expect(resolveSharePoint({ TEAMS_SHAREPOINT_SITE_ID: long253 + 'c,' + id.split(',').slice(1).join(',') })).toBeNull()
     expect(resolveSharePoint({ TEAMS_SHAREPOINT_SITE_ID: 'a/b' })).toBeNull()
     const g = '11111111-2222-4333-8444-555555555555,66666666-7777-4888-9999-aaaaaaaaaaaa'
     for (const bad of ['not-a-site-id', '..', 'contoso.sharepoint.com,1,2', 'contoso.sharepoint.com,' + 'x'.repeat(36) + ',' + 'y'.repeat(36), '-bad.sharepoint.com,' + g, 'bad-.sharepoint.com,' + g, 'contoso,' + g, Array.from({ length: 5 }, () => 'a'.repeat(60)).join('.') + '.com,' + g]) {
