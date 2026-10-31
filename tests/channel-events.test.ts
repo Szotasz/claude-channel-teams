@@ -201,6 +201,12 @@ describe('adapter channel events', () => {
     await s.run(act({ conversation: { id: CONV, tenantId: TENANT_ID, conversationType: 'channel' }, channelData: data }))
     expect(s.events.length).toBe(0)
   })
+  test('an empty conversation tenant counts as none: a matching channelData tenant is delivered', async () => {
+    const s = setup(true)
+    const data = { ...(act().channelData as object), tenant: { id: TENANT_ID } }
+    await s.run(act({ conversation: { id: CONV, tenantId: '', conversationType: 'channel' }, channelData: data }))
+    expect(s.events.length).toBe(1)
+  })
   test('a non-string conversation tenant does not throw', async () => {
     const s = setup(true)
     await s.run(act({ conversation: { id: CONV, tenantId: 5, conversationType: 'channel' } }))
@@ -331,6 +337,8 @@ describe('config channelEvents', () => {
       process.env.TEAMS_BOT_APP_PASSWORD = 'p'
       process.env.TEAMS_BOT_TENANT_ID = TENANT_ID
       process.env.TEAMS_CHANNEL_EVENTS = '1'
+      expect(loadConfig().channelEvents).toBe(true)
+      process.env.TEAMS_CHANNEL_EVENTS = 'true'
       expect(loadConfig().channelEvents).toBe(true)
       delete process.env.TEAMS_CHANNEL_EVENTS
       expect(loadConfig().channelEvents).toBe(false)
