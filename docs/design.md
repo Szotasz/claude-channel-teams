@@ -661,3 +661,7 @@ and the channel notification):
   nothing buffered is lost when the process stops.
 - The three-window cap is measured on a monotonic clock, so a wall clock that
   is set back does not stretch it.
+
+## Quoted replies
+
+Inbound quotes (the `quotedReply` entity) become a `[Quote] <author>: <preview>` line at the top of the text plus a `quoted_message_id` meta key; the `<quoted messageId="..."/>` placeholder is stripped from the text. The `reply` tool can quote a message with `quote_message_id`: it sends a `quotedReply` entity and prefixes the text with the `<quoted messageId="..."/>` placeholder, as the Teams SDK does. An outbound quote must point to a message the bot saw in the same conversation since it started (kept in memory, at most 500 ids per conversation), so a quote cannot pull a message from another conversation into this one; after a restart older messages cannot be quoted.

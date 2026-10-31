@@ -45,6 +45,8 @@ import { isPersonalReference, type ConversationRefStore } from './conversationRe
 import type { ChannelRefStore } from './channelRefs.js'
 import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
+import type { SeenMessages } from './seenMessages.js'
+import { QUOTE_ID_RE } from './reply.js'
 import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
 import type { InboundIds } from './inboundIds.js'
@@ -67,6 +69,37 @@ export type AttachmentHandler = (
   messageText?: string,
 ) => Promise<{ annotations: string[] }>
 
+export interface InboundQuote { messageId: string; senderName?: string; preview?: string; deleted: boolean }
+
+function cleanQuoteField(v: unknown, max: number): string | undefined {
+  if (typeof v !== 'string') return undefined
+  const c = v.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
+  return c.length > 0 ? c : undefined
+}
+
+/** The first quotedReply entity of an activity, cleaned; undefined when there is none or its messageId is invalid. */
+export function inboundQuote(entities: unknown): InboundQuote | undefined {
+  if (!Array.isArray(entities)) return undefined
+  const e = entities.find(
+    x => x && typeof x === 'object' && (x as any).type === 'quotedReply' &&
+      (x as any).quotedReply && typeof (x as any).quotedReply === 'object',
+  ) as { quotedReply: Record<string, unknown> } | undefined
+  if (!e) return undefined
+  const q = e.quotedReply
+  if (typeof q.messageId !== 'string' || !QUOTE_ID_RE.test(q.messageId)) return undefined
+  return {
+    messageId: q.messageId,
+    senderName: cleanQuoteField(q.senderName, 100),
+    preview: cleanQuoteField(q.preview, 300),
+    deleted: q.isReplyDeleted === true,
+  }
+}
+
+/** The text with every <quoted messageId="..."/> placeholder removed and the result trimmed. */
+export function stripQuotePlaceholders(text: string): string {
+  return text.replace(/<quoted\s+messageId="[^"]*"\s*\/>/g, '').trim()
+}
+
 /**
  * Sink type — what the adapter pushes when an inbound message clears the gate.
  * The server wires this to `mcp.notification(...)`. Keeping the interface
@@ -79,6 +112,7 @@ export type ChannelEventSink = (event: {
   tenantId: string
   fromName: string
   messageId?: string
+  quotedMessageId?: string
   ts?: string
   /** Group context only: whether the bot was @mentioned. Undefined in 1:1 chats. */
   mentioned?: boolean
@@ -161,6 +195,7 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     tenant_id: event.tenantId,
     from_name: stripInvisible(event.fromName).text,
     ...(event.messageId ? { message_id: event.messageId } : {}),
+    ...(event.quotedMessageId ? { quoted_message_id: event.quotedMessageId } : {}),
     ...(event.ts ? { ts: event.ts } : {}),
     ...(event.messageEvent ? { message_event: event.messageEvent } : {}),
     ...(event.mentioned !== undefined ? { mentioned: event.mentioned ? 'true' : 'false' } : {}),
@@ -243,6 +278,9 @@ export interface AdapterDeps {
   /** How long the meeting-info lookup after a meeting event may take, in milliseconds (default 5000).
    *  A lookup that takes longer is given up on. Injectable so tests can use a short one. */
   meetingInfoTimeoutMs?: number
+  /** Records the ids of delivered messages per conversation, for outbound quote checks. A quoted message's id is
+   *  not recorded: nothing proves it belongs to this conversation. */
+  seenMessages?: SeenMessages
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -863,7 +901,12 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     // the allowlist gate). Failures degrade to annotation lines so the
     // message still gets through. We deliberately await here: Hermes needs
     // file paths in the inbound MCP event, not a follow-up notification.
-    let text = rawText
+    const quote = inboundQuote(a.entities)
+    let text = stripQuotePlaceholders(rawText)
+    if (quote) {
+      const line = `[Quote] ${quote.senderName ?? 'someone'}: ${quote.deleted ? '(deleted message)' : (quote.preview ?? '')}`
+      text = text.length > 0 ? `${line}\n${text}` : line
+    }
     const rawAttachments = Array.isArray(a.attachments) ? (a.attachments as Attachment[]) : []
     if (deps.attachments && rawAttachments.length > 0) {
       try {
@@ -911,6 +954,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     if (typeof messageId === 'string' && messageId.length > 0) {
       deps.deliveredMessages?.remember(baseConversationId(conversationId), messageId, aadObjectId)
     }
+    if (typeof messageId === 'string' && messageId.length > 0) deps.seenMessages?.remember(conversationId, messageId)
     // Team, channel, thread, reply and mention context only in a team channel or group chat.
     const cd: any = isGroupContext ? a.channelData : undefined
     const obj = (v: unknown): any => (v !== null && typeof v === 'object' ? v : undefined)
@@ -939,6 +983,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       tenantId: tenantId ?? deps.config.tenantId,
       fromName,
       messageId,
+      ...(quote ? { quotedMessageId: quote.messageId } : {}),
       ts,
       ...(rawAttachments.length > 0 ? { hasAttachments: true } : {}),
       ...(mentioned !== undefined ? { mentioned } : {}),
