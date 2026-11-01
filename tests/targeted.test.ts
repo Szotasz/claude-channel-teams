@@ -309,6 +309,16 @@ describe('T12 server.ts and config wiring', () => {
     expect(server.slice(l, server.indexOf('\n})', l))).toContain('\n  sendPairingTargeted: sendTargeted,\n')
     expect(src('config.ts')).toContain('targetedMessages: targetedMessagesEnabled(env),')
   })
+  test('the prompt delivery gets the targeted sender, not the plain one (#18 review)', () => {
+    const server = src('server.ts')
+    const at = server.indexOf('const promptDelivery: PromptDelivery = {')
+    expect(at).toBeGreaterThan(-1)
+    const block = server.slice(at, server.indexOf('\n}', at) + 1)
+    expect(block).toContain('\n  sendPlain: (ref, text) => sendActivityRaw(ref, text),\n')
+    expect(block).toContain('\n  sendTargeted,\n')
+    // Exactly one targeted entry, and it is the shorthand for the switch-gated sender above.
+    expect(block.match(/sendTargeted/g)).toHaveLength(1)
+  })
   test('the pairing confirmation is never sent into a shared conversation', () => {
     const server = src('server.ts')
     const guard = server.indexOf('if (stored && !isPersonalReference(stored.ref)) {')
