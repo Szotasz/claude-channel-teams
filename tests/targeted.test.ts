@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -301,7 +302,7 @@ describe('adapter with targeted messages', () => {
 })
 
 describe('T12 server.ts and config wiring', () => {
-  const src = (f: string) => readFileSync(join(import.meta.dir, '..', 'src', f), 'utf8')
+  const src = (f: string) => stripComments(readFileSync(join(import.meta.dir, '..', 'src', f), 'utf8'))
   test('the targeted sender exists only when TEAMS_TARGETED_MESSAGES is on, and reaches the listener', () => {
     const server = src('server.ts')
     expect(server).toContain('const sendTargeted = config.targetedMessages\n  ? createTargetedSender(adapter, config.appId)\n  : undefined')
