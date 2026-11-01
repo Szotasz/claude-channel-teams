@@ -157,4 +157,12 @@ describe('server.ts wiring', () => {
     // condition, or swapped branches, do not match.
     expect(server).toMatch(/\.\.\.\(config\.activityFeed\n\s*\? \[\n\s*"send_activity_notification pings one person's/)
   })
+
+  test('#26 the listener learns team ids when the activity feed is on, also with TEAMS_THREAD_HISTORY off', () => {
+    // teamIdFor reads teamGroups, which only the listener fills: without it every send fails with "team id unknown".
+    const l = server.slice(server.indexOf('const listener = startListener({'))
+    const deps = l.slice(0, l.indexOf('\n})') + 1)
+    expect(deps).toContain('\n  ...(config.threadHistory || config.activityFeed ? { teamGroups } : {}),\n')
+    expect(deps.split('teamGroups').length - 1).toBe(1)
+  })
 })

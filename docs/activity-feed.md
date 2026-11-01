@@ -26,7 +26,8 @@ app-only token.
   declares no activity types.
 - **Text.** At most 150 characters (Teams shows the first 150 of the preview).
 - **Team id.** Learned from an inbound message in the channel, as for
-  `get_thread_history`; before that the tool answers that the team id is unknown.
+  `get_thread_history` (also when `TEAMS_THREAD_HISTORY` is off); before that
+  the tool answers that the team id is unknown.
 - **Requirements.** The app must be installed in the team and the recipient
   (an AAD object id) must be a member.
 
