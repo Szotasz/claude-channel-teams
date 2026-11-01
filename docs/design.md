@@ -116,6 +116,7 @@ environment winning. `.env` is chmod-0600 on every load.
 | `TEAMS_MEETING_EVENTS` | No | off | `1` or `true` delivers meeting start / end events — see [docs/meeting-events.md](meeting-events.md). |
 | `TEAMS_MEETING_CONVERSATIONS` | No | empty | Comma-separated conversation ids (without `;messageid=`, no wildcard) whose meeting events are delivered. Empty delivers none. |
 | `TEAMS_INBOUND_DEBOUNCE_MS` | No | `0` (off) | Inbound debounce window in milliseconds (recommended `1500`) — see [Inbound debounce (opt-in)](#inbound-debounce-opt-in). A whole number, capped at 10000; anything else turns debouncing off with one stderr line. |
+| `TEAMS_PLUGIN_TZ` | No | host time zone | IANA zone for the received-files date folder and the HHMM time prefix. Before this setting it was always `Europe/London`; set that to keep the old filing. An unknown zone logs one stderr line and uses the host zone. |
 | `TEAMS_STATE_DIR` | No | `~/.claude/channels/teams` | For multi-instance setups. |
 | `TEAMS_ACCESS_MODE` | No | — | `static` pins access at boot, disables pairing. |
 
