@@ -137,6 +137,22 @@ describe('adapter: card actions', () => {
     expect(t.refs.get('conv-abc')).toBeUndefined()
     t.cleanup()
   })
+
+  test('A10b the same Submit click in a team channel is dropped too; an allowlisted one gets through', async () => {
+    const channel = { id: '19:x@thread.tacv2', conversationType: 'channel', tenantId: TENANT }
+    const submit = (aadObjectId: string) =>
+      act({ type: 'message', name: undefined, text: '', value: { text: 'y abcde' }, conversation: channel, from: { id: 'u2', name: 'Eve', aadObjectId } })
+    const t = setup()
+    await t.run(submit(UNKNOWN))
+    expect(t.events).toEqual([])
+    expect(t.bot.sent).toEqual([])
+    expect(t.pending.list?.() ?? []).toEqual([])
+    expect(t.refs.get(channel.id)).toBeUndefined()
+    // Control: the same click from an allowlisted sender reaches the session, so the drop above is the gate's.
+    await t.run(submit(SENDER))
+    expect(t.events.length).toBe(1)
+    t.cleanup()
+  })
 })
 
 describe('adapter: every Action.Execute invoke is answered', () => {
