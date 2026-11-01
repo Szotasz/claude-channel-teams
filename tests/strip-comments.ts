@@ -24,11 +24,13 @@ export function stripComments(src: string): string {
     for (const r of ranges ?? []) for (let i = r.pos; i < r.end; i++) if (out[i] !== '\n') out[i] = ' '
   }
   // Every comment is trivia before or after some token, and getChildren reaches every token, punctuation and the
-  // end-of-file token included.
+  // end-of-file token included. A JSDoc node is not walked: it lies inside its own comment, so its positions would
+  // read the comment's text as code (a '//' in it would blank the code after the comment). The comment itself is
+  // leading trivia of the node it documents.
   const visit = (node: ts.Node): void => {
     blank(ts.getLeadingCommentRanges(src, node.pos))
     blank(ts.getTrailingCommentRanges(src, node.end))
-    for (const child of node.getChildren(file)) visit(child)
+    for (const child of node.getChildren(file)) if (!ts.isJSDoc(child)) visit(child)
   }
   visit(file)
   return out.join('')
