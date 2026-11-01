@@ -375,6 +375,7 @@ describe('server wiring', () => {
     expect(line).not.toBeNull()
     const armAfterNotify = new Function('acks', 'event', line![1]!) as (acks: unknown, event: object) => void
     const s = setup(async () => 'Got it')
+<<<<<<< HEAD
     armAfterNotify(s.acks, { text: 'summarize this', conversationId: 'conv-c', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'A', messageId: 'msg-1', messageAction: 'summarize' })
     expect(s.timers.length).toBe(1)
     // Contrast: an edit event to another conversation arms none.
@@ -408,6 +409,19 @@ describe('server wiring', () => {
       fromName: '',
       channelEvent: { kind: 'created', channelId: 'chan-1', channelName: 'Ops', teamId: 'team-1' },
     })
+    expect(s.timers.length).toBe(0)
+    expect(await s.acks.take('conv-c')).toBeUndefined()
+    // Contrast: a plain message to the same conversation does arm one.
+    armAfterNotify(s.acks, { text: 'hello', conversationId: 'conv-c', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'A' })
+    expect(s.timers.length).toBe(1)
+  })
+  test('a delivered targeted message leaves no pending acknowledgement', async () => {
+    // Runs the arm line of server.ts itself, so the test follows the condition as it is written there.
+    const line = src.match(/^\s*(if \(acks && .*\) acks\.arm\(event\.conversationId\))$/m)
+    expect(line).not.toBeNull()
+    const armAfterNotify = new Function('acks', 'event', line![1]!) as (acks: unknown, event: object) => void
+    const s = setup(async () => 'Got it')
+    armAfterNotify(s.acks, { text: 'hello', conversationId: 'conv-c', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'A', isGroup: true, mentioned: true, targeted: true })
     expect(s.timers.length).toBe(0)
     expect(await s.acks.take('conv-c')).toBeUndefined()
     // Contrast: a plain message to the same conversation does arm one.
