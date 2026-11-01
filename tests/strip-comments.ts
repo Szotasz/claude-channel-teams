@@ -12,6 +12,13 @@ import ts from 'typescript'
 
 export function stripComments(src: string): string {
   const file = ts.createSourceFile('source.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  // A source that does not parse throws: the parser's error recovery can skip tokens, and with them a comment in
+  // front of them, which would then survive. A source-text check on a file that does not compile must fail anyway.
+  const { diagnostics = [] } = ts.transpileModule(src, { reportDiagnostics: true, compilerOptions: {} })
+  if (diagnostics.length > 0) {
+    const why = ts.flattenDiagnosticMessageText(diagnostics[0].messageText, ' ')
+    throw new Error(`stripComments: the source does not parse (${why})`)
+  }
   const out = src.split('')
   const blank = (ranges: ts.CommentRange[] | undefined): void => {
     for (const r of ranges ?? []) for (let i = r.pos; i < r.end; i++) if (out[i] !== '\n') out[i] = ' '
