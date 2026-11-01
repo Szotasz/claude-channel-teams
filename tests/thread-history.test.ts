@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { BotAdapter, TeamsInfo, TurnContext, type Activity } from 'botbuilder'
 import {
   createTeamGroupStore,
@@ -164,13 +165,13 @@ describe('fetchThreadHistory', () => {
 })
 
 test('H15 the tool result goes through withInvisibleStripped', () => {
-  const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+  const server = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8'))
   const c = server.slice(server.indexOf("case 'get_thread_history'"), server.indexOf("case 'reply'"))
   expect(c).toContain('text: withInvisibleStripped({ text: JSON.stringify(list, null, 2) }).text')
 })
 
 test('H16 the tool and the listener are wired', () => {
-  const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+  const server = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8'))
   const c = server.slice(server.indexOf("case 'get_thread_history'"), server.indexOf("case 'reply'"))
   const check = c.indexOf('replier.assertAllowedConversation(conversationId)')
   expect(check).toBeGreaterThan(-1)
@@ -184,7 +185,7 @@ test('H16 the tool and the listener are wired', () => {
 })
 
 test('H17 TEAMS_THREAD_HISTORY off is the old surface: no tool, no instruction line, no team id learning, and a call is refused', () => {
-  const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+  const server = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8'))
   expect(server).toMatch(/\.\.\.\(config\.threadHistory\s*\?\s*\[\s*\{\s*name: 'get_thread_history',/)
   expect(server).toMatch(/\.\.\.\(config\.threadHistory\s*\?\s*\[\s*'In a channel thread, get_thread_history/)
   // Exactly one tool entry and one instruction line, both inside the gated branches above.
