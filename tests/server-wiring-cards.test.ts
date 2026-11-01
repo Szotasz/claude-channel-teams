@@ -41,7 +41,8 @@ describe('server.ts card wiring', () => {
 
   test('the instructions say what card_action="execute"/"submit" and card_action="dialog" mean', () => {
     const instructions = block(server, 'instructions: [')
-    const card = 'A message whose tag has card_action="execute" or card_action="submit" is a click on a card this bot sent'
+    // "a card button", not "a card this bot sent": no replyToId check ties the click to a card the bot sent (#11 review).
+    const card = 'A message whose tag has card_action="execute" or card_action="submit" is a click on a card button, not text'
     const dialog = 'A message with card_action="dialog" is a dialog the user submitted'
     expect(instructions.split(card).length).toBe(2)
     expect(instructions.split(dialog).length).toBe(2)
