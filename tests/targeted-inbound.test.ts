@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -427,13 +428,13 @@ describe('targeted wiring', () => {
   })
 
   test('B21 server.ts hands targetedInbound to the replier, the file sender and the listener, and passes the tool flags on', () => {
-    const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+    const server = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8'))
     const block = (start: string) => server.slice(server.indexOf(start), server.indexOf('\n})', server.indexOf(start)) + 1)
     expect(server).toMatch(/const replier = createReplySender\(\{[^}]*\btargetedInbound \}\)/)
     expect(block('const sendFile = createFileSender({')).toContain('\n  targetedInbound,\n')
     expect(block('const listener = startListener({')).toContain('\n  targetedInbound,\n')
     const reply = server.slice(server.indexOf("case 'reply': {"), server.indexOf("case 'send_file': {"))
-    expect(reply).toContain('const isPublic = args.public === true')
+    expect(reply).toContain('const isPublic = args.public === true\n')
     expect(reply).toContain('...(targetedMessageId !== undefined ? { targetedMessageId } : {}),')
     expect(reply).toContain('...(isPublic ? { public: true } : {}),')
     const sendFileCase = server.slice(server.indexOf("case 'send_file': {"))
