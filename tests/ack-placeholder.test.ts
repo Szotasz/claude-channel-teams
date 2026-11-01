@@ -361,12 +361,25 @@ describe('reply with acknowledgement', () => {
 describe('server wiring', () => {
   const src = readFileSync(join(import.meta.dir, '../src/server.ts'), 'utf8')
   test('arm, cancel, stopAll, deps', () => {
-    expect(src).toMatch(/if \(acks && !event\.messageEvent && !event\.meetingEvent && event\.mentioned !== false\) acks\.arm\(event\.conversationId\)/)
+    expect(src).toMatch(/if \(acks && !event\.messageEvent && !event\.meetingEvent && !event\.feedback && event\.mentioned !== false\) acks\.arm\(event\.conversationId\)/)
     const sf = src.slice(src.indexOf("case 'send_file'"))
     expect(sf.slice(0, sf.indexOf("case '", 10))).toContain('acks?.cancel(conversationId)')
     const sd = src.slice(src.indexOf('typingPump.stopAll()'))
     expect(sd.slice(0, 80)).toContain('acks?.stopAll()')
     expect(src).toMatch(/createReplySender\(\{[^}]*\backs\b[^}]*\}\)/)
+  })
+  test('a delivered feedback click leaves no pending acknowledgement', async () => {
+    // Runs the arm line of server.ts itself, so the test follows the condition as it is written there.
+    const line = src.match(/^\s*(if \(acks && .*\) acks\.arm\(event\.conversationId\))$/m)
+    expect(line).not.toBeNull()
+    const armAfterNotify = new Function('acks', 'event', line![1]!) as (acks: unknown, event: object) => void
+    const s = setup(async () => 'Got it')
+    armAfterNotify(s.acks, { text: 'Feedback: like', conversationId: 'conv-c', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'A', messageId: 'msg-1', feedback: 'like' })
+    expect(s.timers.length).toBe(0)
+    expect(await s.acks.take('conv-c')).toBeUndefined()
+    // Contrast: a plain message to the same conversation does arm one.
+    armAfterNotify(s.acks, { text: 'hello', conversationId: 'conv-c', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'A' })
+    expect(s.timers.length).toBe(1)
   })
   test('the acknowledgement is armed only after the notification to Claude succeeded', () => {
     const sink = src.slice(src.indexOf('const onEvent: ChannelEventSink'))
