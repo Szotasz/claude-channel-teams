@@ -375,7 +375,6 @@ describe('server wiring', () => {
     expect(line).not.toBeNull()
     const armAfterNotify = new Function('acks', 'event', line![1]!) as (acks: unknown, event: object) => void
     const s = setup(async () => 'Got it')
-<<<<<<< HEAD
     armAfterNotify(s.acks, { text: 'summarize this', conversationId: 'conv-c', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'A', messageId: 'msg-1', messageAction: 'summarize' })
     expect(s.timers.length).toBe(1)
     // Contrast: an edit event to another conversation arms none.
