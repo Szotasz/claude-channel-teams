@@ -1058,7 +1058,7 @@ const onEvent: ChannelEventSink = event => {
     })
     .then(() => {
       process.stderr.write('teams channel: notify ok\n')
-      // Only a message that reached Claude gets an acknowledgement; a meeting start or end event or a feedback click is not one.
+      // Only a message that reached Claude gets an acknowledgement; a meeting event or a feedback click is not one.
       if (acks && !event.messageEvent && !event.meetingEvent && !event.feedback && event.mentioned !== false) acks.arm(event.conversationId)
     })
     .catch(err => {
