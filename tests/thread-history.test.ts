@@ -8,7 +8,8 @@ import {
 import { baseConversationId, makeTurnHandler } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
-import { mkdtempSync, readFileSync } from 'fs'
+import { loadConfig } from '../src/config'
+import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -176,8 +177,49 @@ test('H16 the tool and the listener are wired', () => {
   expect(check).toBeLessThan(c.indexOf('parseChannelThread(conversationId)'))
   expect(c).toContain("if (limit !== undefined && typeof limit !== 'number') throw new Error(")
   expect(c).toContain('isAllowed: id => allowlist.isAllowed(id) }')
+  // The limit Claude passes reaches Graph (#24 review).
+  expect(c).toContain('{ teamId, channelId, rootMessageId, ...(limit !== undefined ? { limit } : {}) }')
   const l = server.slice(server.indexOf('const listener = startListener({'))
-  expect(l.slice(0, l.indexOf('\n})'))).toContain('\n  teamGroups,\n')
+  expect(l.slice(0, l.indexOf('\n})'))).toContain('\n  ...(config.threadHistory ? { teamGroups } : {}),\n')
+})
+
+test('H17 TEAMS_THREAD_HISTORY off is the old surface: no tool, no instruction line, no team id learning, and a call is refused', () => {
+  const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+  expect(server).toMatch(/\.\.\.\(config\.threadHistory\s*\?\s*\[\s*\{\s*name: 'get_thread_history',/)
+  expect(server).toMatch(/\.\.\.\(config\.threadHistory\s*\?\s*\[\s*'In a channel thread, get_thread_history/)
+  // Exactly one tool entry and one instruction line, both inside the gated branches above.
+  expect(server.split("name: 'get_thread_history'").length - 1).toBe(1)
+  expect(server.split("'In a channel thread, get_thread_history").length - 1).toBe(1)
+  const c = server.slice(server.indexOf("case 'get_thread_history': {"))
+  expect(c.slice(c.indexOf('{') + 1).trimStart().startsWith(
+    "if (!config.threadHistory) throw new Error('get_thread_history is off (TEAMS_THREAD_HISTORY is not set)')",
+  )).toBe(true)
+  expect(server).not.toContain('\n  teamGroups,\n')
+})
+
+test('H18 loadConfig reads TEAMS_THREAD_HISTORY (unset = off)', () => {
+  // loadConfig reads process.env (after the state dir's .env), so set and restore it there.
+  const dir = mkdtempSync(join(tmpdir(), 'th-cfg-'))
+  const vars: Record<string, string | undefined> = {
+    TEAMS_BOT_APP_ID: 'a', TEAMS_BOT_APP_PASSWORD: 'p', TEAMS_BOT_TENANT_ID: 't', TEAMS_STATE_DIR: dir,
+    TEAMS_THREAD_HISTORY: undefined,
+  }
+  const saved = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]))
+  const set = (k: string, v: string | undefined) => {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  try {
+    for (const [k, v] of Object.entries(vars)) set(k, v)
+    expect(loadConfig().threadHistory).toBe(false)
+    set('TEAMS_THREAD_HISTORY', '1')
+    expect(loadConfig().threadHistory).toBe(true)
+    set('TEAMS_THREAD_HISTORY', 'yes')
+    expect(loadConfig().threadHistory).toBe(false)
+  } finally {
+    for (const [k, v] of Object.entries(saved)) set(k, v)
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('H14 parseChannelThread', () => {
@@ -209,7 +251,12 @@ describe('H12 adapter', () => {
     async deleteActivity(): Promise<void> {}
     async continueConversation(): Promise<void> {}
   }
-  function setup(aad: string, withStore = true, channelData: unknown = { team: { aadGroupId: 'group-1' } }) {
+  function setup(
+    aad: string,
+    withStore = true,
+    channelData: unknown = { team: { aadGroupId: 'group-1' } },
+    conversation: Record<string, unknown> = { id: '19:abc@thread.tacv2;messageid=123', conversationType: 'channel' },
+  ) {
     let events = 0
     const dir = mkdtempSync(join(tmpdir(), 'th-'))
     const allowlist = createAllowlist(join(dir, 'allow.json'))
@@ -230,7 +277,7 @@ describe('H12 adapter', () => {
       text: '<at>Bot</at> hi',
       id: 'm1',
       from: { id: 'u', name: 'U', aadObjectId: aad },
-      conversation: { id: '19:abc@thread.tacv2;messageid=123', conversationType: 'channel', tenantId: TENANT },
+      conversation: { ...conversation, tenantId: TENANT },
       recipient: { id: 'bot-1', name: 'Bot' },
       channelId: 'msteams',
       serviceUrl: 'https://smba.trafficmanager.net/uk/',
@@ -249,6 +296,12 @@ describe('H12 adapter', () => {
     const s = setup('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
     await s.run()
     expect(s.store.get('19:abc@thread.tacv2')).toBeUndefined()
+  })
+  test('a group chat is not a channel: nothing is learned, the message is still delivered', async () => {
+    const s = setup(ALLOWED, true, { team: { aadGroupId: 'group-1' } }, { id: '19:chat@thread.v2', conversationType: 'groupChat' })
+    await s.run()
+    expect(s.events()).toBe(1)
+    expect(s.store.get('19:chat@thread.v2')).toBeUndefined()
   })
   test('no store dep is fine', async () => {
     const s = setup(ALLOWED, false)
