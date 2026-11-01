@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -167,7 +168,7 @@ describe('the env vars turn SharePoint on (#13 review)', () => {
   })
 
   test('server.ts builds the uploader from config.sharePoint and hands it to the file sender', () => {
-    const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+    const server = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8'))
     const at = server.indexOf('const sendFile = createFileSender({')
     expect(at).toBeGreaterThan(-1)
     const block = server.slice(at, server.indexOf('\n})', at) + 1)
