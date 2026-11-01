@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -511,7 +512,7 @@ describe('unmentioned filter', () => {
 
   test('a filter that never reads its stdin cannot crash the plugin: the EPIPE guard sits before the write', () => {
     // Under bun the 300 KB stdin case above stays green without the guard, so pin the source (#44 review).
-    const src = readFileSync(join(import.meta.dir, '..', 'src', 'teams', 'unmentionedFilter.ts'), 'utf8')
+    const src = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'teams', 'unmentionedFilter.ts'), 'utf8'))
     const guard = src.indexOf("child.stdin?.on('error', () => {})")
     expect(guard).toBeGreaterThan(0)
     expect(guard).toBeLessThan(src.indexOf('child.stdin?.end('))
