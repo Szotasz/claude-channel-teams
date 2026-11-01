@@ -156,4 +156,56 @@ describe('stripComments', () => {
     expect(out).not.toContain('// c')
     expect(same(out, src)).toBe(true)
   })
+
+  test('19 a regex as the statement of an if, while or for header is kept; after a call it is division', () => {
+    for (const head of ['if (ok)', 'while (ok)', 'for (;;)', 'if (f(a))']) {
+      const src = `${head} /[//]/.test(v)\nnext()`
+      expect(stripComments(src)).toBe(src)
+    }
+    const src = 'const r = f(a) / b // c'
+    const out = stripComments(src)
+    expect(out).toBe('const r = f(a) / b     ')
+    expect(same(out, src)).toBe(true)
+  })
+
+  test('20 a postfix ++ or -- before a slash makes it division, so the comment after it is blanked', () => {
+    for (const op of ['++', '--']) {
+      const src = `const r = n${op} / total // if (!allowed) return\nlive()`
+      const out = stripComments(src)
+      expect(out).not.toContain('allowed')
+      expect(out).toContain(`n${op} / total`)
+      expect(same(out, src)).toBe(true)
+    }
+    // a single + (also + + with a space, and +++, which is ++ then +) is an operator, so the '/' after it starts a regex
+    for (const src of ['const r = a + /[//]/.source', 'const r = a + +/[//]/.source', 'const r = a+++/[//]/.source']) {
+      expect(stripComments(src)).toBe(src)
+    }
+  })
+
+  test('21 a non-null ! before a slash makes it division; a prefix ! before a slash starts a regex', () => {
+    const src = "const x = a! / b // c\nconst s = 'a/b // kept'"
+    const out = stripComments(src)
+    expect(out).toBe("const x = a! / b     \nconst s = 'a/b // kept'")
+    expect(same(out, src)).toBe(true)
+    const prefix = "if (!/'/.test(s)) f() // c"
+    expect(stripComments(prefix)).toBe("if (!/'/.test(s)) f()     ")
+  })
+
+  test('22 a property named like a keyword is a value, so the slash after it is division', () => {
+    for (const name of ['delete', 'return', 'in', 'typeof']) {
+      const src = `const x = obj.${name} / b // c\nconst s = 'a/b // kept'`
+      const out = stripComments(src)
+      expect(out).toBe(`const x = obj.${name} / b     \nconst s = 'a/b // kept'`)
+      expect(same(out, src)).toBe(true)
+    }
+  })
+
+  test('23 a literal at the very start of the input is a value, so the slash after it is division', () => {
+    for (const lit of ["'2'", '`2`', '/2/']) {
+      const src = `${lit} / a // c\nconst s = 'x/y // kept'`
+      const out = stripComments(src)
+      expect(out).toBe(`${lit} / a     \nconst s = 'x/y // kept'`)
+      expect(same(out, src)).toBe(true)
+    }
+  })
 })
