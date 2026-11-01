@@ -9,8 +9,9 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { channelEventMeta } from '../src/teams/adapter'
+import { stripComments } from './strip-comments'
 
-const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+const server = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8'))
 
 /** The block that starts at `anchor`, from its first '{' up to the matching closing brace. */
 function block(src: string, anchor: string): string {
