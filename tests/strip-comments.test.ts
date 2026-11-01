@@ -210,4 +210,17 @@ describe('stripComments', () => {
       expect(same(out, src)).toBe(true)
     }
   })
+
+  test('24 a // inside a JSDoc comment ends with the comment: the code after it on the same line is kept', () => {
+    const cases = [
+      ['/** @see a // b */ live()', '                   live()'],
+      ['/** @param x // y */ function f(x: number) { return x }', '                     function f(x: number) { return x }'],
+      ['class C {\n  /** @deprecated // old */ m() { return 1 }\n}', 'class C {\n                            m() { return 1 }\n}'],
+    ]
+    for (const [src, want] of cases) {
+      const out = stripComments(src)
+      expect(out).toBe(want)
+      expect(same(out, src)).toBe(true)
+    }
+  })
 })
