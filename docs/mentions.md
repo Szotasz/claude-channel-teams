@@ -18,6 +18,12 @@ A person must be a member of the conversation or team. This is checked with the 
 (`TeamsInfo.getMember`) just before sending. If someone is not a member, the reply fails, names them, and nothing is
 sent. A lookup that fails for another reason also fails the reply.
 
+The `name` only marks the place in the text: before sending, the plugin replaces `<at>name</at>` with the display name the member lookup returned, and the mention carries that name, so a person cannot be mentioned under another label. If Teams returns no usable display name, or two entries would show the same name, the reply fails and nothing is sent.
+
+## Cards
+
+A card may not carry its own mention entities (for example under `msteams.entities`); the card check refuses them, so every mention goes through `mentions`.
+
 ## Tags
 
 Tags must be listed in `TEAMS_MENTION_TAGS="Name=id,Name2=id2"`. One bad entry (no `=`, an invalid name, an id that is
