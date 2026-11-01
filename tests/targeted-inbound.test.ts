@@ -10,6 +10,7 @@ import { createConversationRefStore } from '../src/teams/conversationRefs'
 import {
   ConversationNotAllowedError,
   LATEST_PRIVATE_MESSAGE,
+  TARGETED_REPLIES_OFF,
   createReplySender,
   parseTargetedMessageId,
 } from '../src/teams/reply'
@@ -57,7 +58,9 @@ const untargeted = (o: Partial<Activity> = {}) =>
 const mentionActivity = (o: Partial<Activity> = {}) =>
   untargeted({ text: '<at>Bot</at> hi', entities: MENTION, ...o })
 
-function setup(opts: { targetedMessages?: boolean; status?: number; body?: string; pairing?: boolean } = {}) {
+function setup(
+  opts: { targetedMessages?: boolean; status?: number; body?: string; pairing?: boolean; unmentioned?: boolean } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'cct-targeted-inbound-'))
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
   allowlist.addEntry(ALLOWED)
@@ -71,6 +74,7 @@ function setup(opts: { targetedMessages?: boolean; status?: number; body?: strin
     stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'app-id', appPassword: 'pw',
     appType: 'SingleTenant', tenantId: TENANT_ID, bindHost: '127.0.0.1', port: 0,
     receivedFilesDir: '/tmp/unused', targetedMessages: opts.targetedMessages ?? true,
+    ...(opts.unmentioned ? { unmentionedConversations: new Set(['*']) } : {}),
   } as any
   let now = Date.now()
   const handler = makeTurnHandler({
@@ -162,9 +166,25 @@ describe('inbound targeted detection', () => {
 })
 
 describe('targeted reply', () => {
-  for (const [name, on] of [['B5', true], ['B12 (switch off)', false]] as const) {
+  test('B12 with TEAMS_TARGETED_MESSAGES off a reply with targeted_message_id is refused, nothing is sent', async () => {
+    const s = setup({ targetedMessages: false })
+    await s.run(makeActivity())
+    // The inbound side does not depend on the switch: the message is still private, and remembered.
+    expect(s.events[0].targeted).toBe(true)
+    expect(s.targetedInbound.get(CHAN, 'msg-1', s.getNow())).toBeDefined()
+    await expect(s.replier.sendReply(CHAN, 'answer', undefined, { targetedMessageId: 'msg-1' })).rejects.toThrow(
+      TARGETED_REPLIES_OFF,
+    )
+    expect(s.posts.length).toBe(0)
+    expect(s.publicSends.length).toBe(0)
+    // The guard still holds: no public post unless asked for.
+    await expect(s.replier.sendReply(CHAN, 'answer')).rejects.toThrow(LATEST_PRIVATE_MESSAGE)
+    expect(s.publicSends.length).toBe(0)
+  })
+
+  for (const name of ['B5'] as const) {
     test(`${name} reply with targeted_message_id sends one targeted POST`, async () => {
-      const s = setup({ targetedMessages: on })
+      const s = setup()
       await s.run(makeActivity())
       const id = await s.replier.sendReply(CHAN, 'answer', undefined, { targetedMessageId: 'msg-1' })
       expect(id).toBe('sent-1')
@@ -223,6 +243,31 @@ describe('targeted reply', () => {
     await s.run(mentionActivity({ id: 'msg-2' }))
     await s.replier.sendReply(CHAN, 'x')
     expect(s.publicSends.length).toBe(1)
+  })
+
+  test('B23 the private answer goes to the private message\'s sender, even after another member wrote', async () => {
+    const s = setup()
+    await s.run(makeActivity())
+    await s.run(mentionActivity({ id: 'msg-2', from: { id: '29:user-3', name: 'Z', aadObjectId: OTHER } as any }))
+    // Control: the conversation's latest writer is now the other member.
+    expect(s.refs.get(CHAN)?.ref.user?.id).toBe('29:user-3')
+    await s.replier.sendReply(CHAN, 'answer', undefined, { targetedMessageId: 'msg-1' })
+    expect(s.posts.length).toBe(1)
+    expect(JSON.parse(s.posts[0].body).recipient).toEqual({ id: '29:user-1', name: 'Adnan', aadObjectId: ALLOWED, isTargeted: true })
+  })
+
+  test('B24 unaddressed chatter in an opted-in conversation does not clear the private marker; an @mention does', async () => {
+    const s = setup({ unmentioned: true })
+    await s.run(makeActivity())
+    await s.run(untargeted({ id: 'msg-2', text: 'chatter', from: { id: '29:user-3', name: 'Z', aadObjectId: OTHER } as any }))
+    // Control: the chatter was delivered, unaddressed.
+    expect(s.events.length).toBe(2)
+    expect(s.events[1].mentioned).toBe(false)
+    expect(s.targetedInbound.latestIsTargeted(CHAN, s.getNow())).toBe(true)
+    await expect(s.replier.sendReply(CHAN, 'x')).rejects.toThrow(LATEST_PRIVATE_MESSAGE)
+    expect(s.publicSends.length).toBe(0)
+    await s.run(mentionActivity({ id: 'msg-3' }))
+    expect(s.targetedInbound.latestIsTargeted(CHAN, s.getNow())).toBe(false)
   })
 
   test('B9 sender removed from the allowlist after the inbound', async () => {
@@ -388,11 +433,14 @@ describe('targeted wiring', () => {
     expect(block('const sendFile = createFileSender({')).toContain('\n  targetedInbound,\n')
     expect(block('const listener = startListener({')).toContain('\n  targetedInbound,\n')
     const reply = server.slice(server.indexOf("case 'reply': {"), server.indexOf("case 'send_file': {"))
+    expect(reply).toContain('const isPublic = args.public === true')
     expect(reply).toContain('...(targetedMessageId !== undefined ? { targetedMessageId } : {}),')
     expect(reply).toContain('...(isPublic ? { public: true } : {}),')
     const sendFileCase = server.slice(server.indexOf("case 'send_file': {"))
     expect(sendFileCase.slice(0, sendFileCase.indexOf('return {'))).toContain('...(args.public === true ? { public: true } : {}),')
     const edit = server.slice(server.indexOf("case 'edit_message': {"), server.indexOf("case 'react': {"))
     expect(edit).toContain('await replier.editReply(conversationId, messageId, text, args.public === true)')
+    // With the switch off, Claude is not told to answer privately: that reply would be refused.
+    expect(server).toMatch(/config\.targetedMessages\s*\?\s*'A tag with targeted="true"[^']*targeted_message_id[^']*'\s*:\s*'A tag with targeted="true"[^']*cannot answer privately/)
   })
 })

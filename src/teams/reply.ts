@@ -32,6 +32,10 @@ import type { TargetedInbound } from './targetedInbound.js'
 
 export const REACTION_ID_RE = /^[a-z0-9_]{1,40}$/
 
+export const TARGETED_REPLIES_OFF =
+  'private replies are off on this bot (TEAMS_TARGETED_MESSAGES is not set): nothing was sent. ' +
+  'Use public: true only if the sender would be fine with everyone in the conversation seeing the answer.'
+
 export const LATEST_PRIVATE_MESSAGE =
   'the latest message in this conversation was private (targeted): answer it with targeted_message_id. ' +
   'Use public: true only for a message meant for everyone in the conversation.'
@@ -259,6 +263,9 @@ export function createReplySender(deps: ReplyDeps) {
     entity?: Record<string, unknown>,
     format: ReplyFormat = 'markdown',
   ): Promise<string | undefined> {
+    // The same switch as the other targeted sends: nobody has measured live that Teams honours the flag, and if it
+    // did not, the "private" answer would be posted to everyone. Off: refuse, nothing is sent.
+    if (deps.config.targetedMessages !== true) throw new Error(TARGETED_REPLIES_OFF)
     const entry = deps.targetedInbound?.get(conversationId, targetedMessageId, nowMs())
     if (!entry) throw new Error('unknown or expired targeted_message_id for this conversation')
     if (!deps.allowlist.isAllowed(entry.aadObjectId)) {

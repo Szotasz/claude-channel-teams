@@ -192,7 +192,9 @@ const mcp = new Server(
       'In a channel or group chat the tag also carries mentioned="true" or "false". mentioned="false" means the message was NOT addressed to you (the operator opted that conversation in so you can follow it): reply only when you are clearly expected to.',
       '',
       'A tag with message_event="edited", "restored" or "deleted" is about an earlier message (message_id); edited/restored carry its new text. message_event="reaction" is a user\'s emoji reaction to that message. Neither is a new request.',
-      'A tag with targeted="true" is a private message only you and the sender see (for example a slash command). Answer it with the reply tool and pass its message_id as targeted_message_id, so the answer is private too.',
+      config.targetedMessages
+        ? 'A tag with targeted="true" is a private message only you and the sender see (for example a slash command). Answer it with the reply tool and pass its message_id as targeted_message_id, so the answer is private too.'
+        : 'A tag with targeted="true" is a private message only you and the sender see (for example a slash command). This bot cannot answer privately (TEAMS_TARGETED_MESSAGES is off): reply publicly with public: true only when the sender would clearly be fine with everyone seeing the answer.',
       '',
       ...(config.meetingEvents
         ? [

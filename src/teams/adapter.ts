@@ -1235,7 +1235,9 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       deps.deliveredMessages?.remember(baseConversationId(conversationId), messageId, aadObjectId)
     }
     if (typeof messageId === 'string' && messageId.length > 0) deps.seenMessages?.remember(conversationId, messageId)
-    if (isGroupContext) deps.targetedInbound?.noteDelivered(conversationId, targeted, Date.now())
+    // Only an addressed message (an @mention or a targeted one) moves the private marker: unaddressed chatter in a
+    // conversation opted in with TEAMS_UNMENTIONED_CONVERSATIONS must not clear it.
+    if (isGroupContext && mentioned === true) deps.targetedInbound?.noteDelivered(conversationId, targeted, Date.now())
     // Team, channel, thread, reply and mention context only in a team channel or group chat.
     const cd: any = isGroupContext ? a.channelData : undefined
     const obj = (v: unknown): any => (v !== null && typeof v === 'object' ? v : undefined)
