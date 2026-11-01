@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -359,7 +360,7 @@ describe('reply with acknowledgement', () => {
 })
 
 describe('server wiring', () => {
-  const src = readFileSync(join(import.meta.dir, '../src/server.ts'), 'utf8')
+  const src = stripComments(readFileSync(join(import.meta.dir, '../src/server.ts'), 'utf8'))
   test('arm, cancel, stopAll, deps', () => {
     expect(src).toMatch(/if \(acks && !event\.messageEvent && !event\.meetingEvent && !event\.feedback && event\.mentioned !== false\) acks\.arm\(event\.conversationId\)/)
     const sf = src.slice(src.indexOf("case 'send_file'"))
