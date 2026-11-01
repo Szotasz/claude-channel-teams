@@ -368,6 +368,18 @@ describe('server wiring', () => {
     expect(sd.slice(0, 80)).toContain('acks?.stopAll()')
     expect(src).toMatch(/createReplySender\(\{[^}]*\backs\b[^}]*\}\)/)
   })
+  test('a delivered message action arms an acknowledgement, because Claude answers it as a normal message', async () => {
+    // Runs the arm line of server.ts itself, so the test follows the condition as it is written there.
+    const line = src.match(/^\s*(if \(acks && .*\) acks\.arm\(event\.conversationId\))$/m)
+    expect(line).not.toBeNull()
+    const armAfterNotify = new Function('acks', 'event', line![1]!) as (acks: unknown, event: object) => void
+    const s = setup(async () => 'Got it')
+    armAfterNotify(s.acks, { text: 'summarize this', conversationId: 'conv-c', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'A', messageId: 'msg-1', messageAction: 'summarize' })
+    expect(s.timers.length).toBe(1)
+    // Contrast: an edit event to another conversation arms none.
+    armAfterNotify(s.acks, { text: 'hello', conversationId: 'conv-d', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'A', messageEvent: 'edited' })
+    expect(s.timers.length).toBe(1)
+  })
   test('the acknowledgement is armed only after the notification to Claude succeeded', () => {
     const sink = src.slice(src.indexOf('const onEvent: ChannelEventSink'))
     const ok = sink.indexOf("process.stderr.write('teams channel: notify ok\\n')")
