@@ -1076,8 +1076,8 @@ const onEvent: ChannelEventSink = event => {
     })
     .then(() => {
       process.stderr.write('teams channel: notify ok\n')
-      // Only a message that reached Claude gets an acknowledgement; a meeting event or a feedback click is not one.
-      if (acks && !event.messageEvent && !event.meetingEvent && !event.feedback && event.mentioned !== false) acks.arm(event.conversationId)
+      // Only a message that reached Claude gets an acknowledgement; a meeting event, a feedback click, or a channel event is not one.
+      if (acks && !event.messageEvent && !event.meetingEvent && !event.feedback && !event.channelEvent && event.mentioned !== false) acks.arm(event.conversationId)
     })
     .catch(err => {
       // Notifications are fire-and-forget per the channels reference. We log
