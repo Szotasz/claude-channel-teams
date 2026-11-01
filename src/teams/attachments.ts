@@ -175,7 +175,7 @@ export function sanitiseFilename(name: string | undefined): string {
 }
 
 /**
- * Date stamp in the configured time zone (host time zone when unset) — YYYY-MM-DD.
+ * Date stamp in the configured time zone (host time zone when unset): YYYY-MM-DD.
  */
 export function localDate(now: Date, timeZone?: string): string {
   const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -189,7 +189,7 @@ export function localDate(now: Date, timeZone?: string): string {
 }
 
 /**
- * Time stamp in the configured time zone (host time zone when unset) — HHMM (24h).
+ * Time stamp in the configured time zone (host time zone when unset): HHMM (24h).
  */
 export function localTime(now: Date, timeZone?: string): string {
   const fmt = new Intl.DateTimeFormat('en-GB', {
