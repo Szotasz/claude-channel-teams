@@ -670,8 +670,10 @@ and the channel notification):
 
 The `get_thread_history` tool reads the root message and replies of a channel
 thread through Microsoft Graph (app-only token, `src/teams/threadHistory.ts`),
-so Claude can read the thread before answering. It needs the
-`ChannelMessage.Read.Group` application permission, granted per team by
+so Claude can read the thread before answering. It is off by default: set
+`TEAMS_THREAD_HISTORY=1` to offer it. Unset, the tool, its instruction line and
+the team id learning below are all absent, so the MCP surface is the old one.
+It needs the `ChannelMessage.Read.Group` application permission, granted per team by
 resource-specific consent: the manifest option `--rsc-all-messages` (PR #10) or
 a hand-made manifest. Without the grant Graph answers 403. The team's AAD group
 id is learned from inbound messages of allowlisted senders in the channel. The
