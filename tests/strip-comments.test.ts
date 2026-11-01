@@ -118,11 +118,13 @@ describe('stripComments', () => {
     expect(same(out, src)).toBe(true)
   })
 
-  test('14 an unterminated block comment is blanked to the end of input', () => {
-    const src = 'a /* b\nc'
-    const out = stripComments(src)
-    expect(out).toBe('a ' + '    ' + '\n' + ' ')
-    expect(same(out, src)).toBe(true)
+  test('14 a source that does not parse throws, so a check on it cannot pass', () => {
+    // The parser's error recovery can skip the tokens a comment sits in front of: in the first source the
+    // `/** guard() */` line would survive. An unterminated block comment does not parse either.
+    expect(() => stripComments('class E extends Error {\n  super(\n    `a ${b} c` +\n  /** guard() */\n}')).toThrow(
+      'does not parse',
+    )
+    expect(() => stripComments('a /* b\nc')).toThrow('does not parse')
   })
 
   test('15 the review case: a commented-out guard no longer reads as present', () => {
@@ -142,7 +144,7 @@ describe('stripComments', () => {
   })
 
   test('17 whitespace ends a word: a keyword after another word still starts a regex', () => {
-    const src = "} else return /'/.test(s) // c"
+    const src = "function f(s: string) { if (!s) return false; else return /'/.test(s) // c\n}"
     const out = stripComments(src)
     expect(out).toContain("/'/.test(s)")
     expect(out).not.toContain('// c')
