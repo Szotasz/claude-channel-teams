@@ -436,7 +436,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'Send a file to the user on Microsoft Teams. Sends an Adaptive Card ' +
         'with a download link that stays live for the token TTL (default ' +
-        '30 min). Pass either `path` (an absolute path on this host, under ' +
+        '30 min). In a channel or group chat with SharePoint configured, the ' +
+        'file is uploaded there instead and the card links it; that link does ' +
+        'not expire. Pass either `path` (an absolute path on this host, under ' +
         'the sendable-files root) OR `content` (base64) + `filename`. ' +
         '50 MB cap.',
       inputSchema: {

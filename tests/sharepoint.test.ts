@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import { resolveSharePoint } from '../src/config'
+import { loadConfig, resolveSharePoint } from '../src/config'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { createFileSender, isSharedConversationRef, sendFileResultText } from '../src/teams/sendFile'
@@ -137,6 +137,44 @@ describe('resolveSharePoint', () => {
     expect(resolveSharePoint({ TEAMS_SHAREPOINT_SITE_ID: id, TEAMS_SHAREPOINT_FOLDER: 'Bids/2026/' })).toEqual({
       siteId: id, folder: 'Bids/2026',
     })
+  })
+})
+
+describe('the env vars turn SharePoint on (#13 review)', () => {
+  test('loadConfig takes sharePoint from TEAMS_SHAREPOINT_SITE_ID and TEAMS_SHAREPOINT_FOLDER', () => {
+    // loadConfig reads process.env (after the state dir's .env), so set and restore it there.
+    const dir = mkdtempSync(join(tmpdir(), 'sp-cfg-'))
+    const id = 'contoso.sharepoint.com,11111111-2222-4333-8444-555555555555,66666666-7777-4888-9999-aaaaaaaaaaaa'
+    const vars: Record<string, string | undefined> = {
+      TEAMS_BOT_APP_ID: 'a', TEAMS_BOT_APP_PASSWORD: 'p', TEAMS_BOT_TENANT_ID: 't', TEAMS_STATE_DIR: dir,
+      TEAMS_SHAREPOINT_SITE_ID: undefined, TEAMS_SHAREPOINT_FOLDER: undefined,
+    }
+    const saved = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]))
+    const set = (k: string, v: string | undefined) => {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    try {
+      for (const [k, v] of Object.entries(vars)) set(k, v)
+      expect(loadConfig().sharePoint).toBeNull()
+      set('TEAMS_SHAREPOINT_SITE_ID', id)
+      set('TEAMS_SHAREPOINT_FOLDER', 'Bids')
+      expect(loadConfig().sharePoint).toEqual({ siteId: id, folder: 'Bids' })
+    } finally {
+      for (const [k, v] of Object.entries(saved)) set(k, v)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('server.ts builds the uploader from config.sharePoint and hands it to the file sender', () => {
+    const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+    const at = server.indexOf('const sendFile = createFileSender({')
+    expect(at).toBeGreaterThan(-1)
+    const block = server.slice(at, server.indexOf('\n})', at) + 1)
+    expect(block.replace(/\s+/g, ' ')).toContain(
+      'sharePoint: config.sharePoint ? createSharePointUploader({ tenantId: config.tenantId, appId: config.appId, ' +
+        'appPassword: config.appPassword, siteId: config.sharePoint.siteId, folder: config.sharePoint.folder, }) : undefined,',
+    )
   })
 })
 
