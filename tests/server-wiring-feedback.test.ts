@@ -6,8 +6,9 @@ import { join } from 'node:path'
 
 import { loadConfig } from '../src/config'
 import { channelEventMeta } from '../src/teams/adapter'
+import { stripComments } from './strip-comments'
 
-const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+const server = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8'))
 
 function block(src: string, anchor: string): string {
   const start = src.indexOf(anchor)
