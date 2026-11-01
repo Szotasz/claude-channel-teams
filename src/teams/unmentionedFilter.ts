@@ -23,14 +23,36 @@ export type UnmentionedFilter = (input: UnmentionedFilterInput) => Promise<Filte
 export const HELD_MAX_CONVERSATIONS = 200
 export const HELD_MAX_CHARS = 1000
 
+/** Variables the filter always gets, when set. Anything else only if the operator names it. */
+export const FILTER_BASE_ENV = ['PATH', 'HOME', 'LANG', 'TMPDIR'] as const
+
 /**
- * Runs `cmd` (an absolute path; no shell, no arguments) with the input as one JSON line on stdin.
+ * The filter's whole environment: FILTER_BASE_ENV plus `extra` (TEAMS_UNMENTIONED_FILTER_ENV), each
+ * taken from `source` when set. Never the plugin's own environment: `.env` puts the bot password and
+ * every other secret there, and a filter does not need them.
+ */
+export function filterEnv(source: NodeJS.ProcessEnv, extra: readonly string[] = []): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const name of [...FILTER_BASE_ENV, ...extra]) {
+    const value = source[name]
+    if (value !== undefined) env[name] = value
+  }
+  return env
+}
+
+/**
+ * Runs `cmd` (an absolute path; no shell, no arguments) with the input as one JSON line on stdin,
+ * and with `env` as its whole environment (default: filterEnv(process.env)).
  * Exit 0 = deliver, exit 1 = hold. Anything else -- another exit code, a signal, a spawn error,
  * or no exit within timeoutMs (the process is then killed with SIGKILL) -- = deliver, with the
  * reason. Fail-open on purpose: a broken filter gives today's behaviour, it never swallows a
  * message. Never rejects.
  */
-export function createCommandFilter(cmd: string, timeoutMs: number): UnmentionedFilter {
+export function createCommandFilter(
+  cmd: string,
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv = filterEnv(process.env),
+): UnmentionedFilter {
   return input =>
     new Promise<FilterDecision>(resolve => {
       let settled = false
@@ -43,7 +65,7 @@ export function createCommandFilter(cmd: string, timeoutMs: number): Unmentioned
       }
       let child: ChildProcess
       try {
-        child = spawn(cmd, [], { stdio: ['pipe', 'ignore', 'ignore'] })
+        child = spawn(cmd, [], { stdio: ['pipe', 'ignore', 'ignore'], env })
       } catch (err) {
         done({ verdict: 'deliver', reason: `spawn failed: ${err instanceof Error ? err.message : String(err)}` })
         return

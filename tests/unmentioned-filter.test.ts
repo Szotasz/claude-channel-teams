@@ -11,6 +11,7 @@ import { createConversationRefStore } from '../src/teams/conversationRefs'
 import {
   createCommandFilter,
   createHeldMessages,
+  filterEnv,
   withHeldContext,
   type FilterDecision,
   type UnmentionedFilter,
@@ -468,6 +469,60 @@ describe('unmentioned filter', () => {
     }
   })
 
+  test('the filter gets a minimal environment, never the bot password', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cct-ufilter-env-'))
+    const names = ['TEAMS_BOT_APP_PASSWORD', 'CCT_UFILTER_EXTRA']
+    const saved: Record<string, string | undefined> = {}
+    for (const k of names) saved[k] = process.env[k]
+    try {
+      process.env.TEAMS_BOT_APP_PASSWORD = 'not-for-the-filter'
+      process.env.CCT_UFILTER_EXTRA = 'named'
+      const out = join(dir, 'env.txt')
+      const cmd = join(dir, 'env.sh')
+      writeFileSync(cmd, `#!/bin/sh\n/usr/bin/env > ${JSON.stringify(out)}\nexit 0\n`, { mode: 0o755 })
+      const seen = () => new Map(readFileSync(out, 'utf8').split('\n').filter(Boolean).map(l => {
+        const i = l.indexOf('=')
+        return [l.slice(0, i), l.slice(i + 1)] as const
+      }))
+      const input: UnmentionedFilterInput = { text: 'hi', conversationId: 'c1' }
+
+      // The default, as server.ts gets it with TEAMS_UNMENTIONED_FILTER_ENV unset.
+      expect((await createCommandFilter(cmd, 5000)(input)).verdict).toBe('deliver')
+      let env = seen()
+      expect(env.has('TEAMS_BOT_APP_PASSWORD')).toBe(false)
+      expect(env.has('CCT_UFILTER_EXTRA')).toBe(false)
+      // Control: the base variables do arrive, so the file is the filter's real environment.
+      expect(env.get('PATH')).toBe(process.env.PATH)
+
+      // A name the operator lists arrives; the password still does not.
+      expect((await createCommandFilter(cmd, 5000, filterEnv(process.env, ['CCT_UFILTER_EXTRA']))(input)).verdict)
+        .toBe('deliver')
+      env = seen()
+      expect(env.get('CCT_UFILTER_EXTRA')).toBe('named')
+      expect(env.has('TEAMS_BOT_APP_PASSWORD')).toBe(false)
+    } finally {
+      for (const k of names) {
+        if (saved[k] === undefined) delete process.env[k]
+        else process.env[k] = saved[k]
+      }
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a filter that never reads its stdin cannot crash the plugin: the EPIPE guard sits before the write', () => {
+    // Under bun the 300 KB stdin case above stays green without the guard, so pin the source (#44 review).
+    const src = readFileSync(join(import.meta.dir, '..', 'src', 'teams', 'unmentionedFilter.ts'), 'utf8')
+    const guard = src.indexOf("child.stdin?.on('error', () => {})")
+    expect(guard).toBeGreaterThan(0)
+    expect(guard).toBeLessThan(src.indexOf('child.stdin?.end('))
+  })
+
+  test('filterEnv takes the base names and the named extras, and skips unset ones', () => {
+    const source = { PATH: '/p', HOME: '/h', LANG: 'C', TEAMS_BOT_APP_PASSWORD: 'x', A: 'a' }
+    expect(filterEnv(source)).toEqual({ PATH: '/p', HOME: '/h', LANG: 'C' })
+    expect(filterEnv(source, ['A', 'B'])).toEqual({ PATH: '/p', HOME: '/h', LANG: 'C', A: 'a' })
+  })
+
   test('loadConfig reads the unmentioned-filter variables from process.env', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cct-ufilter-cfg-'))
     const keys = [
@@ -476,6 +531,7 @@ describe('unmentioned filter', () => {
       'TEAMS_BOT_TENANT_ID',
       'TEAMS_STATE_DIR',
       'TEAMS_UNMENTIONED_FILTER_CMD',
+      'TEAMS_UNMENTIONED_FILTER_ENV',
       'TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS',
       'TEAMS_UNMENTIONED_HISTORY_LIMIT',
     ]
@@ -533,6 +589,11 @@ describe('unmentioned filter', () => {
       apply({ TEAMS_UNMENTIONED_HISTORY_LIMIT: '5' })
       cfg = loadConfig()
       expect(cfg.unmentionedHistoryLimit).toBe(5)
+
+      apply({})
+      expect('unmentionedFilterEnv' in loadConfig()).toBe(false)
+      apply({ TEAMS_UNMENTIONED_FILTER_ENV: ' MODEL_API_KEY, ,LC_ALL ' })
+      expect(loadConfig().unmentionedFilterEnv).toEqual(['MODEL_API_KEY', 'LC_ALL'])
     } finally {
       for (const k of keys) set(k, saved[k])
       rmSync(dir, { recursive: true, force: true })

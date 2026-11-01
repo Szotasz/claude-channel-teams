@@ -69,7 +69,7 @@ import { createInboundIds } from './teams/inboundIds.js'
 import { createInboundDebouncer } from './teams/inboundDebounce.js'
 import { withInvisibleStripped } from './teams/invisibleChars.js'
 import { createSharePointUploader } from './teams/sharepoint.js'
-import { createCommandFilter, createHeldMessages } from './teams/unmentionedFilter.js'
+import { createCommandFilter, createHeldMessages, filterEnv } from './teams/unmentionedFilter.js'
 import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
@@ -1012,7 +1012,11 @@ const deliveredMessages = createDeliveredMessages()
 const inboundIds = createInboundIds()
 
 const unmentionedFilter = config.unmentionedFilterCmd
-  ? createCommandFilter(config.unmentionedFilterCmd, config.unmentionedFilterTimeoutMs ?? 10000)
+  ? createCommandFilter(
+      config.unmentionedFilterCmd,
+      config.unmentionedFilterTimeoutMs ?? 10000,
+      filterEnv(process.env, config.unmentionedFilterEnv),
+    )
   : undefined
 const heldMessages = unmentionedFilter ? createHeldMessages(config.unmentionedHistoryLimit ?? 20) : undefined
 if (unmentionedFilter) {

@@ -132,6 +132,11 @@ export interface Config {
    * src/teams/unmentionedFilter.ts. From TEAMS_UNMENTIONED_FILTER_CMD. Unset = no filter.
    */
   unmentionedFilterCmd?: string
+  /**
+   * Extra variable names the filter gets on top of PATH, HOME, LANG and TMPDIR. From
+   * TEAMS_UNMENTIONED_FILTER_ENV (comma-separated). Unset = only those four.
+   */
+  unmentionedFilterEnv?: readonly string[]
   /** From TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS (default 10000). */
   unmentionedFilterTimeoutMs?: number
   /** Held messages kept per conversation. From TEAMS_UNMENTIONED_HISTORY_LIMIT (default 20). */
@@ -485,6 +490,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     )
     unmentionedFilterCmd = undefined
   }
+  const unmentionedFilterEnv = [...parseIdList(env.TEAMS_UNMENTIONED_FILTER_ENV)]
   // A longer timer delay overflows and fires at once, so cap at the max signed 32-bit int.
   const unmentionedFilterTimeoutMs = positiveInt(env, 'TEAMS_UNMENTIONED_FILTER_TIMEOUT_MS', 10000, 2147483647)
   const unmentionedHistoryLimit = positiveInt(env, 'TEAMS_UNMENTIONED_HISTORY_LIMIT', 20)
@@ -518,6 +524,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return Object.freeze({
     unmentionedConversations: parseIdList(env.TEAMS_UNMENTIONED_CONVERSATIONS),
     ...(unmentionedFilterCmd !== undefined ? { unmentionedFilterCmd } : {}),
+    ...(unmentionedFilterEnv.length > 0 ? { unmentionedFilterEnv } : {}),
     unmentionedFilterTimeoutMs,
     unmentionedHistoryLimit,
     stateDir,
