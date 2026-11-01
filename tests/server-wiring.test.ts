@@ -7,11 +7,12 @@
  * goes to a 1:1 chat).
  */
 import { describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const read = (...p: string[]) => readFileSync(join(import.meta.dir, '..', 'src', ...p), 'utf8')
-const server = read('server.ts')
+const server = stripComments(read('server.ts'))
 
 /** The block that starts at `anchor`, from its first '{' up to the matching closing brace. */
 function block(src: string, anchor: string): string {
