@@ -55,4 +55,5 @@ and Claude is not told about message actions in its instructions. So turning the
 
 Teams requires an answer to the invoke within five seconds. The bot answers every `composeExtension/*` invoke at once
 with `{ type: 'invokeResponse', value: { status: 200 } }` and no body ("No response"), whether or not the event was
-delivered. Claude's reply arrives later as a normal message.
+delivered. Claude's reply arrives later as a normal message. Because the action asks for that reply, a delivered
+action arms the acknowledgement like a message does (`TEAMS_ACK_TEXT`, see [ack-placeholder.md](ack-placeholder.md)).
