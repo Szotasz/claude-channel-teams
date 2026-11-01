@@ -5,11 +5,12 @@
  * statement a one-line mutation would change. Follow-up to the #27 review.
  */
 import { describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { channelEventMeta } from '../src/teams/adapter'
 
-const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
+const server = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8'))
 
 /** The block that starts at `anchor`, from its first '{' or '[' up to the matching closing bracket. */
 function block(src: string, anchor: string): string {
