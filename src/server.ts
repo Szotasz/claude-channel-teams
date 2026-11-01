@@ -1040,8 +1040,9 @@ const listener = startListener({
   inboundIds,
   meetingEvents: config.meetingEvents,
   ...(transcriptsOn ? { meetingStore } : {}),
-  // Only the thread history tool needs the team ids: off, no team details lookup runs on inbound messages.
-  ...(config.threadHistory ? { teamGroups } : {}),
+  // The thread history and the activity feed tools need the team ids: with both off, no team details lookup
+  // runs on inbound messages.
+  ...(config.threadHistory || config.activityFeed ? { teamGroups } : {}),
   sendPairingDm: async (ref, text) => {
     await sendActivityRaw(ref, text)
   },
