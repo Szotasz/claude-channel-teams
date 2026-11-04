@@ -134,6 +134,7 @@ describe('processAttachments — SharePoint file download', () => {
       fetchImpl,
       getBearerToken: async () => 'never-called',
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
 
     expect(results.length).toBe(1)
@@ -170,6 +171,7 @@ describe('processAttachments — SharePoint file download', () => {
       fetchImpl: wrappedFetch,
       getBearerToken: async () => '',
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
     expect(fetched).toBe(false)
     expect(results[0]!.kind).toBe('skipped')
@@ -191,6 +193,7 @@ describe('processAttachments — SharePoint file download', () => {
       fetchImpl,
       getBearerToken: async () => '',
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
     expect(results[0]!.kind).toBe('failed')
     expect(annotations[0]).toContain('[Attachment failed: flaky.pdf')
@@ -212,6 +215,7 @@ describe('processAttachments — SharePoint file download', () => {
       fetchImpl,
       getBearerToken: async () => '',
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     }
     const r1 = await processAttachments([att()], 'Adnan Khan', opts)
     const r2 = await processAttachments([att()], 'Adnan Khan', opts)
@@ -244,6 +248,7 @@ describe('processAttachments — inline image with bearer token', () => {
       fetchImpl,
       getBearerToken: async () => 'TEST-BEARER-TOKEN',
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
 
     expect(observedAuth).toBe('Bearer TEST-BEARER-TOKEN')
@@ -266,6 +271,7 @@ describe('processAttachments — inline image with bearer token', () => {
       fetchImpl,
       getBearerToken: async () => { throw new Error('token endpoint down') },
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
     expect(results[0]!.kind).toBe('failed')
     expect(annotations[0]).toContain('bearer token unavailable')
@@ -303,6 +309,7 @@ describe('processAttachments — bearer-token host gate', () => {
         return 'SECRET-BOT-TOKEN'
       },
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
 
     expect(results[0]!.kind).toBe('failed')
@@ -325,6 +332,7 @@ describe('processAttachments — bearer-token host gate', () => {
       fetchImpl,
       getBearerToken: async () => 'TOKEN',
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
     expect(results[0]!.kind).toBe('failed')
   })
@@ -342,6 +350,7 @@ describe('processAttachments — bearer-token host gate', () => {
       fetchImpl,
       getBearerToken: async () => 'TOKEN',
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
     expect(results[0]!.kind).toBe('failed')
   })
@@ -360,6 +369,7 @@ describe('processAttachments — bearer-token host gate', () => {
       fetchImpl,
       getBearerToken: async () => 'TOKEN',
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
     expect(results[0]!.kind).toBe('saved')
   })
@@ -380,6 +390,7 @@ describe('processAttachments — unsupported types and edge cases', () => {
       fetchImpl: (() => new Response('', { status: 404 })) as unknown as typeof fetch,
       getBearerToken: async () => '',
       now: () => FIXED_NOW,
+      timeZone: 'Europe/London',
     })
     expect(results[0]!.kind).toBe('skipped')
     expect(annotations[0]).toContain('unsupported attachment type')
