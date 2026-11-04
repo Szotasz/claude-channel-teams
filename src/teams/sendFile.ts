@@ -17,6 +17,7 @@ import { type CloudAdapter, type ConversationReference } from 'botbuilder'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { Outbox } from './outbox.js'
+import { withSendRetry } from './sendRetry.js'
 import { buildDownloadCardActivity } from './files.js'
 
 /** Max file size — matches the inbound cap. */
@@ -55,14 +56,29 @@ export class ConversationNotAllowedError extends Error {
   }
 }
 
+export class FilesBaseUrlMissingError extends Error {
+  constructor() {
+    super(
+      'send_file: no public download URL is configured for this install. ' +
+        'Set TEAMS_BOT_ENDPOINT_URL (the https tunnel endpoint registered in Azure) ' +
+        'or TEAMS_FILES_BASE_URL in the plugin .env, then restart the session.',
+    )
+    this.name = 'FilesBaseUrlMissingError'
+  }
+}
+
 export interface FileSenderDeps {
   config: { appId: string }
   adapter: CloudAdapter
   allowlist: Allowlist
   refs: ConversationRefStore
   outbox: Outbox
-  /** e.g. `"https://hermes.vcshosted.uk/files"`. The token gets appended. */
-  downloadBaseUrl: string
+  /**
+   * e.g. `"https://<host>.<tailnet>.ts.net/files"` (see `Config.filesBaseUrl`).
+   * The token gets appended. `null` = not configured: every send is refused
+   * before a token is minted.
+   */
+  downloadBaseUrl: string | null
 }
 
 export interface SendFileInput {
@@ -113,6 +129,7 @@ export function createFileSender(deps: FileSenderDeps) {
   }
 
   async function sendFile(input: SendFileInput): Promise<SendFileResult> {
+    if (!deps.downloadBaseUrl) throw new FilesBaseUrlMissingError()
     if (!input.path && !input.content) {
       throw new Error('send_file: either `path` or `content` is required')
     }
@@ -164,7 +181,7 @@ export function createFileSender(deps: FileSenderDeps) {
       deps.config.appId,
       ref,
       async turnContext => {
-        await turnContext.sendActivity(activity as any)
+        await withSendRetry('send_file', () => turnContext.sendActivity(activity as any))
       },
     )
 
