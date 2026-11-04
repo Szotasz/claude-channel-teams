@@ -12,7 +12,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test'
-import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, dirname } from 'path'
 import type { Attachment } from 'botframework-schema'
@@ -932,6 +932,106 @@ describe('sharedFiles: fetchSharedFiles', () => {
     const u = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(unnamed.fn, dir))
     expect(u.results.length).toBe(1)
     expect(u.results[0].originalName).toBe('report.xlsx')
+  })
+
+  test('X18 the drive-owner cache is filled and then used (chat lookups)', async () => {
+    const cache = new Map<string, string>()
+
+    // first lookup: the owner is read from Graph and lands in the cache
+    const f1 = fakeFetch(standardRoutes())
+    const first = await fetchSharedFiles(chatLookup(), SENDER, deps(f1.fn, dir, { driveOwnerCache: cache }))
+    expect(first.results.length).toBe(1)
+    expect(first.results[0].kind).toBe('saved')
+    expect(f1.calls.filter(c => c.url === driveUrl())).toHaveLength(1)
+    expect(cache.get(DRIVE)).toBe(SENDER_AAD)
+
+    // second lookup, same cache: the owner comes from memory, so the message,
+    // the drive item and the bytes are all that is fetched
+    const f2 = fakeFetch(standardRoutes())
+    const second = await fetchSharedFiles(chatLookup(), SENDER, deps(f2.fn, dir, { driveOwnerCache: cache }))
+    expect(second.results.length).toBe(1)
+    expect(second.results[0].kind).toBe('saved')
+    expect(f2.calls.some(c => c.url === driveUrl())).toBe(false)
+    expect(f2.calls.map(c => c.url)).toEqual([
+      `${GRAPH_V1}/chats/${encodeURIComponent(CHAT)}/messages/MSG`,
+      metaUrl(),
+      contentUrl(),
+      DOWNLOAD_URL,
+    ])
+
+    // a cache that already knows another owner skips without a single request
+    const f3 = fakeFetch(standardRoutes())
+    const other = new Map<string, string>([[DRIVE, '00000000-0000-4000-8000-0000000000cc']])
+    const third = await fetchSharedFiles(chatLookup(), SENDER, deps(f3.fn, dir, { driveOwnerCache: other }))
+    expect(third.results.length).toBe(1)
+    expect(third.results[0].kind).toBe('skipped')
+    expect(third.annotations).toEqual([
+      `[Attachment skipped: report.xlsx — the file is not in the sender's OneDrive, so it is not downloaded]`,
+    ])
+    expect(f3.calls.some(c => c.url === driveUrl())).toBe(false)
+    expect(f3.calls.some(c => c.url === contentUrl())).toBe(false)
+  })
+
+  test('X19 only a 200 content answer is saved; another 2xx is not', async () => {
+    // every file anywhere under the base directory, dated subdirectories included
+    const filesUnder = (p: string): string[] => {
+      const out: string[] = []
+      for (const ent of readdirSync(p, { withFileTypes: true })) {
+        const child = join(p, ent.name)
+        if (ent.isDirectory()) out.push(...filesUnder(child))
+        else out.push(child)
+      }
+      return out
+    }
+    for (const status of [201, 204, 206]) {
+      const f = fakeFetch(
+        standardRoutes({
+          content: () => new Response(status === 204 ? null : BODY, { status }),
+        }),
+      )
+      const before = attachTemps()
+      const { annotations, results } = await fetchSharedFiles(
+        channelLookup({ aadGroupId: GID }),
+        SENDER,
+        deps(f.fn, dir),
+      )
+      expect(results.length).toBe(1)
+      expect(results[0].kind).toBe('failed')
+      // the first hop, so the Graph status mapping leaves just the status
+      expect(annotations).toEqual([`[Attachment failed: report.xlsx — HTTP ${status}]`])
+      expect(f.calls.some(c => c.url === contentUrl())).toBe(true)
+      // no dated directory contents either — nothing was written at all
+      expect(filesUnder(dir)).toEqual([])
+      expect(attachTemps().filter(n => !before.includes(n))).toEqual([])
+    }
+  })
+
+  test('X20 a failure after the download removes the temp file', async () => {
+    // a regular file where the dated directory would have to go, so the file
+    // has already been downloaded when the move fails
+    const blocker = join(dir, 'not-a-dir')
+    writeFileSync(blocker, 'not a directory')
+    let mkdirError = ''
+    try {
+      mkdirSync(join(blocker, londonDate(NOW)), { recursive: true, mode: 0o700 })
+    } catch (err) {
+      mkdirError = err instanceof Error ? err.message : String(err)
+    }
+    expect(mkdirError).not.toBe('')
+
+    const f = fakeFetch(standardRoutes())
+    const before = attachTemps()
+    const { annotations, results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(f.fn, join(dir, 'not-a-dir')),
+    )
+    expect(results.length).toBe(1)
+    expect(results[0].kind).toBe('failed')
+    expect(annotations).toEqual([`[Attachment failed: report.xlsx — ${mkdirError}]`])
+    // the bytes were fetched, so a temp file did exist and had to be removed
+    expect(f.calls.some(c => c.url === DOWNLOAD_URL)).toBe(true)
+    expect(attachTemps().filter(n => !before.includes(n))).toEqual([])
   })
 })
 
