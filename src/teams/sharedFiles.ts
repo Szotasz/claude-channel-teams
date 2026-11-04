@@ -32,7 +32,8 @@
  *   - Ownership: Files.Read.All reads the WHOLE tenant, so without a check a
  *     sender could make the bot fetch any tenant file by pasting a link. A file
  *     is only downloaded when the conversation already shares it — in a channel
- *     its drive must be the channel's own files folder, in a group chat the
+ *     the file must sit inside the channel's files folder (the one behind the
+ *     Files tab, at any depth up to MAX_FOLDER_DEPTH levels), in a group chat the
  *     drive's owner must be the sender. Everything else gets a skip line.
  *   - The download is followed manually: a hop target must be a
  *     *.sharepoint.com https link without userinfo, there are at most three
@@ -65,6 +66,12 @@ export const GRAPH_V1 = 'https://graph.microsoft.com/v1.0'
 
 /** At most this many files are pulled out of one message. */
 export const MAX_SHARED_FILES = 10
+
+/**
+ * How many parent folders are walked up from a file to find the channel's files
+ * folder: at most this many ancestry requests per file.
+ */
+export const MAX_FOLDER_DEPTH = 8
 
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 // The id is only ever COMPARED against the Graph message's own attachment ids
@@ -175,8 +182,8 @@ export interface SharedFilesDeps {
   timeoutMs?: number
   /** teamThreadId -> Azure AD group id, so the Bot Framework lookup happens once per team. */
   teamGroupIdCache?: Map<string, string>
-  /** `${aadGroupId}/${channelId}` -> the drive id of the channel's files folder. */
-  channelDriveCache?: Map<string, string>
+  /** `${aadGroupId}/${channelId}` -> the drive id and item id of the channel's files folder. */
+  channelDriveCache?: Map<string, { driveId: string; folderId: string }>
   /** drive id -> the AAD object id of the OneDrive that owns the drive. */
   driveOwnerCache?: Map<string, string>
 }
@@ -247,7 +254,7 @@ type DownloadOutcome =
 
 /** What the Graph drive item gave us: where the file lives, or why it did not. */
 type DriveItem =
-  | { id: string; driveId: string; size?: number }
+  | { id: string; driveId: string; parentId?: string; size?: number }
   | { error: { kind: 'skipped' | 'failed'; reason: string } }
 
 async function run(
@@ -365,12 +372,13 @@ async function run(
     // say which one instead of leaving the operator to guess.
     const consent =
       lookup.kind === 'channel' ? 'ChannelMessage.Read.Group' : 'ChatMessage.Read.Chat'
-    const suffix =
-      msg.status === 401 || msg.status === 403
-        ? `; the Teams app needs the ${consent} consent for this ${lookup.kind === 'channel' ? 'team' : 'chat'}`
-        : ''
+    const denied = msg.status === 401 || msg.status === 403
+    const suffix = denied
+      ? `; the Teams app needs the ${consent} consent for this ${lookup.kind === 'channel' ? 'team' : 'chat'}`
+      : ''
     record({
-      kind: 'failed',
+      // A missing permission is an explicit skip, anything else a failure.
+      kind: denied ? 'skipped' : 'failed',
       originalName: countName,
       reason: `could not read the message from Microsoft Graph (HTTP ${msg.status})${suffix}`,
     })
@@ -392,15 +400,16 @@ async function run(
   if (refs.length === 0) {
     if (n > 0) {
       process.stderr.write(
-        `teams channel: shared file lookup found no file reference for ${n} placeholder(s) in message ${lookup.messageId}\n`,
+        `teams channel: shared file lookup found no file reference for ${n} placeholder(s) in message ${shown(lookup.messageId)}\n`,
       )
     }
     return { annotations: [], results: [] }
   }
 
-  // The channel's files-folder drive, read once per message (and once per
-  // process through the cache): every file a channel shares lives there.
-  let channelDriveId =
+  // The channel's files folder (its drive and its item id), read once per
+  // message (and once per process through the cache): every file a channel
+  // shares lives inside it.
+  let channelFolder =
     lookup.kind === 'channel' ? deps.channelDriveCache?.get(`${gid}/${lookup.channelId}`) : undefined
 
   // Step C5 — the bytes. Graph answers the content request with a redirect to a
@@ -447,8 +456,45 @@ async function run(
     }
   }
 
+  // Is the file inside the channel's files folder? Walks up from the file's
+  // parent folder, one ancestry request per level (so at most MAX_FOLDER_DEPTH
+  // per file, nothing cached), and stops as soon as it meets the folder, runs
+  // out of parents, leaves the file's drive, or gets deeper than the limit.
+  const insideFolder = async (
+    driveId: string,
+    parentId: string | undefined,
+    folderId: string,
+  ): Promise<{ inside: boolean } | { error: { kind: 'skipped' | 'failed'; reason: string } }> => {
+    let cur = parentId
+    for (let depth = 0; ; depth++) {
+      if (cur === undefined) return { inside: false }
+      if (cur === folderId) return { inside: true }
+      if (depth >= MAX_FOLDER_DEPTH) return { inside: false }
+      const step = await call(
+        `${GRAPH_V1}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(cur)}?$select=id,parentReference`,
+        { headers: await graphHeaders(), redirect: 'error' },
+        async (res): Promise<{ next: string | undefined } | { error: { kind: 'skipped' | 'failed'; reason: string } }> => {
+          if (!res.ok) return { error: graphFileError(res.status) }
+          const body = await readJson(res)
+          const parent = isObject(body) && isObject(body.parentReference) ? body.parentReference : undefined
+          // A parent on another drive is not a step up inside this one.
+          const next =
+            parent !== undefined &&
+            parent.driveId === driveId &&
+            typeof parent.id === 'string' &&
+            parent.id !== ''
+              ? parent.id
+              : undefined
+          return { next }
+        },
+      )
+      if ('error' in step) return step
+      cur = step.next
+    }
+  }
+
   // Step C — one reference at a time, in the order the message lists them.
-  for (const ref of refs) {
+  for (const [index, ref] of refs.entries()) {
     const name =
       typeof ref.name === 'string' && ref.name.trim() !== '' ? ref.name : nameFromUrl(ref.contentUrl)
     const label = shown(name)
@@ -472,6 +518,7 @@ async function run(
           const id = typeof b?.id === 'string' && b.id !== '' ? b.id : undefined
           const driveId =
             typeof parent?.driveId === 'string' && parent.driveId !== '' ? parent.driveId : undefined
+          const parentId = typeof parent?.id === 'string' && parent.id !== '' ? parent.id : undefined
           if (id === undefined || driveId === undefined) {
             return {
               error: {
@@ -481,7 +528,7 @@ async function run(
             }
           }
           const size = typeof b?.size === 'number' && Number.isFinite(b.size) ? b.size : undefined
-          return { id, driveId, size }
+          return { id, driveId, parentId, size }
         },
       )
       if ('error' in meta) {
@@ -491,13 +538,13 @@ async function run(
 
       // C3 — ownership. Files.Read.All would let a sender pull any tenant file
       // through the bot, so a file is only taken when the conversation already
-      // shares it: the channel's own files folder in a channel, the sender's
-      // OneDrive in a group chat.
+      // shares it: inside the channel's files folder (at any depth up to
+      // MAX_FOLDER_DEPTH) in a channel, the sender's OneDrive in a group chat.
       if (lookup.kind === 'channel') {
-        if (channelDriveId === undefined) {
+        if (channelFolder === undefined) {
           const folder = await call(
             `${GRAPH_V1}/teams/${encodeURIComponent(gid!)}` +
-              `/channels/${encodeURIComponent(lookup.channelId)}/filesFolder?$select=parentReference`,
+              `/channels/${encodeURIComponent(lookup.channelId)}/filesFolder?$select=id,parentReference`,
             { headers: await graphHeaders(), redirect: 'error' },
             async res => {
               const body = await readJson(res)
@@ -505,30 +552,49 @@ async function run(
                 isObject(body) && isObject(body.parentReference) ? body.parentReference : undefined
               const driveId =
                 typeof parent?.driveId === 'string' && parent.driveId !== '' ? parent.driveId : undefined
-              return { ok: res.ok, status: res.status, driveId }
+              const folderId =
+                isObject(body) && typeof body.id === 'string' && body.id !== '' ? body.id : undefined
+              return { ok: res.ok, status: res.status, driveId, folderId }
             },
           )
-          if (!folder.ok || folder.driveId === undefined) {
+          if (!folder.ok || folder.driveId === undefined || folder.folderId === undefined) {
             // One line for the whole message, and nothing else is fetched: the
-            // channel's folder is the same for every reference in it.
+            // channel's folder is the same for every reference in it, so the
+            // line names every file that is left (this one included).
+            const remaining = refs.length - index
+            const denied = !folder.ok && (folder.status === 401 || folder.status === 403)
             record({
-              kind: 'failed',
-              originalName: label,
+              kind: denied ? 'skipped' : 'failed',
+              originalName: remaining === 1 ? label : shown(`${remaining} shared file(s)`),
               reason: folder.ok
-                ? "could not read the channel's files folder (no drive id)"
-                : `could not read the channel's files folder (HTTP ${folder.status})`,
+                ? "could not read the channel's files folder (no drive id or folder id)"
+                : denied
+                  ? `the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP ${folder.status})`
+                  : `could not read the channel's files folder (HTTP ${folder.status})`,
             })
             return done()
           }
-          channelDriveId = folder.driveId
-          deps.channelDriveCache?.set(`${gid}/${lookup.channelId}`, channelDriveId)
+          channelFolder = { driveId: folder.driveId, folderId: folder.folderId }
+          deps.channelDriveCache?.set(`${gid}/${lookup.channelId}`, channelFolder)
         }
-        if (meta.driveId !== channelDriveId) {
-          record({
-            kind: 'skipped',
-            originalName: label,
-            reason: "the file is not stored in this channel's files, so it is not downloaded",
-          })
+        const notInside = {
+          kind: 'skipped' as const,
+          originalName: label,
+          reason: "the file is not stored in this channel's files folder, so it is not downloaded",
+        }
+        // First the drive, which costs nothing; then the walk up the parent
+        // folders to the channel's files folder, one request per level.
+        if (meta.driveId !== channelFolder.driveId) {
+          record(notInside)
+          continue
+        }
+        const inside = await insideFolder(meta.driveId, meta.parentId, channelFolder.folderId)
+        if ('error' in inside) {
+          record({ kind: inside.error.kind, originalName: label, reason: inside.error.reason })
+          continue
+        }
+        if (!inside.inside) {
+          record(notInside)
           continue
         }
       } else {
@@ -554,13 +620,24 @@ async function run(
               return { ok: res.ok, status: res.status, id }
             },
           )
-          if (!drive.ok || drive.id === undefined) {
+          if (!drive.ok) {
+            const denied = drive.status === 401 || drive.status === 403
             record({
-              kind: 'failed',
+              kind: denied ? 'skipped' : 'failed',
               originalName: label,
-              reason: drive.ok
-                ? "could not read the file's drive owner (no owner)"
+              reason: denied
+                ? `the Teams app has no Microsoft Graph permission to read the file's drive owner (HTTP ${drive.status})`
                 : `could not read the file's drive owner (HTTP ${drive.status})`,
+            })
+            continue
+          }
+          if (drive.id === undefined) {
+            // A drive with no user owner (a team library is owned by a group) is
+            // not the sender's OneDrive. Nothing is cached for it.
+            record({
+              kind: 'skipped',
+              originalName: label,
+              reason: "the file is not in the sender's OneDrive, so it is not downloaded",
             })
             continue
           }
