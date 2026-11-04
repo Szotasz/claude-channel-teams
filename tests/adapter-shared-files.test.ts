@@ -27,6 +27,8 @@ const TENANT_ID = '00000000-0000-4000-8000-000000000002'
 const TEAM = '19:team0001@thread.tacv2'
 const CHAN = '19:chan0001@thread.tacv2'
 const CHAT = '19:chat0001@thread.v2'
+const SKYPE_CHAN = '19:skype0001@thread.skype'
+const OTHER_CHAT = '19:chat0002@thread.v2'
 const SERVICE = 'https://smba.trafficmanager.net/emea/00000000-0000-4000-8000-000000000002/'
 const ANNOTATION = '[Attached: /x/report.xlsx (application/xlsx, 10 B)]'
 
@@ -67,7 +69,10 @@ describe('adapter: shared files in channels and group chats', () => {
 
   /** A turn handler with an allowlisted sender, shared conversations opted in for
    *  unmentioned delivery, and a recording sharedFiles fake. */
-  function setup(sharedFiles: (lookup: SharedFileLookup, fromName: string) => Promise<{ annotations: string[] }>) {
+  function setup(
+    sharedFiles: (lookup: SharedFileLookup, fromName: string) => Promise<{ annotations: string[] }>,
+    unmentioned: Set<string> = new Set([CHAN, CHAT, SKYPE_CHAN, OTHER_CHAT]),
+  ) {
     const allowlist = createAllowlist(allowlistFile)
     allowlist.addEntry(FIXTURE_ID)
     const events: any[] = []
@@ -84,7 +89,7 @@ describe('adapter: shared files in channels and group chats', () => {
         bindHost: '127.0.0.1',
         port: 0,
         receivedFilesDir: '/tmp/unused',
-        unmentionedConversations: new Set([CHAN, CHAT]),
+        unmentionedConversations: unmentioned,
       } as any,
       adapter: {} as any,
       allowlist,
@@ -146,13 +151,19 @@ describe('adapter: shared files in channels and group chats', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('A4 a group chat calls sharedFiles with the chat lookup', async () => {
+  test('A4 a group chat calls sharedFiles with the chat lookup and the sender id', async () => {
     const s = setup(async () => ({ annotations: [ANNOTATION] }))
     await s.run(makeActivity({
       conversation: { id: CHAT, tenantId: TENANT_ID, conversationType: 'groupChat', isGroup: true } as any,
     }))
     expect(s.lookups.length).toBe(1)
-    expect(s.lookups[0]).toEqual({ kind: 'chat', chatId: CHAT, messageId: 'MSG', refIds: ['ref-1'] })
+    expect(s.lookups[0]).toEqual({
+      kind: 'chat',
+      chatId: CHAT,
+      messageId: 'MSG',
+      senderAadObjectId: FIXTURE_ID,
+      refIds: ['ref-1'],
+    })
     expect(s.events[0].text).toBe(`see this\n\n${ANNOTATION}`)
     rmSync(dir, { recursive: true, force: true })
   })
@@ -167,11 +178,13 @@ describe('adapter: shared files in channels and group chats', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('A6 an activity without an id does not call sharedFiles', async () => {
-    const s = setup(async () => ({ annotations: [ANNOTATION] }))
-    await s.run(makeActivity({ id: undefined }))
-    expect(s.lookups.length).toBe(0)
-    expect(s.events.length).toBe(1)
+  test('A6 an activity without an id, or with an empty one, does not call sharedFiles', async () => {
+    for (const id of [undefined, '']) {
+      const s = setup(async () => ({ annotations: [ANNOTATION] }))
+      await s.run(makeActivity({ id }))
+      expect(s.lookups.length).toBe(0)
+      expect(s.events.length).toBe(1)
+    }
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -179,6 +192,65 @@ describe('adapter: shared files in channels and group chats', () => {
     const s = setup(async () => ({ annotations: [ANNOTATION] }))
     await s.run(makeActivity({ channelData: {} as any }))
     expect(s.lookups.length).toBe(0)
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].text).toBe('see this')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('X17 a channel typed conversation with a @thread.skype id still gets the channel lookup', async () => {
+    const s = setup(async () => ({ annotations: [ANNOTATION] }))
+    await s.run(makeActivity({
+      conversation: { id: `${SKYPE_CHAN};messageid=ROOT`, tenantId: TENANT_ID, conversationType: 'channel' } as any,
+    }))
+    expect(s.lookups.length).toBe(1)
+    expect(s.lookups[0]).toEqual({
+      kind: 'channel',
+      teamThreadId: TEAM,
+      channelId: CHAN,
+      messageId: 'MSG',
+      threadRootId: 'ROOT',
+      serviceUrl: SERVICE,
+      aadGroupId: undefined,
+      refIds: ['ref-1'],
+    })
+    expect(s.events[0].text).toBe(`see this\n\n${ANNOTATION}`)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('X17b a chat is recognised from conversationType alone and from isGroup alone', async () => {
+    const byType = setup(async () => ({ annotations: [] }))
+    await byType.run(makeActivity({
+      conversation: { id: CHAT, tenantId: TENANT_ID, conversationType: 'groupChat' } as any,
+    }))
+    expect(byType.lookups.length).toBe(1)
+    expect(byType.lookups[0]).toEqual({
+      kind: 'chat',
+      chatId: CHAT,
+      messageId: 'MSG',
+      senderAadObjectId: FIXTURE_ID,
+      refIds: ['ref-1'],
+    })
+
+    const byFlag = setup(async () => ({ annotations: [] }))
+    await byFlag.run(makeActivity({
+      conversation: { id: OTHER_CHAT, tenantId: TENANT_ID, isGroup: true } as any,
+      channelData: {} as any,
+    }))
+    expect(byFlag.lookups.length).toBe(1)
+    expect(byFlag.lookups[0]).toEqual({
+      kind: 'chat',
+      chatId: OTHER_CHAT,
+      messageId: 'MSG',
+      senderAadObjectId: FIXTURE_ID,
+      refIds: ['ref-1'],
+    })
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('X17c a sharedFiles answer with no annotations leaves the text untouched', async () => {
+    const s = setup(async () => ({ annotations: [] }))
+    await s.run(makeActivity())
+    expect(s.lookups.length).toBe(1)
     expect(s.events.length).toBe(1)
     expect(s.events[0].text).toBe('see this')
     rmSync(dir, { recursive: true, force: true })
