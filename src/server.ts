@@ -1086,6 +1086,14 @@ const inboundDebouncer = createInboundDebouncer({ windowMs: config.inboundDeboun
 // Bot Framework lookup to one call per team for the life of the process.
 const teamGroupIds = new Map<string, string>()
 
+// `${aadGroupId}/${channelId}` -> the drive id of that channel's files folder, and
+// drive id -> the AAD object id of the OneDrive that owns it. Both feed the
+// shared-file ownership check (the bot only takes a file the conversation
+// already shares); caching them keeps the extra Graph call to one per channel
+// and one per drive for the life of the process.
+const channelDriveIds = new Map<string, string>()
+const driveOwners = new Map<string, string>()
+
 const listener = startListener({
   config,
   adapter,
@@ -1125,6 +1133,8 @@ const listener = startListener({
       getBotToken: () => inlineImageCredentials.getToken(),
       baseDir: config.receivedFilesDir,
       teamGroupIdCache: teamGroupIds,
+      channelDriveCache: channelDriveIds,
+      driveOwnerCache: driveOwners,
     }),
 })
 

@@ -1161,8 +1161,13 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       const cdx: any = a.channelData
       const teamId = cdx?.team?.id
       const chanId = cdx?.channel?.id
+      // A team channel needs its team + channel ids to be addressable through
+      // Graph; conversationType is the documented signal but the thread id is
+      // the reliable one, so either counts. A channel without both ids is not
+      // addressable at all (no lookup), and everything else shared is a chat.
+      const isChannel = threadConv || conversationType === 'channel'
       const lookup: SharedFileLookup | undefined =
-        threadConv && typeof teamId === 'string' && teamId.length > 0 && typeof chanId === 'string' && chanId.length > 0
+        isChannel && typeof teamId === 'string' && teamId.length > 0 && typeof chanId === 'string' && chanId.length > 0
           ? {
               kind: 'channel',
               teamThreadId: teamId,
@@ -1173,11 +1178,12 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
               aadGroupId: typeof cdx?.team?.aadGroupId === 'string' ? cdx.team.aadGroupId : undefined,
               refIds: attachmentRefIds(rawAttachments),
             }
-          : !threadConv && (conversationType === 'groupChat' || isGroupConv)
+          : !isChannel && (conversationType === 'groupChat' || isGroupConv)
             ? {
                 kind: 'chat',
                 chatId: baseConversationId(conversationId),
                 messageId,
+                senderAadObjectId: aadObjectId,
                 refIds: attachmentRefIds(rawAttachments),
               }
             : undefined
