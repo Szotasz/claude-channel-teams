@@ -343,14 +343,32 @@ export function formatAnnotation(result: AttachmentResult): string {
 }
 
 /**
- * Fetch with a timeout and a size cap. Streams into a temp file so memory
- * stays bounded — important if a sender pushes a near-50 MB binary. Returns
- * the temp path and the byte count; the caller decides where it goes next
- * (we don't pick the final name here because the final name depends on
- * collision detection in the dated directory, and we want to defer the
- * mkdir until we know the download succeeded).
+ * Write a fetched body out to a temp file, enforcing the size cap. Returns the
+ * temp path and the byte count; the caller decides where it goes next (we don't
+ * pick the final name here because the final name depends on collision
+ * detection in the dated directory, and we want to defer the mkdir until we
+ * know the download succeeded).
  */
-async function downloadToTemp(
+export async function saveResponseToTemp(res: Response): Promise<{ tempPath: string; sizeBytes: number }> {
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`)
+  }
+  // Some Teams endpoints don't send Content-Length. We enforce the cap by
+  // counting bytes as we read.
+  const buf = await res.arrayBuffer()
+  if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`)
+  }
+  const tempPath = join(tmpdir(), `cct-attach-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  writeFileSync(tempPath, Buffer.from(buf))
+  return { tempPath, sizeBytes: buf.byteLength }
+}
+
+/**
+ * Fetch with a timeout, then hand the response to saveResponseToTemp so memory
+ * stays bounded — important if a sender pushes a near-50 MB binary.
+ */
+export async function downloadToTemp(
   url: string,
   headers: Record<string, string>,
   fetchImpl: typeof fetch,
@@ -359,18 +377,7 @@ async function downloadToTemp(
   const t = setTimeout(() => ctrl.abort(), DOWNLOAD_TIMEOUT_MS)
   try {
     const res = await fetchImpl(url, { headers, signal: ctrl.signal })
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`)
-    }
-    // Some Teams endpoints don't send Content-Length. We enforce the cap by
-    // counting bytes as we read.
-    const buf = await res.arrayBuffer()
-    if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`)
-    }
-    const tempPath = join(tmpdir(), `cct-attach-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
-    writeFileSync(tempPath, Buffer.from(buf))
-    return { tempPath, sizeBytes: buf.byteLength }
+    return await saveResponseToTemp(res)
   } finally {
     clearTimeout(t)
   }
@@ -533,6 +540,31 @@ export async function processOne(
 }
 
 /**
+ * One stderr line per attachment outcome, whatever it was. Split out of
+ * processAttachments so the channel/group-chat shared-file path (see
+ * sharedFiles.ts) logs the same lines for its own results.
+ */
+export function logAttachmentResult(result: AttachmentResult): void {
+  if (result.kind === 'skipped' || result.kind === 'failed') {
+    process.stderr.write(
+      `teams channel: attachment ${result.kind} — ${result.originalName}: ${result.reason}\n`,
+    )
+  } else if (result.kind === 'inline') {
+    process.stderr.write(
+      `teams channel: attachment inlined — ${result.originalName} (${result.label}, ${result.text.length} chars)\n`,
+    )
+  } else if (result.kind === 'ignored') {
+    process.stderr.write(
+      `teams channel: attachment ignored — ${result.originalName}: ${result.reason}\n`,
+    )
+  } else {
+    process.stderr.write(
+      `teams channel: attachment saved — ${result.path} (${formatBytes(result.sizeBytes)})\n`,
+    )
+  }
+}
+
+/**
  * Top-level entry — processes every attachment on a message, returns the
  * annotation lines (one per attachment) and the per-attachment results.
  *
@@ -557,39 +589,19 @@ export async function processAttachments(
   const hasImagePart = attachments.some((a) => typeof a.contentType === 'string' && a.contentType.startsWith('image/'))
   for (const att of attachments) {
     const result = await processOne(att, prefix, dateDir, deps)
-    report(result)
+    logAttachmentResult(result)
     results.push(result)
     if (result.kind === 'ignored' && att.contentType === 'text/html' && !hasImagePart) {
       // Only allowlisted hosts: the bot token goes nowhere else (the inline-image branch checks again). A foreign
       // host is neither requested nor noted, as before; an otherwise empty message still gets the empty-message note.
       for (const src of htmlImageSources(typeof att.content === 'string' ? att.content : '').filter(isAllowedInlineImageHost)) {
         const image = await processOne({ contentType: HTML_IMAGE_CONTENT_TYPE, contentUrl: src } as Attachment, prefix, dateDir, deps)
-        report(image)
+        logAttachmentResult(image)
         results.push(image)
       }
     }
   }
   return { annotations: results.map(formatAnnotation).filter((a) => a.length > 0), results }
-}
-
-function report(result: AttachmentResult): void {
-    if (result.kind === 'skipped' || result.kind === 'failed') {
-      process.stderr.write(
-        `teams channel: attachment ${result.kind} — ${result.originalName}: ${result.reason}\n`,
-      )
-    } else if (result.kind === 'inline') {
-      process.stderr.write(
-        `teams channel: attachment inlined — ${result.originalName} (${result.label}, ${result.text.length} chars)\n`,
-      )
-    } else if (result.kind === 'ignored') {
-      process.stderr.write(
-        `teams channel: attachment ignored — ${result.originalName}: ${result.reason}\n`,
-      )
-    } else {
-      process.stderr.write(
-        `teams channel: attachment saved — ${result.path} (${formatBytes(result.sizeBytes)})\n`,
-      )
-    }
 }
 
 /**

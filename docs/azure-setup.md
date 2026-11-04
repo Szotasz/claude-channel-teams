@@ -144,6 +144,32 @@ Zip `manifest.json` + the two icons (flat, no subdir) into
 `<bot-handle>.zip` and upload via *Teams → Apps → Manage your apps →
 Upload an app for me or my teams*.
 
+## Files shared in channels and group chats
+
+In a 1:1 chat Teams attaches the file to the message, and the plugin downloads
+it from the short-lived URL in the attachment. In a **team channel** or a
+**group chat** it does not — the message the bot receives only carries an
+`<attachment id="…">` placeholder in an HTML part. To get the file the plugin
+reads the message back through Microsoft Graph and then downloads the file from
+SharePoint / OneDrive, which needs two permissions on top of the ones above:
+
+- **Reading the message** — the resource-specific consent permissions already in
+  the manifest (the ones that let the bot receive channel and group-chat
+  messages at all): `ChannelMessage.Read.Group` for a team channel,
+  `ChatMessage.Read.Chat` for a group chat.
+- **Downloading the file** — the Microsoft Graph **application** permission
+  `Files.Read.All`, granted with admin consent on the bot's app registration
+  (*App registrations* → *API permissions*). This is an application permission,
+  so it lets the app read files across the tenant, not just files in
+  conversations the bot is in. Grant it only if that is acceptable for your
+  tenant — without it everything else keeps working.
+
+Without `Files.Read.All` the agent still sees the message, with a line like:
+
+```text
+[Attachment skipped: report.xlsx — the Teams app has no Microsoft Graph permission to read this file (HTTP 403); it needs the Files.Read.All application permission]
+```
+
 ## What goes into `.env`
 
 After Path A or B you have everything needed for

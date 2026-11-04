@@ -84,6 +84,7 @@ import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
 import { ensureBaseDir, processAttachments } from './teams/attachments.js'
+import { fetchSharedFiles } from './teams/sharedFiles.js'
 import {
   createGraphTokenProvider,
   createPlannerTask,
@@ -1165,6 +1166,11 @@ if (config.targetedMessages) {
 // reason to learn team ids on inbound messages, so it passes the map under its own key.
 const pollTeamGroups = config.backfill && !config.threadHistory && !config.activityFeed ? teamGroups : undefined
 
+// Team thread id -> Azure AD group id. Graph addresses a channel through its
+// group, so the shared-file path needs this translation; caching it keeps the
+// Bot Framework lookup to one call per team for the life of the process.
+const teamGroupIds = new Map<string, string>()
+
 const listener = startListener({
   config,
   adapter,
@@ -1206,6 +1212,13 @@ const listener = startListener({
       messageText,
     }),
   decisions,
+  sharedFiles: async (lookup, fromName) =>
+    fetchSharedFiles(lookup, fromName, {
+      getGraphToken: () => graphToken.getToken(),
+      getBotToken: () => inlineImageCredentials.getToken(),
+      baseDir: config.receivedFilesDir,
+      teamGroupIdCache: teamGroupIds,
+    }),
 })
 
 // ── Graph backfill of undelivered channel messages (TEAMS_BACKFILL, opt-in) ────────────────────────────────
