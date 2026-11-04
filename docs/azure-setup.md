@@ -170,6 +170,25 @@ Without `Files.Read.All` the agent still sees the message, with a line like:
 [Attachment skipped: report.xlsx — the Teams app has no Microsoft Graph permission to read this file (HTTP 403); it needs the Files.Read.All application permission]
 ```
 
+Because `Files.Read.All` is an application permission that reads files across the
+whole tenant, the plugin does **not** download any file the Graph share link
+points at — only a file the conversation already shares:
+
+- in a **team channel**, the file has to be stored in that channel's own files
+  folder (the drive behind the *Files* tab);
+- in a **group chat**, the file has to be in the sender's own OneDrive.
+
+Any other SharePoint link — pasted from another team's channel, from someone
+else's OneDrive, from anywhere in the tenant — is not fetched. Without that
+check a sender could paste a link and have the bot read out any tenant file the
+bot's app registration can reach. The agent still sees the message, with a line
+saying why the file was left alone:
+
+```text
+[Attachment skipped: budget.xlsx — the file is not stored in this channel's files, so it is not downloaded]
+[Attachment skipped: budget.xlsx — the file is not in the sender's OneDrive, so it is not downloaded]
+```
+
 ## What goes into `.env`
 
 After Path A or B you have everything needed for
