@@ -174,9 +174,16 @@ Because `Files.Read.All` is an application permission that reads files across th
 whole tenant, the plugin does **not** download any file the Graph share link
 points at — only a file the conversation already shares:
 
-- in a **team channel**, the file has to be stored in that channel's own files
-  folder (the drive behind the *Files* tab);
-- in a **group chat**, the file has to be in the sender's own OneDrive.
+- in a **team channel**, the file has to be inside that channel's files folder
+  (the folder behind the *Files* tab), sub-folders included up to 8 levels
+  deep. A OneDrive file, or a file from another channel or another team's
+  library, is skipped;
+- in a **group chat**, the file has to be in the sender's own OneDrive. A file
+  from a team library (anything that is not the sender's OneDrive) is skipped.
+
+A sub-folder inside the channel folder that has its own, narrower permissions is
+still readable by the app (it is an application permission), so do not keep
+restricted files under a channel folder that a team member could reference.
 
 Any other SharePoint link — pasted from another team's channel, from someone
 else's OneDrive, from anywhere in the tenant — is not fetched. Without that
@@ -185,7 +192,7 @@ bot's app registration can reach. The agent still sees the message, with a line
 saying why the file was left alone:
 
 ```text
-[Attachment skipped: budget.xlsx — the file is not stored in this channel's files, so it is not downloaded]
+[Attachment skipped: budget.xlsx — the file is not stored in this channel's files folder, so it is not downloaded]
 [Attachment skipped: budget.xlsx — the file is not in the sender's OneDrive, so it is not downloaded]
 ```
 

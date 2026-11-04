@@ -255,6 +255,24 @@ export function formatAnnotation(result: AttachmentResult): string {
 }
 
 /**
+ * Write the whole buffer to fd. writeSync may write fewer bytes than asked for
+ * (a short write), so this loops on the rest instead of dropping it silently.
+ * A call that writes nothing would loop forever, so it throws instead.
+ */
+export function writeAll(
+  fd: number,
+  buf: Uint8Array,
+  write: (fd: number, b: Uint8Array) => number = writeSync,
+): void {
+  let offset = 0
+  while (offset < buf.byteLength) {
+    const n = write(fd, buf.subarray(offset))
+    if (n <= 0) throw new Error('write made no progress')
+    offset += n
+  }
+}
+
+/**
  * Write a fetched body out to a temp file, enforcing the size cap. Returns the
  * temp path and the byte count; the caller decides where it goes next (we don't
  * pick the final name here because the final name depends on collision
@@ -298,7 +316,7 @@ export async function saveResponseToTemp(res: Response): Promise<{ tempPath: str
           } catch {}
           throw new Error(`exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`)
         }
-        writeSync(fd, value)
+        writeAll(fd, value)
       }
     }
   } catch (err) {

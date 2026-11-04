@@ -12,13 +12,14 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, dirname } from 'path'
 import type { Attachment } from 'botframework-schema'
 
 import {
   GRAPH_V1,
+  MAX_FOLDER_DEPTH,
   MAX_SHARED_FILES,
   attachmentRefIds,
   encodeSharingUrl,
@@ -36,6 +37,7 @@ import {
   londonTime,
   saveResponseToTemp,
   senderSlug,
+  writeAll,
 } from '../src/teams/attachments'
 
 const TEAM = '19:team0001@thread.tacv2'
@@ -52,6 +54,14 @@ const DOWNLOAD_URL = 'https://contoso.sharepoint.com/sites/x/_layouts/15/downloa
 const DRIVE = 'b!drive0001'
 const OTHER_DRIVE = 'b!drive0002'
 const ITEM = '01FLitem!0001'
+// The item id of the channel's files folder, and the exact texts of the two
+// skip reasons the channel check can give.
+const FOLDER = '01FLfolder!0001'
+const NOT_IN_FOLDER = "the file is not stored in this channel's files folder, so it is not downloaded"
+const NOT_ONEDRIVE = "the file is not in the sender's OneDrive, so it is not downloaded"
+const NO_FILE_PERMISSION =
+  'the Teams app has no Microsoft Graph permission to read this file (HTTP 403); ' +
+  'it needs the Files.Read.All application permission'
 
 function html(content: string): Attachment {
   return { contentType: 'text/html', content } as Attachment
@@ -80,7 +90,7 @@ function graphMetadata(overrides: Record<string, unknown> = {}): Response {
     id: ITEM,
     name: 'report.xlsx',
     size: BODY.length,
-    parentReference: { driveId: DRIVE },
+    parentReference: { driveId: DRIVE, id: FOLDER },
     ...overrides,
   })
 }
@@ -90,7 +100,13 @@ const contentUrl = (drive: string = DRIVE, item: string = ITEM) =>
   `${GRAPH_V1}/drives/${encodeURIComponent(drive)}/items/${encodeURIComponent(item)}/content`
 const driveUrl = (drive: string = DRIVE) => `${GRAPH_V1}/drives/${encodeURIComponent(drive)}?$select=owner`
 const filesFolderUrl = () =>
-  `${GRAPH_V1}/teams/${GID}/channels/${encodeURIComponent(CHAN)}/filesFolder?$select=parentReference`
+  `${GRAPH_V1}/teams/${GID}/channels/${encodeURIComponent(CHAN)}/filesFolder?$select=id,parentReference`
+const ancestryUrl = (item: string, drive: string = DRIVE) =>
+  `${GRAPH_V1}/drives/${encodeURIComponent(drive)}/items/${encodeURIComponent(item)}?$select=id,parentReference`
+/** The channel's files folder as Graph describes it. */
+const filesFolderBody = (driveId: string = DRIVE, id: string = FOLDER) => ({ id, parentReference: { driveId } })
+const isAncestry = (url: string) => url.includes('/items/') && url.endsWith('?$select=id,parentReference')
+const ancestryCalls = (calls: { url: string }[]) => calls.filter(c => isAncestry(c.url))
 
 type Call = { url: string; method: string; headers: Record<string, string>; redirect?: string; signal?: AbortSignal }
 
@@ -129,6 +145,8 @@ function standardRoutes(overrides: {
   message?: () => Response
   metadata?: () => Response
   filesFolder?: () => Response
+  /** Answers a parent-folder request; gets the (decoded) item id it was made for. */
+  ancestry?: (itemId: string, call: Call) => Response
   driveOwner?: () => Response
   content?: () => Response
   download?: () => Response
@@ -149,8 +167,22 @@ function standardRoutes(overrides: {
     },
     {
       test: (u: string) => u.includes('/filesFolder'),
-      reply: () => overrides.filesFolder?.() ?? jsonResponse({ parentReference: { driveId: DRIVE } }),
+      reply: () => overrides.filesFolder?.() ?? jsonResponse(filesFolderBody()),
     },
+    // No default answer: a test that does not script the walk and still triggers
+    // it gets "unexpected request", which fails it loudly.
+    ...(overrides.ancestry
+      ? [
+          {
+            test: isAncestry,
+            reply: (call: Call) =>
+              overrides.ancestry!(
+                decodeURIComponent(call.url.slice(call.url.indexOf('/items/') + '/items/'.length, call.url.indexOf('?'))),
+                call,
+              ),
+          },
+        ]
+      : []),
     {
       test: (u: string) => u === driveUrl(),
       reply: () => overrides.driveOwner?.() ?? jsonResponse({ owner: { user: { id: SENDER_AAD } } }),
@@ -396,6 +428,8 @@ describe('sharedFiles: fetchSharedFiles', () => {
   })
 
   test('S9 Graph message 403 in a channel names the missing RSC consent', async () => {
+    // Round 2 (F2): a 401/403 is a missing permission, so it is an explicit
+    // 'skipped' (it used to be pinned as 'failed'); the reason text is unchanged.
     const f = fakeFetch(standardRoutes({ message: () => jsonResponse({ error: 'Forbidden' }, 403) }))
     const { annotations, results } = await fetchSharedFiles(
       channelLookup({ aadGroupId: GID }),
@@ -404,8 +438,9 @@ describe('sharedFiles: fetchSharedFiles', () => {
     )
     expect(results.length).toBe(1)
     expect(annotations.length).toBe(1)
+    expect(results[0].kind).toBe('skipped')
     expect(annotations[0]).toBe(
-      '[Attachment failed: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP 403); ' +
+      '[Attachment skipped: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP 403); ' +
         'the Teams app needs the ChannelMessage.Read.Group consent for this team]',
     )
     expect(f.calls.some(c => c.url.startsWith(`${GRAPH_V1}/shares/`))).toBe(false)
@@ -548,6 +583,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
   })
 
   test('X3 a drive other than the channel files folder is skipped, nothing is downloaded', async () => {
+    // The drive differs, so the answer comes without a single ancestry request.
     const f = fakeFetch(standardRoutes({ metadata: () => graphMetadata({ parentReference: { driveId: OTHER_DRIVE } }) }))
     const { annotations, results } = await fetchSharedFiles(
       channelLookup({ aadGroupId: GID }),
@@ -556,9 +592,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
-    expect(annotations).toEqual([
-      `[Attachment skipped: report.xlsx — the file is not stored in this channel's files, so it is not downloaded]`,
-    ])
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
     expect(f.calls.some(c => c.url.includes('/items/'))).toBe(false)
     expect(f.calls.some(c => c.url === DOWNLOAD_URL)).toBe(false)
   })
@@ -569,14 +603,14 @@ describe('sharedFiles: fetchSharedFiles', () => {
         message: () => graphMessage([graphRef(), graphRef({ id: 'ref-2', name: 'notes.txt' })]),
       }),
     )
-    const cache = new Map<string, string>()
+    const cache = new Map<string, { driveId: string; folderId: string }>()
     const { annotations, results } = await fetchSharedFiles(
       channelLookup({ aadGroupId: GID, refIds: ['ref-1', 'ref-2'] }),
       SENDER,
       deps(f.fn, dir, { channelDriveCache: cache }),
     )
     expect(f.calls.filter(c => c.url.includes('/filesFolder')).length).toBe(1)
-    expect(cache.get(`${GID}/${CHAN}`)).toBe(DRIVE)
+    expect(cache.get(`${GID}/${CHAN}`)).toEqual({ driveId: DRIVE, folderId: FOLDER })
     expect(results.length).toBe(2)
     expect(results.every(r => r.kind === 'saved')).toBe(true)
     expect(annotations.length).toBe(2)
@@ -593,9 +627,11 @@ describe('sharedFiles: fetchSharedFiles', () => {
   })
 
   test('X5 a files-folder failure is one failed result and stops the whole message', async () => {
+    // A 500 here (a 401/403 is a skip since round 2, see Y8). The one result
+    // names both references, since the second one is never looked at.
     const f = fakeFetch(
       standardRoutes({
-        filesFolder: () => jsonResponse({ error: 'Forbidden' }, 403),
+        filesFolder: () => jsonResponse({ error: 'boom' }, 500),
         message: () => graphMessage([graphRef(), graphRef({ id: 'ref-2', name: 'notes.txt' })]),
       }),
     )
@@ -606,26 +642,45 @@ describe('sharedFiles: fetchSharedFiles', () => {
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('failed')
+    expect(results[0].originalName).toBe('2 shared file(s)')
     expect(annotations).toEqual([
-      `[Attachment failed: report.xlsx — could not read the channel's files folder (HTTP 403)]`,
+      `[Attachment failed: 2 shared file(s) — could not read the channel's files folder (HTTP 500)]`,
     ])
     // one drive-item read (for the first reference), and no content at all
     expect(f.calls.filter(c => c.url.startsWith(`${GRAPH_V1}/shares/`)).length).toBe(1)
     expect(f.calls.some(c => c.url.includes('/items/'))).toBe(false)
   })
 
-  test('X5b a files-folder answer without a drive id fails the same way', async () => {
-    const f = fakeFetch(standardRoutes({ filesFolder: () => jsonResponse({ parentReference: {} }) }))
+  test('X5b a files-folder answer without a drive id or without a folder id fails the same way', async () => {
+    const noDrive = fakeFetch(standardRoutes({ filesFolder: () => jsonResponse({ id: FOLDER, parentReference: {} }) }))
     const { annotations, results } = await fetchSharedFiles(
       channelLookup({ aadGroupId: GID }),
       SENDER,
-      deps(f.fn, dir),
+      deps(noDrive.fn, dir),
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('failed')
     expect(annotations).toEqual([
-      `[Attachment failed: report.xlsx — could not read the channel's files folder (no drive id)]`,
+      `[Attachment failed: report.xlsx — could not read the channel's files folder (no drive id or folder id)]`,
     ])
+
+    // the drive id is there, the folder's own id is not (missing, empty, not a string)
+    for (const id of [undefined, '', 42]) {
+      const noFolder = fakeFetch(standardRoutes({ filesFolder: () => jsonResponse({ id, parentReference: { driveId: DRIVE } }) }))
+      const cache = new Map<string, { driveId: string; folderId: string }>()
+      const r = await fetchSharedFiles(
+        channelLookup({ aadGroupId: GID }),
+        SENDER,
+        deps(noFolder.fn, dir, { channelDriveCache: cache }),
+      )
+      expect(r.results.length).toBe(1)
+      expect(r.results[0].kind).toBe('failed')
+      expect(r.annotations).toEqual([
+        `[Attachment failed: report.xlsx — could not read the channel's files folder (no drive id or folder id)]`,
+      ])
+      expect(cache.size).toBe(0)
+      expect(noFolder.calls.some(c => c.url === contentUrl())).toBe(false)
+    }
   })
 
   test('X6 a chat only takes a file from the sender own OneDrive', async () => {
@@ -662,20 +717,22 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(none.calls.some(c => c.url.startsWith(`${GRAPH_V1}/drives/`))).toBe(false)
   })
 
-  test('X6b a drive-owner read that fails or is empty is a failed result', async () => {
+  test('X6b a drive-owner read that is denied or comes back without a user owner is a skip', async () => {
+    // Round 2 (F2, F4): a 403 is a missing permission and an owner-less drive is
+    // not the sender's OneDrive, so both are 'skipped' (both used to be pinned as
+    // 'failed'); a 500 stays a failure (see Y9).
     const f = fakeFetch(standardRoutes({ driveOwner: () => jsonResponse({ owner: {} }, 403) }))
     const { annotations, results } = await fetchSharedFiles(chatLookup(), SENDER, deps(f.fn, dir))
     expect(results.length).toBe(1)
-    expect(results[0].kind).toBe('failed')
+    expect(results[0].kind).toBe('skipped')
     expect(annotations).toEqual([
-      `[Attachment failed: report.xlsx — could not read the file's drive owner (HTTP 403)]`,
+      `[Attachment skipped: report.xlsx — the Teams app has no Microsoft Graph permission to read the file's drive owner (HTTP 403)]`,
     ])
 
     const g = fakeFetch(standardRoutes({ driveOwner: () => jsonResponse({ owner: { user: {} } }) }))
     const noOwner = await fetchSharedFiles(chatLookup(), SENDER, deps(g.fn, dir))
-    expect(noOwner.annotations).toEqual([
-      `[Attachment failed: report.xlsx — could not read the file's drive owner (no owner)]`,
-    ])
+    expect(noOwner.results[0].kind).toBe('skipped')
+    expect(noOwner.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_ONEDRIVE}]`])
   })
 
   test('X7 the drive-item status mapping', async () => {
@@ -784,7 +841,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     const many = fakeFetch([
       { test: u => u.includes('/messages/'), reply: () => graphMessage([graphRef()]) },
       { test: u => u.startsWith(`${GRAPH_V1}/shares/`), reply: () => graphMetadata() },
-      { test: u => u.includes('/filesFolder'), reply: () => jsonResponse({ parentReference: { driveId: DRIVE } }) },
+      { test: u => u.includes('/filesFolder'), reply: () => jsonResponse(filesFolderBody()) },
       { test: u => u === contentUrl(), reply: () => new Response(null, { status: 302, headers: { location: hops[0]! } }) },
       { test: u => u === hops[0], reply: () => new Response(null, { status: 302, headers: { location: hops[1]! } }) },
       { test: u => u === hops[1], reply: () => new Response(null, { status: 302, headers: { location: hops[2]! } }) },
@@ -826,7 +883,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     const f = fakeFetch([
       { test: u => u.includes('/messages/'), reply: () => graphMessage([graphRef()]) },
       { test: u => u.startsWith(`${GRAPH_V1}/shares/`), reply: () => graphMetadata() },
-      { test: u => u.includes('/filesFolder'), reply: () => jsonResponse({ parentReference: { driveId: DRIVE } }) },
+      { test: u => u.includes('/filesFolder'), reply: () => jsonResponse(filesFolderBody()) },
       { test: u => u === contentUrl(), reply: call => new Response(neverEndingBody(call.signal)) },
     ])
     const before = attachTemps()
@@ -905,17 +962,19 @@ describe('sharedFiles: fetchSharedFiles', () => {
   })
 
   test('X16 message 401 in a channel and a chat, and unusable reference entries', async () => {
+    // Round 2 (F2): a 401/403 on the message read is a 'skipped' now (these two
+    // lines used to be pinned as 'failed'); the reason text is unchanged.
     const chan = fakeFetch(standardRoutes({ message: () => jsonResponse({ error: 'x' }, 401) }))
     const c = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(chan.fn, dir))
     expect(c.annotations).toEqual([
-      '[Attachment failed: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP 401); ' +
+      '[Attachment skipped: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP 401); ' +
         'the Teams app needs the ChannelMessage.Read.Group consent for this team]',
     ])
 
     const chat = fakeFetch(standardRoutes({ message: () => jsonResponse({ error: 'x' }, 401) }))
     const g = await fetchSharedFiles(chatLookup(), SENDER, deps(chat.fn, dir))
     expect(g.annotations).toEqual([
-      '[Attachment failed: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP 401); ' +
+      '[Attachment skipped: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP 401); ' +
         'the Teams app needs the ChatMessage.Read.Chat consent for this chat]',
     ])
 
@@ -1070,6 +1129,564 @@ describe('sharedFiles: fetchSharedFiles', () => {
   })
 })
 
+describe('sharedFiles: channel folder check, permission answers, review round 2', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cct-shared-files-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** A file whose parent folder is `parentId`, in the channel's drive. */
+  const inFolder = (parentId: string | undefined, driveId: string = DRIVE) =>
+    graphMetadata({ parentReference: parentId === undefined ? { driveId } : { driveId, id: parentId } })
+
+  /** Answers an ancestry request from a map `item id -> its parentReference`. */
+  const chain = (parents: Record<string, Record<string, unknown> | undefined>) => (itemId: string) =>
+    jsonResponse({ id: itemId, ...(parents[itemId] === undefined ? {} : { parentReference: parents[itemId] }) })
+
+  /** Whether the file's bytes (the content request or the download hop) were ever asked for. */
+  const fetchedTheFile = (calls: Call[], drive: string = DRIVE, item: string = ITEM) =>
+    calls.some(c => c.url === contentUrl(drive, item) || c.url === DOWNLOAD_URL)
+
+  test('Y1 a file directly in the channel folder is saved, with no ancestry request', async () => {
+    const f = fakeFetch(standardRoutes({ metadata: () => inFolder(FOLDER) }))
+    const { annotations, results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(f.fn, dir),
+    )
+    expect(results.length).toBe(1)
+    expect(results[0].kind).toBe('saved')
+    expect(annotations[0].startsWith('[Attached: ')).toBe(true)
+    expect(ancestryCalls(f.calls)).toEqual([])
+    expect(f.calls.map(c => c.url)).toEqual([
+      `${GRAPH_V1}/teams/${GID}/channels/${encodeURIComponent(CHAN)}/messages/ROOT/replies/MSG`,
+      metaUrl(),
+      filesFolderUrl(),
+      contentUrl(),
+      DOWNLOAD_URL,
+    ])
+  })
+
+  test('Y2 a file two levels below the channel folder is saved after exactly two ancestry requests', async () => {
+    const f = fakeFetch(
+      standardRoutes({
+        metadata: () => inFolder('sub-1'),
+        ancestry: chain({
+          'sub-1': { driveId: DRIVE, id: 'sub-2' },
+          'sub-2': { driveId: DRIVE, id: FOLDER },
+        }),
+      }),
+    )
+    const { annotations, results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(f.fn, dir),
+    )
+    expect(results.length).toBe(1)
+    expect(results[0].kind).toBe('saved')
+    expect(annotations[0].startsWith('[Attached: ')).toBe(true)
+    const walk = ancestryCalls(f.calls)
+    expect(walk.map(c => c.url)).toEqual([ancestryUrl('sub-1'), ancestryUrl('sub-2')])
+    for (const c of walk) {
+      expect(c.headers.Authorization).toBe('Bearer GRAPH')
+      expect(c.redirect).toBe('error')
+    }
+    // the walk sits between the folder read and the download
+    expect(f.calls.map(c => c.url).slice(2)).toEqual([
+      filesFolderUrl(),
+      ancestryUrl('sub-1'),
+      ancestryUrl('sub-2'),
+      contentUrl(),
+      DOWNLOAD_URL,
+    ])
+  })
+
+  test('Y3 a chain that ends before the channel folder is a skip, nothing is downloaded', async () => {
+    // an ancestor with a parentReference but no id, and one with no parentReference at all
+    for (const parents of [{ 'sub-1': { driveId: DRIVE } }, {}] as Record<string, Record<string, unknown>>[]) {
+      const f = fakeFetch(standardRoutes({ metadata: () => inFolder('sub-1'), ancestry: chain(parents) }))
+      const { annotations, results } = await fetchSharedFiles(
+        channelLookup({ aadGroupId: GID }),
+        SENDER,
+        deps(f.fn, dir),
+      )
+      expect(results.length).toBe(1)
+      expect(results[0].kind).toBe('skipped')
+      expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+      expect(ancestryCalls(f.calls).map(c => c.url)).toEqual([ancestryUrl('sub-1')])
+      expect(fetchedTheFile(f.calls)).toBe(false)
+    }
+
+    // a file whose drive item names no parent folder is outside without any request
+    const bare = fakeFetch(standardRoutes({ metadata: () => inFolder(undefined) }))
+    const r = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(bare.fn, dir))
+    expect(r.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(ancestryCalls(bare.calls)).toEqual([])
+    expect(fetchedTheFile(bare.calls)).toBe(false)
+  })
+
+  test('Y4 a chain deeper than MAX_FOLDER_DEPTH is a skip after exactly MAX_FOLDER_DEPTH requests', async () => {
+    expect(MAX_FOLDER_DEPTH).toBe(8)
+    // p0 -> p1 -> p2 -> ... forever: the folder is never reached
+    const endless = (itemId: string) =>
+      jsonResponse({ id: itemId, parentReference: { driveId: DRIVE, id: `p${Number(itemId.slice(1)) + 1}` } })
+    const f = fakeFetch(standardRoutes({ metadata: () => inFolder('p0'), ancestry: endless }))
+    const { annotations, results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(f.fn, dir),
+    )
+    expect(results.length).toBe(1)
+    expect(results[0].kind).toBe('skipped')
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(ancestryCalls(f.calls).length).toBe(MAX_FOLDER_DEPTH)
+    expect(ancestryCalls(f.calls).map(c => c.url)).toEqual(
+      Array.from({ length: MAX_FOLDER_DEPTH }, (_, i) => ancestryUrl(`p${i}`)),
+    )
+    expect(fetchedTheFile(f.calls)).toBe(false)
+
+    // the boundary itself: the folder is found by the last permitted request
+    const last = `p${MAX_FOLDER_DEPTH - 1}`
+    const reached = (itemId: string) =>
+      jsonResponse({
+        id: itemId,
+        parentReference: { driveId: DRIVE, id: itemId === last ? FOLDER : `p${Number(itemId.slice(1)) + 1}` },
+      })
+    const g = fakeFetch(standardRoutes({ metadata: () => inFolder('p0'), ancestry: reached }))
+    const ok = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(g.fn, dir))
+    expect(ok.results.length).toBe(1)
+    expect(ok.results[0].kind).toBe('saved')
+    expect(ancestryCalls(g.calls).length).toBe(MAX_FOLDER_DEPTH)
+  })
+
+  test('Y5 a failing ancestry answer gives the Graph file wording and no download', async () => {
+    const f = fakeFetch(
+      standardRoutes({ metadata: () => inFolder('sub-1'), ancestry: () => jsonResponse({ error: 'Forbidden' }, 403) }),
+    )
+    const { annotations, results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(f.fn, dir),
+    )
+    expect(results.length).toBe(1)
+    expect(results[0].kind).toBe('skipped')
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NO_FILE_PERMISSION}]`])
+    expect(ancestryCalls(f.calls).length).toBe(1)
+    expect(fetchedTheFile(f.calls)).toBe(false)
+
+    // any other status is a failure with graphFileError's wording
+    for (const [status, reason] of [[404, 'file not found in SharePoint (HTTP 404)'], [500, 'HTTP 500']] as const) {
+      const g = fakeFetch(
+        standardRoutes({ metadata: () => inFolder('sub-1'), ancestry: () => jsonResponse({ error: 'x' }, status) }),
+      )
+      const r = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(g.fn, dir))
+      expect(r.results[0].kind).toBe('failed')
+      expect(r.annotations).toEqual([`[Attachment failed: report.xlsx — ${reason}]`])
+      expect(fetchedTheFile(g.calls)).toBe(false)
+    }
+
+    // a failed walk is one file's problem: the next reference is still looked at
+    const h = fakeFetch(
+      standardRoutes({
+        message: () => graphMessage([graphRef(), graphRef({ id: 'ref-2', name: 'notes.txt' })]),
+        metadata: () => inFolder('sub-1'),
+        ancestry: () => jsonResponse({ error: 'Forbidden' }, 403),
+      }),
+    )
+    const two = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID, refIds: ['ref-1', 'ref-2'] }),
+      SENDER,
+      deps(h.fn, dir),
+    )
+    expect(two.annotations).toEqual([
+      `[Attachment skipped: report.xlsx — ${NO_FILE_PERMISSION}]`,
+      `[Attachment skipped: notes.txt — ${NO_FILE_PERMISSION}]`,
+    ])
+  })
+
+  test('Y14 an ancestry answer with an empty parent id ends the walk: a skip', async () => {
+    const f = fakeFetch(
+      standardRoutes({
+        metadata: () => inFolder('sub-1'),
+        ancestry: chain({ 'sub-1': { driveId: DRIVE, id: '' } }),
+      }),
+    )
+    const { annotations, results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(f.fn, dir),
+    )
+    expect(results.length).toBe(1)
+    expect(results[0].kind).toBe('skipped')
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(ancestryCalls(f.calls).map(c => c.url)).toEqual([ancestryUrl('sub-1')])
+    expect(fetchedTheFile(f.calls)).toBe(false)
+
+    // the file's own parent id empty: a skip without a single ancestry request
+    const g = fakeFetch(standardRoutes({ metadata: () => inFolder('') }))
+    const e = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(g.fn, dir))
+    expect(e.results.length).toBe(1)
+    expect(e.results[0].kind).toBe('skipped')
+    expect(e.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(ancestryCalls(g.calls)).toEqual([])
+    expect(fetchedTheFile(g.calls)).toBe(false)
+  })
+
+  test('Y15 the folder id is compared exactly: a parent id that differs only in case is not the folder', async () => {
+    const lower = FOLDER.toLowerCase()
+    expect(lower).not.toBe(FOLDER)
+    const f = fakeFetch(
+      standardRoutes({ metadata: () => inFolder(lower), ancestry: chain({ [lower]: { driveId: DRIVE } }) }),
+    )
+    const { annotations, results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(f.fn, dir),
+    )
+    expect(results.length).toBe(1)
+    expect(results[0].kind).toBe('skipped')
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(fetchedTheFile(f.calls)).toBe(false)
+  })
+
+  test('Y6 an ancestry answer that leaves the file drive is a skip', async () => {
+    // the parent claims to be the channel folder, but on another drive
+    const f = fakeFetch(
+      standardRoutes({
+        metadata: () => inFolder('sub-1'),
+        ancestry: chain({ 'sub-1': { driveId: OTHER_DRIVE, id: FOLDER } }),
+      }),
+    )
+    const { annotations, results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(f.fn, dir),
+    )
+    expect(results.length).toBe(1)
+    expect(results[0].kind).toBe('skipped')
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(ancestryCalls(f.calls).map(c => c.url)).toEqual([ancestryUrl('sub-1')])
+    expect(fetchedTheFile(f.calls)).toBe(false)
+
+    // the file itself on another drive, with a parent id equal to the folder's: the
+    // drive is compared first, so it is a skip without a single ancestry request
+    const other = fakeFetch(standardRoutes({ metadata: () => inFolder(FOLDER, OTHER_DRIVE) }))
+    const o = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(other.fn, dir))
+    expect(o.results.length).toBe(1)
+    expect(o.results[0].kind).toBe('skipped')
+    expect(o.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(ancestryCalls(other.calls)).toEqual([])
+    expect(fetchedTheFile(other.calls, OTHER_DRIVE)).toBe(false)
+  })
+
+  test('Y7 a message read denied (401/403) is one skip, any other status one failure', async () => {
+    for (const lookup of [channelLookup({ aadGroupId: GID }), chatLookup()]) {
+      const consent = lookup.kind === 'channel' ? 'ChannelMessage.Read.Group consent for this team' : 'ChatMessage.Read.Chat consent for this chat'
+      for (const status of [401, 403]) {
+        const f = fakeFetch(standardRoutes({ message: () => jsonResponse({ error: 'x' }, status) }))
+        const { annotations, results } = await fetchSharedFiles(lookup, SENDER, deps(f.fn, dir))
+        expect(results.length).toBe(1)
+        expect(results[0].kind).toBe('skipped')
+        expect(annotations).toEqual([
+          `[Attachment skipped: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP ${status}); ` +
+            `the Teams app needs the ${consent}]`,
+        ])
+      }
+      // only 401 and 403 are the permission answer: another 4xx is a failure too
+      for (const status of [404, 500]) {
+        const g = fakeFetch(standardRoutes({ message: () => jsonResponse({ error: 'x' }, status) }))
+        const failed = await fetchSharedFiles(lookup, SENDER, deps(g.fn, dir))
+        expect(failed.results.length).toBe(1)
+        expect(failed.results[0].kind).toBe('failed')
+        expect(failed.annotations).toEqual([
+          `[Attachment failed: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP ${status})]`,
+        ])
+      }
+    }
+  })
+
+  test('Y8 a files-folder failure is one result that names every remaining file', async () => {
+    const denied = (extra: Record<string, unknown> = {}) => ({
+      filesFolder: () => jsonResponse({ error: 'Forbidden' }, 403),
+      ...extra,
+    })
+
+    // 403, two references: one skipped result for both of them
+    const two = fakeFetch(
+      standardRoutes(denied({ message: () => graphMessage([graphRef(), graphRef({ id: 'ref-2', name: 'notes.txt' })]) })),
+    )
+    const cacheTwo = new Map<string, { driveId: string; folderId: string }>()
+    const a = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID, refIds: ['ref-1', 'ref-2'] }),
+      SENDER,
+      deps(two.fn, dir, { channelDriveCache: cacheTwo }),
+    )
+    expect(a.results.length).toBe(1)
+    expect(a.results[0].kind).toBe('skipped')
+    expect(a.results[0].originalName).toBe('2 shared file(s)')
+    expect(a.annotations).toEqual([
+      "[Attachment skipped: 2 shared file(s) — the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP 403)]",
+    ])
+    expect(cacheTwo.size).toBe(0)
+    expect(fetchedTheFile(two.calls)).toBe(false)
+    expect(two.calls.filter(c => c.url.startsWith(`${GRAPH_V1}/shares/`)).length).toBe(1)
+
+    // 401 is the same permission answer
+    const unauth = fakeFetch(standardRoutes({ filesFolder: () => jsonResponse({ error: 'x' }, 401) }))
+    const u = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(unauth.fn, dir))
+    expect(u.annotations).toEqual([
+      "[Attachment skipped: report.xlsx — the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP 401)]",
+    ])
+
+    // 500, one reference: a failure that keeps the file's own (shown) name
+    const one = fakeFetch(
+      standardRoutes({
+        filesFolder: () => jsonResponse({ error: 'boom' }, 500),
+        message: () => graphMessage([graphRef({ name: 'a\nb.xlsx' })]),
+      }),
+    )
+    const b = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(one.fn, dir))
+    expect(b.results.length).toBe(1)
+    expect(b.results[0].kind).toBe('failed')
+    expect(b.results[0].originalName).toBe('a b.xlsx')
+    expect(b.annotations).toEqual([
+      "[Attachment failed: a b.xlsx — could not read the channel's files folder (HTTP 500)]",
+    ])
+
+    // a 500 whose body still carries a usable folder is a failure, and is not cached or used
+    const body500 = fakeFetch(
+      standardRoutes({ filesFolder: () => jsonResponse(filesFolderBody(), 500) }),
+    )
+    const cache500 = new Map<string, { driveId: string; folderId: string }>()
+    const c = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(body500.fn, dir, { channelDriveCache: cache500 }),
+    )
+    expect(c.results.length).toBe(1)
+    expect(c.results[0].kind).toBe('failed')
+    expect(c.annotations).toEqual([
+      "[Attachment failed: report.xlsx — could not read the channel's files folder (HTTP 500)]",
+    ])
+    expect(cache500.size).toBe(0)
+    expect(fetchedTheFile(body500.calls)).toBe(false)
+
+    // the count is the references that are LEFT: an earlier skipped link is its own line
+    const mixed = fakeFetch(
+      standardRoutes(
+        denied({
+          message: () =>
+            graphMessage([
+              graphRef({ id: 'ref-0', contentUrl: 'https://evil.example.com/a.xlsx', name: 'a.xlsx' }),
+              graphRef(),
+              graphRef({ id: 'ref-2', name: 'notes.txt' }),
+            ]),
+        }),
+      ),
+    )
+    const d = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID, refIds: ['ref-0', 'ref-1', 'ref-2'] }),
+      SENDER,
+      deps(mixed.fn, dir),
+    )
+    expect(d.annotations).toEqual([
+      '[Attachment skipped: a.xlsx — not a SharePoint file link]',
+      "[Attachment skipped: 2 shared file(s) — the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP 403)]",
+    ])
+  })
+
+  test('Y9 the drive owner: a group-owned drive and a denied read are skips, a 500 is a failure', async () => {
+    // owned by a group (a team library): not the sender's OneDrive, and not cached
+    const cache = new Map<string, string>([['b!other', '00000000-0000-4000-8000-0000000000cc']])
+    const group = fakeFetch(
+      standardRoutes({ driveOwner: () => jsonResponse({ owner: { group: { id: 'group-1', displayName: 'Test Team' } } }) }),
+    )
+    const g = await fetchSharedFiles(chatLookup(), SENDER, deps(group.fn, dir, { driveOwnerCache: cache }))
+    expect(g.results.length).toBe(1)
+    expect(g.results[0].kind).toBe('skipped')
+    expect(g.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_ONEDRIVE}]`])
+    expect([...cache.entries()]).toEqual([['b!other', '00000000-0000-4000-8000-0000000000cc']])
+    expect(fetchedTheFile(group.calls)).toBe(false)
+
+    // 403 (and 401): a missing permission, so a skip
+    for (const status of [401, 403]) {
+      const denied = fakeFetch(standardRoutes({ driveOwner: () => jsonResponse({ error: 'x' }, status) }))
+      const d = await fetchSharedFiles(chatLookup(), SENDER, deps(denied.fn, dir, { driveOwnerCache: cache }))
+      expect(d.results[0].kind).toBe('skipped')
+      expect(d.annotations).toEqual([
+        `[Attachment skipped: report.xlsx — the Teams app has no Microsoft Graph permission to read the file's drive owner (HTTP ${status})]`,
+      ])
+      expect(fetchedTheFile(denied.calls)).toBe(false)
+    }
+
+    // 500 even though the body names the sender as the owner: a failure, nothing fetched
+    const boom = fakeFetch(
+      standardRoutes({ driveOwner: () => jsonResponse({ owner: { user: { id: SENDER_AAD } } }, 500) }),
+    )
+    const b = await fetchSharedFiles(chatLookup(), SENDER, deps(boom.fn, dir, { driveOwnerCache: cache }))
+    expect(b.results.length).toBe(1)
+    expect(b.results[0].kind).toBe('failed')
+    expect(b.annotations).toEqual([
+      "[Attachment failed: report.xlsx — could not read the file's drive owner (HTTP 500)]",
+    ])
+    expect(fetchedTheFile(boom.calls)).toBe(false)
+    expect([...cache.keys()]).toEqual(['b!other'])
+  })
+
+  test('Y12 ids that need encoding are encoded in every request built from them', async () => {
+    const drive = 'b!d/1?x'
+    const item = 'it/em?1'
+    const parent = 'pa/r?2'
+    const driveEnc = 'b!d%2F1%3Fx'
+    const itemEnc = 'it%2Fem%3F1'
+    const parentEnc = 'pa%2Fr%3F2'
+    const hop = 'https://contoso.sharepoint.com/sites/x/_layouts/15/download.aspx?file=r2.xlsx'
+    const meta = () =>
+      jsonResponse({ id: item, name: 'report.xlsx', size: BODY.length, parentReference: { driveId: drive, id: parent } })
+    const redirect = () => new Response(null, { status: 302, headers: { location: hop } })
+    const contentExpected = `${GRAPH_V1}/drives/${driveEnc}/items/${itemEnc}/content`
+
+    // a channel: the walk from the parent folder up to the channel folder
+    const chan = fakeFetch([
+      { test: u => u.includes('/messages/'), reply: () => graphMessage([graphRef()]) },
+      { test: u => u.startsWith(`${GRAPH_V1}/shares/`), reply: meta },
+      { test: u => u.includes('/filesFolder'), reply: () => jsonResponse(filesFolderBody(drive)) },
+      {
+        test: u => u === `${GRAPH_V1}/drives/${driveEnc}/items/${parentEnc}?$select=id,parentReference`,
+        reply: () => jsonResponse({ id: parent, parentReference: { driveId: drive, id: FOLDER } }),
+      },
+      { test: u => u === contentExpected, reply: redirect },
+      { test: u => u === hop, reply: () => new Response(BODY) },
+    ])
+    const c = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(chan.fn, dir))
+    expect(c.results.length).toBe(1)
+    expect(c.results[0].kind).toBe('saved')
+    expect(chan.calls.map(x => x.url).slice(2)).toEqual([
+      filesFolderUrl(),
+      `${GRAPH_V1}/drives/${driveEnc}/items/${parentEnc}?$select=id,parentReference`,
+      contentExpected,
+      hop,
+    ])
+
+    // a group chat: the drive owner and the content
+    const chat = fakeFetch([
+      { test: u => u.includes('/messages/'), reply: () => graphMessage([graphRef()]) },
+      { test: u => u.startsWith(`${GRAPH_V1}/shares/`), reply: meta },
+      {
+        test: u => u === `${GRAPH_V1}/drives/${driveEnc}?$select=owner`,
+        reply: () => jsonResponse({ owner: { user: { id: SENDER_AAD } } }),
+      },
+      { test: u => u === contentExpected, reply: redirect },
+      { test: u => u === hop, reply: () => new Response(BODY) },
+    ])
+    const g = await fetchSharedFiles(chatLookup(), SENDER, deps(chat.fn, dir))
+    expect(g.results.length).toBe(1)
+    expect(g.results[0].kind).toBe('saved')
+    expect(chat.calls.map(x => x.url).slice(2)).toEqual([
+      `${GRAPH_V1}/drives/${driveEnc}?$select=owner`,
+      contentExpected,
+      hop,
+    ])
+  })
+
+  test('Y13 a message id with a line break is one stderr line, not two', async () => {
+    const forged = 'MSG\nteams channel: forged line'
+    for (const lookup of [channelLookup({ aadGroupId: GID, messageId: forged }), chatLookup({ messageId: forged })]) {
+      const f = fakeFetch(standardRoutes({ message: () => graphMessage([graphRef({ id: 'someone-elses' })]) }))
+      const { value, lines } = await captureStderr(() => fetchSharedFiles(lookup, SENDER, deps(f.fn, dir)))
+      expect(value.results).toEqual([])
+      expect(lines).toEqual([
+        'teams channel: shared file lookup found no file reference for 1 placeholder(s) in message MSG teams channel: forged line\n',
+      ])
+      const out = lines.join('')
+      expect(out.endsWith('\n')).toBe(true)
+      expect(out.split('\n')).toHaveLength(2)
+    }
+  })
+})
+
+describe('attachments: writeAll', () => {
+  /** A sink that takes at most `max` bytes per call, like a pipe or a full disk would. */
+  function shortSink(max: number) {
+    const received: number[] = []
+    const fds: number[] = []
+    const write = (fd: number, b: Uint8Array): number => {
+      fds.push(fd)
+      const n = Math.min(max, b.byteLength)
+      for (let i = 0; i < n; i++) received.push(b[i]!)
+      return n
+    }
+    return { received, fds, write }
+  }
+
+  test('Y10 a short write is continued until every byte is out, in order', () => {
+    const data = Uint8Array.from({ length: 10 }, (_, i) => i + 1)
+    const sink = shortSink(3)
+    writeAll(7, data, sink.write)
+    expect(sink.received).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    // ceil(10 / 3) calls, every one on the same descriptor
+    expect(sink.fds).toEqual([7, 7, 7, 7])
+
+    // a view into a larger buffer is written from its own start, not the buffer's
+    const view = new Uint8Array([9, 9, 4, 5, 6, 9]).subarray(2, 5)
+    const second = shortSink(2)
+    writeAll(3, view, second.write)
+    expect(second.received).toEqual([4, 5, 6])
+
+    // an empty buffer needs no call at all
+    const none = shortSink(3)
+    writeAll(3, new Uint8Array(0), none.write)
+    expect(none.fds).toEqual([])
+  })
+
+  test('Y10b a write that makes no progress throws instead of looping', () => {
+    let calls = 0
+    expect(() =>
+      writeAll(5, new Uint8Array([1, 2, 3]), () => {
+        calls += 1
+        return 0
+      }),
+    ).toThrow('write made no progress')
+    expect(calls).toBe(1)
+
+    // progress that stops half way is the same error
+    let first = true
+    expect(() =>
+      writeAll(5, new Uint8Array([1, 2, 3, 4]), () => {
+        if (first) {
+          first = false
+          return 2
+        }
+        return 0
+      }),
+    ).toThrow('write made no progress')
+
+    expect(() => writeAll(5, new Uint8Array([1]), () => -1)).toThrow('write made no progress')
+  })
+
+  test('Y10c the default writer puts a whole buffer into a real file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cct-writeall-'))
+    try {
+      const file = join(dir, 'out.bin')
+      const fd = openSync(file, 'wx', 0o600)
+      try {
+        writeAll(fd, new Uint8Array(1024 * 1024).fill(7))
+      } finally {
+        closeSync(fd)
+      }
+      const back = readFileSync(file)
+      expect(back.byteLength).toBe(1024 * 1024)
+      expect(back.every(b => b === 7)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('sharedFiles: saveResponseToTemp', () => {
   test('X10 a declared size over the cap throws before the body is read', async () => {
     let pulled = false
@@ -1140,6 +1757,37 @@ describe('sharedFiles: saveResponseToTemp', () => {
       rmSync(taken, { force: true })
     }
   })
+
+  test('Y11 a body of exactly MAX_ATTACHMENT_BYTES is saved, one byte more is refused', async () => {
+    // exactly at the cap, with a Content-Length that says so
+    const at = await saveResponseToTemp(
+      new Response(exactBody(MAX_ATTACHMENT_BYTES), {
+        status: 200,
+        headers: { 'content-length': String(MAX_ATTACHMENT_BYTES) },
+      }),
+    )
+    try {
+      expect(at.sizeBytes).toBe(MAX_ATTACHMENT_BYTES)
+      expect(statSync(at.tempPath).size).toBe(MAX_ATTACHMENT_BYTES)
+    } finally {
+      rmSync(at.tempPath, { force: true })
+    }
+
+    // one byte over, streamed with no Content-Length: only the running total can catch it
+    const before = attachTemps()
+    const over = new Response(exactBody(MAX_ATTACHMENT_BYTES + 1))
+    expect(over.headers.get('content-length')).toBeNull()
+    let err: unknown
+    try {
+      await saveResponseToTemp(over)
+    } catch (e) {
+      err = e
+    }
+    expect(err instanceof Error ? err.message : String(err)).toBe(
+      `exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`,
+    )
+    expect(attachTemps().filter(n => !before.includes(n))).toEqual([])
+  })
 })
 
 describe('attachments: logAttachmentResult', () => {
@@ -1176,6 +1824,24 @@ function oversizedBody(): ReadableStream<Uint8Array> {
       } else {
         controller.close()
       }
+    },
+  })
+}
+
+/** A body of exactly `total` bytes, in chunks of at most 1 MB (one pull each), so the
+ *  byte count can sit right on either side of a cap without a huge allocation. */
+function exactBody(total: number): ReadableStream<Uint8Array> {
+  const chunk = new Uint8Array(1024 * 1024)
+  let left = total
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (left <= 0) {
+        controller.close()
+        return
+      }
+      const n = Math.min(left, chunk.byteLength)
+      left -= n
+      controller.enqueue(n === chunk.byteLength ? chunk : chunk.subarray(0, n))
     },
   })
 }
