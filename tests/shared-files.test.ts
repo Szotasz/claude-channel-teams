@@ -1033,6 +1033,41 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(f.calls.some(c => c.url === DOWNLOAD_URL)).toBe(true)
     expect(attachTemps().filter(n => !before.includes(n))).toEqual([])
   })
+
+  test('X21 the Graph listing never yields more than MAX_SHARED_FILES downloads, duplicate entries included', async () => {
+    // MAX_SHARED_FILES + 2 reference entries, all carrying the same id: the
+    // listing itself caps how many are taken, duplicates or not.
+    const f = fakeFetch(
+      standardRoutes({
+        message: () => graphMessage(Array.from({ length: MAX_SHARED_FILES + 2 }, () => graphRef())),
+      }),
+    )
+    const { results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }),
+      SENDER,
+      deps(f.fn, dir),
+    )
+    expect(results.length).toBe(MAX_SHARED_FILES)
+    expect(results.every(r => r.kind === 'saved')).toBe(true)
+    expect(f.calls.filter(c => c.url === contentUrl()).length).toBe(MAX_SHARED_FILES)
+  })
+
+  test('X22 a drive-item size of exactly MAX_ATTACHMENT_BYTES is not skipped before the download', async () => {
+    // exactly at the cap: the pre-download check does not fire, and the small
+    // body the download returns is saved
+    const at = fakeFetch(standardRoutes({ metadata: () => graphMetadata({ size: MAX_ATTACHMENT_BYTES }) }))
+    const hit = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(at.fn, dir))
+    expect(hit.results.length).toBe(1)
+    expect(hit.results[0].kind).toBe('saved')
+    expect(at.calls.some(c => c.url === contentUrl())).toBe(true)
+
+    // one byte over is the other side of the boundary: skipped, nothing fetched
+    const over = fakeFetch(standardRoutes({ metadata: () => graphMetadata({ size: MAX_ATTACHMENT_BYTES + 1 }) }))
+    const miss = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(over.fn, dir))
+    expect(miss.results.length).toBe(1)
+    expect(miss.results[0].kind).toBe('skipped')
+    expect(over.calls.some(c => c.url === contentUrl())).toBe(false)
+  })
 })
 
 describe('sharedFiles: saveResponseToTemp', () => {
