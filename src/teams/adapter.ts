@@ -55,6 +55,7 @@ import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
 import { userViewInvokeFrom } from './userViews.js'
 import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
 import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
+import { attachmentRefIds, needsSharedFileLookup, type SharedFileLookup } from './sharedFiles.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -212,6 +213,8 @@ export interface AdapterDeps {
    * sets it.
    */
   attachments?: AttachmentHandler
+  /** Downloads files shared in a channel or group chat (Graph). Injectable for tests. */
+  sharedFiles?: (lookup: SharedFileLookup, fromName: string) => Promise<{ annotations: string[] }>
   /** Persisted per-channel references for post_to_channel. Optional. */
   channelRefs?: ChannelRefStore
   /** Optional typing-indicator pump. Started after the gate passes so the
@@ -879,6 +882,54 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         )
         const note = `[Attachment handling failed: ${err instanceof Error ? err.message : String(err)}]`
         text = text.length > 0 ? `${text}\n\n${note}` : note
+      }
+    }
+
+    // Files shared in a channel or a group chat. Teams does not attach them to
+    // the activity there — only an <attachment id="…"> placeholder in an HTML
+    // part — so they have to be read back through Microsoft Graph. Same
+    // composition rules as above; needsSharedFileLookup keeps the 1:1 path
+    // (where Teams does attach the file) out of this branch entirely.
+    if (
+      deps.sharedFiles &&
+      typeof messageId === 'string' &&
+      messageId.length > 0 &&
+      needsSharedFileLookup(rawAttachments, isGroupContext)
+    ) {
+      const cdx: any = a.channelData
+      const teamId = cdx?.team?.id
+      const chanId = cdx?.channel?.id
+      const lookup: SharedFileLookup | undefined =
+        threadConv && typeof teamId === 'string' && teamId.length > 0 && typeof chanId === 'string' && chanId.length > 0
+          ? {
+              kind: 'channel',
+              teamThreadId: teamId,
+              channelId: chanId,
+              messageId,
+              threadRootId: threadIdFromConversationId(conversationId),
+              serviceUrl: typeof a.serviceUrl === 'string' ? a.serviceUrl : undefined,
+              aadGroupId: typeof cdx?.team?.aadGroupId === 'string' ? cdx.team.aadGroupId : undefined,
+              refIds: attachmentRefIds(rawAttachments),
+            }
+          : !threadConv && (conversationType === 'groupChat' || isGroupConv)
+            ? {
+                kind: 'chat',
+                chatId: baseConversationId(conversationId),
+                messageId,
+                refIds: attachmentRefIds(rawAttachments),
+              }
+            : undefined
+      if (lookup !== undefined) {
+        try {
+          const { annotations } = await deps.sharedFiles(lookup, fromName)
+          if (annotations.length > 0) {
+            text = text.length > 0 ? `${text}\n\n${annotations.join('\n')}` : annotations.join('\n')
+          }
+        } catch (err) {
+          process.stderr.write(`teams channel: shared file handler threw: ${err}\n`)
+          const note = `[Attachment handling failed: ${err instanceof Error ? err.message : String(err)}]`
+          text = text.length > 0 ? `${text}\n\n${note}` : note
+        }
       }
     }
 
