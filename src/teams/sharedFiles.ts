@@ -12,7 +12,8 @@
  *      channels by group, Bot Framework by thread id),
  *   2. the message through Microsoft Graph, whose `attachments` list has the
  *      real entries (contentType `reference`, with id / contentUrl / name),
- *   3. the file from SharePoint/OneDrive through the Graph `shares` endpoint.
+ *   3. the file's Graph drive item, then the bytes themselves from
+ *      SharePoint/OneDrive.
  *
  * Every outcome becomes an annotation line, so the agent sees the same
  * "[Attached: …]" / "[Attachment skipped: …]" notes as on the 1:1 path and can
@@ -24,20 +25,32 @@
  *     service URL the activity itself named, and only when that host is on the
  *     inline-image allowlist — otherwise it would leak to any host an attacker
  *     puts in `serviceUrl`.
- *   - The Graph token (getGraphToken) only ever goes to graph.microsoft.com.
+ *   - The Graph token (getGraphToken) only ever goes to graph.microsoft.com:
+ *     every request that carries it is sent with `redirect: 'error'`, so no
+ *     redirect can hand it to a second host.
  *   - A contentUrl that is not a *.sharepoint.com https link is never fetched.
- *   - The share download is followed manually: the redirect target must be
- *     https without userinfo, and it is fetched WITHOUT any bearer token.
+ *   - Ownership: Files.Read.All reads the WHOLE tenant, so without a check a
+ *     sender could make the bot fetch any tenant file by pasting a link. A file
+ *     is only downloaded when the conversation already shares it — in a channel
+ *     its drive must be the channel's own files folder, in a group chat the
+ *     drive's owner must be the sender. Everything else gets a skip line.
+ *   - The download is followed manually: a hop target must be a
+ *     *.sharepoint.com https link without userinfo, there are at most three
+ *     hops, and the hop is fetched WITHOUT any bearer token (the
+ *     pre-authenticated SharePoint link carries its own in the query string).
+ *   - Every request runs under one timer that only stops once the body has been
+ *     read, so a slow body cannot outlive the timeout.
  */
 
-import { mkdirSync } from 'fs'
+import { mkdirSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import type { Attachment } from 'botframework-schema'
 import {
   DOWNLOAD_TIMEOUT_MS,
+  MAX_ATTACHMENT_BYTES,
   type AttachmentResult,
-  downloadToTemp,
   formatAnnotation,
+  formatBytes,
   isAllowedInlineImageHost,
   londonDate,
   londonTime,
@@ -54,12 +67,18 @@ export const GRAPH_V1 = 'https://graph.microsoft.com/v1.0'
 export const MAX_SHARED_FILES = 10
 
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const REF_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
+// The id is only ever COMPARED against the Graph message's own attachment ids
+// — it never goes into a URL — so anything without whitespace, quotes, angle
+// brackets or control characters is acceptable, bounded in length.
+const REF_ID_RE = /^[^\s"'<>\u0000-\u001f\u007f]{1,256}$/
 
 // The placeholder Teams puts in the HTML part for every shared file.
 const ATTACHMENT_TAG_RE = /<attachment\b[^>]*\bid\s*=\s*["']([^"']*)["']/gi
 
 const REDIRECT_STATUSES = [301, 302, 303, 307, 308]
+
+// At most this many redirects are followed by hand on the download.
+const MAX_DOWNLOAD_HOPS = 3
 
 /**
  * The ids of the `<attachment id="…">` placeholders in the activity's HTML
@@ -132,7 +151,14 @@ export type SharedFileLookup =
       aadGroupId?: string
       refIds: string[]
     }
-  | { kind: 'chat'; chatId: string; messageId: string; refIds: string[] }
+  | {
+      kind: 'chat'
+      chatId: string
+      messageId: string
+      /** The sender's AAD object id, lowercased — the OneDrive owner check. */
+      senderAadObjectId?: string
+      refIds: string[]
+    }
 
 export interface SharedFilesDeps {
   /** App-only Microsoft Graph token. */
@@ -145,8 +171,14 @@ export interface SharedFilesDeps {
   fetchImpl?: typeof fetch
   /** Optional clock override for deterministic tests. Returns a Date. */
   now?: () => Date
+  /** Per-request timeout, one timer per request. Defaults to DOWNLOAD_TIMEOUT_MS. */
+  timeoutMs?: number
   /** teamThreadId -> Azure AD group id, so the Bot Framework lookup happens once per team. */
   teamGroupIdCache?: Map<string, string>
+  /** `${aadGroupId}/${channelId}` -> the drive id of the channel's files folder. */
+  channelDriveCache?: Map<string, string>
+  /** drive id -> the AAD object id of the OneDrive that owns the drive. */
+  driveOwnerCache?: Map<string, string>
 }
 
 /** Last path segment of a URL, decoded; "file" when there is nothing usable. */
@@ -172,21 +204,51 @@ function isObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * The only redirect target we are willing to fetch: https, no userinfo, and it
- * must parse. Returns the Location value unchanged, or undefined when the
- * target fails the check.
+ * A file name as the agent is allowed to see it: control characters, DEL and
+ * the Unicode line / paragraph separators become spaces (a line break would
+ * let a name forge a line of its own after the annotation), and the name is
+ * capped. The raw name still goes to pickPath, which sanitises the file name
+ * on disk.
  */
-function httpsRedirectTarget(location: string | null): string | undefined {
-  if (location === null) return undefined
-  let u: URL
+const shown = (s: string) => s.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, ' ').slice(0, 200)
+
+/** A response body as JSON, or undefined when it does not parse. */
+async function readJson(res: Response): Promise<unknown> {
   try {
-    u = new URL(location)
+    return await res.json()
   } catch {
     return undefined
   }
-  if (u.protocol !== 'https:' || u.username !== '' || u.password !== '') return undefined
-  return location
 }
+
+/**
+ * The mapping the Graph metadata and content requests share: 401/403 is a
+ * missing Files.Read.All (worth saying, it is an operator fix), 404 is a file
+ * that is gone, anything else is just the status.
+ */
+function graphFileError(status: number): { kind: 'skipped' | 'failed'; reason: string } {
+  if (status === 401 || status === 403) {
+    return {
+      kind: 'skipped',
+      reason:
+        `the Teams app has no Microsoft Graph permission to read this file (HTTP ${status}); ` +
+        'it needs the Files.Read.All application permission',
+    }
+  }
+  if (status === 404) return { kind: 'failed', reason: 'file not found in SharePoint (HTTP 404)' }
+  return { kind: 'failed', reason: `HTTP ${status}` }
+}
+
+/** What one hop of the download left us with: the bytes, the next hop, or a stop. */
+type DownloadOutcome =
+  | { tempPath: string; sizeBytes: number }
+  | { next: string }
+  | { fail: string; kind: 'skipped' | 'failed' }
+
+/** What the Graph drive item gave us: where the file lives, or why it did not. */
+type DriveItem =
+  | { id: string; driveId: string; size?: number }
+  | { error: { kind: 'skipped' | 'failed'; reason: string } }
 
 async function run(
   lookup: SharedFileLookup,
@@ -196,7 +258,7 @@ async function run(
   const f = deps.fetchImpl ?? fetch
   const now = deps.now ?? (() => new Date())
   const n = lookup.refIds.length
-  const countName = `${n} shared file(s)`
+  const countName = shown(`${n} shared file(s)`)
 
   const results: AttachmentResult[] = []
   const record = (r: AttachmentResult) => {
@@ -208,16 +270,26 @@ async function run(
     results,
   })
 
-  // Every request gets its own timeout; none of them is allowed to hang a turn.
-  const request = async (url: string, init: RequestInit): Promise<Response> => {
+  // One request, one timer — and the timer only stops once the body has been
+  // read, because `use` is awaited inside the try. Reading the body outside it
+  // would let a slow body outlive the timeout.
+  const call = async <T>(
+    url: string,
+    init: RequestInit,
+    use: (res: Response) => Promise<T>,
+  ): Promise<T> => {
     const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), DOWNLOAD_TIMEOUT_MS)
+    const t = setTimeout(() => ctrl.abort(), deps.timeoutMs ?? DOWNLOAD_TIMEOUT_MS)
     try {
-      return await f(url, { ...init, signal: ctrl.signal })
+      const res = await f(url, { ...init, signal: ctrl.signal })
+      return await use(res)
     } finally {
       clearTimeout(t)
     }
   }
+  const graphHeaders = async (): Promise<Record<string, string>> => ({
+    Authorization: `Bearer ${await deps.getGraphToken()}`,
+  })
 
   // Step A — the team's Azure AD group id. Graph addresses a channel through
   // its group, Bot Framework through the thread id, so this is a translation
@@ -240,25 +312,20 @@ async function run(
         })
         return done()
       }
-      const res = await request(
+      const team = await call(
         `${serviceUrl.replace(/\/+$/, '')}/v3/teams/${encodeURIComponent(lookup.teamThreadId)}`,
-        { headers: { Authorization: `Bearer ${await deps.getBotToken()}` } },
+        { headers: { Authorization: `Bearer ${await deps.getBotToken()}` }, redirect: 'error' },
+        async res => ({ ok: res.ok, status: res.status, body: await readJson(res) }),
       )
-      if (!res.ok) {
+      if (!team.ok) {
         record({
           kind: 'failed',
           originalName: countName,
-          reason: `could not resolve the team id (HTTP ${res.status})`,
+          reason: `could not resolve the team id (HTTP ${team.status})`,
         })
         return done()
       }
-      let body: unknown
-      try {
-        body = await res.json()
-      } catch {
-        body = undefined
-      }
-      const aadGroupId = isObject(body) ? body.aadGroupId : undefined
+      const aadGroupId = isObject(team.body) ? team.body.aadGroupId : undefined
       if (typeof aadGroupId !== 'string' || !GUID_RE.test(aadGroupId)) {
         record({
           kind: 'failed',
@@ -288,32 +355,28 @@ async function run(
       `${GRAPH_V1}/chats/${encodeURIComponent(lookup.chatId)}` +
       `/messages/${encodeURIComponent(lookup.messageId)}`
   }
-  const msgRes = await request(messageUrl, {
-    headers: { Authorization: `Bearer ${await deps.getGraphToken()}` },
-  })
-  if (!msgRes.ok) {
+  const msg = await call(
+    messageUrl,
+    { headers: await graphHeaders(), redirect: 'error' },
+    async res => ({ ok: res.ok, status: res.status, body: await readJson(res) }),
+  )
+  if (!msg.ok) {
     // 401/403 here is almost always a missing resource-specific consent, so
     // say which one instead of leaving the operator to guess.
     const consent =
       lookup.kind === 'channel' ? 'ChannelMessage.Read.Group' : 'ChatMessage.Read.Chat'
     const suffix =
-      msgRes.status === 401 || msgRes.status === 403
+      msg.status === 401 || msg.status === 403
         ? `; the Teams app needs the ${consent} consent for this ${lookup.kind === 'channel' ? 'team' : 'chat'}`
         : ''
     record({
       kind: 'failed',
       originalName: countName,
-      reason: `could not read the message from Microsoft Graph (HTTP ${msgRes.status})${suffix}`,
+      reason: `could not read the message from Microsoft Graph (HTTP ${msg.status})${suffix}`,
     })
     return done()
   }
-  let msgBody: unknown
-  try {
-    msgBody = await msgRes.json()
-  } catch {
-    msgBody = undefined
-  }
-  const listed = isObject(msgBody) && Array.isArray(msgBody.attachments) ? msgBody.attachments : []
+  const listed = isObject(msg.body) && Array.isArray(msg.body.attachments) ? msg.body.attachments : []
   const refs: { contentUrl: string; name: unknown }[] = []
   for (const el of listed) {
     if (!isObject(el)) continue
@@ -324,51 +387,215 @@ async function run(
     if (refs.length >= MAX_SHARED_FILES) break
   }
   // A placeholder whose reference never turns up (a card, a loop component) is
-  // not an error: there is simply nothing to download.
-  if (refs.length === 0) return { annotations: [], results: [] }
+  // not an error: there is simply nothing to download. One stderr line, so an
+  // operator can tell "nothing to fetch" from "Graph came up empty".
+  if (refs.length === 0) {
+    if (n > 0) {
+      process.stderr.write(
+        `teams channel: shared file lookup found no file reference for ${n} placeholder(s) in message ${lookup.messageId}\n`,
+      )
+    }
+    return { annotations: [], results: [] }
+  }
 
-  // Step C — download each reference, in the order the message lists them.
+  // The channel's files-folder drive, read once per message (and once per
+  // process through the cache): every file a channel shares lives there.
+  let channelDriveId =
+    lookup.kind === 'channel' ? deps.channelDriveCache?.get(`${gid}/${lookup.channelId}`) : undefined
+
+  // Step C5 — the bytes. Graph answers the content request with a redirect to a
+  // pre-authenticated SharePoint link, which is followed by hand: the hop is
+  // fetched WITHOUT our bearer token (the link carries its own in the query
+  // string), only to an allowed SharePoint address, and at most three times.
+  const download = async (
+    driveId: string,
+    itemId: string,
+  ): Promise<{ tempPath: string; sizeBytes: number } | { outcome: { kind: 'skipped' | 'failed'; reason: string } }> => {
+    let current =
+      `${GRAPH_V1}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`
+    for (let hop = 0; ; hop++) {
+      const out = await call(
+        current,
+        hop === 0
+          ? { headers: await graphHeaders(), redirect: 'manual' }
+          : { redirect: 'manual' },
+        async (res): Promise<DownloadOutcome> => {
+          if (res.status === 200) return await saveResponseToTemp(res)
+          if (REDIRECT_STATUSES.includes(res.status)) {
+            const location = res.headers.get('location')
+            if (location === null) return { fail: 'download redirect without a location', kind: 'failed' as const }
+            if (hop >= MAX_DOWNLOAD_HOPS) return { fail: 'too many download redirects', kind: 'failed' as const }
+            const next = new URL(location, current).href
+            if (!isAllowedSharePointUrl(next)) {
+              return { fail: 'download redirect target is not allowed', kind: 'failed' as const }
+            }
+            return { next }
+          }
+          // The Graph content request gets the Graph permission wording; a hop
+          // is fetched without any token of ours, so its answer is just a status.
+          if (hop > 0) return { fail: `HTTP ${res.status}`, kind: 'failed' as const }
+          const err = graphFileError(res.status)
+          return { fail: err.reason, kind: err.kind }
+        },
+      )
+      if ('next' in out) {
+        current = out.next
+        continue
+      }
+      if ('fail' in out) return { outcome: { kind: out.kind, reason: out.fail } }
+      return out
+    }
+  }
+
+  // Step C — one reference at a time, in the order the message lists them.
   for (const ref of refs) {
     const name =
       typeof ref.name === 'string' && ref.name.trim() !== '' ? ref.name : nameFromUrl(ref.contentUrl)
+    const label = shown(name)
+    let tempPath: string | undefined
     try {
+      // C1 — a link that is not SharePoint is never fetched at all.
       if (!isAllowedSharePointUrl(ref.contentUrl)) {
-        record({ kind: 'skipped', originalName: name, reason: 'not a SharePoint file link' })
+        record({ kind: 'skipped', originalName: label, reason: 'not a SharePoint file link' })
         continue
       }
-      const res = await request(
-        `${GRAPH_V1}/shares/${encodeSharingUrl(ref.contentUrl)}/driveItem/content`,
-        { headers: { Authorization: `Bearer ${await deps.getGraphToken()}` }, redirect: 'manual' },
+
+      // C2 — the drive item: which drive, which item, how big.
+      const meta = await call(
+        `${GRAPH_V1}/shares/${encodeSharingUrl(ref.contentUrl)}/driveItem?$select=id,name,size,parentReference`,
+        { headers: await graphHeaders(), redirect: 'error' },
+        async (res): Promise<DriveItem> => {
+          if (!res.ok) return { error: graphFileError(res.status) }
+          const body = await readJson(res)
+          const b = isObject(body) ? body : undefined
+          const parent = b !== undefined && isObject(b.parentReference) ? b.parentReference : undefined
+          const id = typeof b?.id === 'string' && b.id !== '' ? b.id : undefined
+          const driveId =
+            typeof parent?.driveId === 'string' && parent.driveId !== '' ? parent.driveId : undefined
+          if (id === undefined || driveId === undefined) {
+            return {
+              error: {
+                kind: 'failed' as const,
+                reason: 'Microsoft Graph returned no drive item for this file',
+              },
+            }
+          }
+          const size = typeof b?.size === 'number' && Number.isFinite(b.size) ? b.size : undefined
+          return { id, driveId, size }
+        },
       )
-      let tempPath: string
-      let sizeBytes: number
-      if (REDIRECT_STATUSES.includes(res.status)) {
-        const location = httpsRedirectTarget(res.headers.get('location'))
-        if (location === undefined) {
-          record({ kind: 'failed', originalName: name, reason: 'download redirect is not https' })
+      if ('error' in meta) {
+        record({ kind: meta.error.kind, originalName: label, reason: meta.error.reason })
+        continue
+      }
+
+      // C3 — ownership. Files.Read.All would let a sender pull any tenant file
+      // through the bot, so a file is only taken when the conversation already
+      // shares it: the channel's own files folder in a channel, the sender's
+      // OneDrive in a group chat.
+      if (lookup.kind === 'channel') {
+        if (channelDriveId === undefined) {
+          const folder = await call(
+            `${GRAPH_V1}/teams/${encodeURIComponent(gid!)}` +
+              `/channels/${encodeURIComponent(lookup.channelId)}/filesFolder?$select=parentReference`,
+            { headers: await graphHeaders(), redirect: 'error' },
+            async res => {
+              const body = await readJson(res)
+              const parent =
+                isObject(body) && isObject(body.parentReference) ? body.parentReference : undefined
+              const driveId =
+                typeof parent?.driveId === 'string' && parent.driveId !== '' ? parent.driveId : undefined
+              return { ok: res.ok, status: res.status, driveId }
+            },
+          )
+          if (!folder.ok || folder.driveId === undefined) {
+            // One line for the whole message, and nothing else is fetched: the
+            // channel's folder is the same for every reference in it.
+            record({
+              kind: 'failed',
+              originalName: label,
+              reason: folder.ok
+                ? "could not read the channel's files folder (no drive id)"
+                : `could not read the channel's files folder (HTTP ${folder.status})`,
+            })
+            return done()
+          }
+          channelDriveId = folder.driveId
+          deps.channelDriveCache?.set(`${gid}/${lookup.channelId}`, channelDriveId)
+        }
+        if (meta.driveId !== channelDriveId) {
+          record({
+            kind: 'skipped',
+            originalName: label,
+            reason: "the file is not stored in this channel's files, so it is not downloaded",
+          })
           continue
         }
-        // The pre-authenticated SharePoint link carries its own token in the
-        // query string — sending ours along would only leak it.
-        ;({ tempPath, sizeBytes } = await downloadToTemp(location, {}, f))
-      } else if (res.status === 200) {
-        ;({ tempPath, sizeBytes } = await saveResponseToTemp(res))
-      } else if (res.status === 401 || res.status === 403) {
+      } else {
+        const sender = lookup.senderAadObjectId
+        if (sender === undefined) {
+          record({
+            kind: 'skipped',
+            originalName: label,
+            reason: "the file is not in the sender's OneDrive, so it is not downloaded",
+          })
+          continue
+        }
+        let owner = deps.driveOwnerCache?.get(meta.driveId)
+        if (owner === undefined) {
+          const drive = await call(
+            `${GRAPH_V1}/drives/${encodeURIComponent(meta.driveId)}?$select=owner`,
+            { headers: await graphHeaders(), redirect: 'error' },
+            async res => {
+              const body = await readJson(res)
+              const o = isObject(body) && isObject(body.owner) ? body.owner : undefined
+              const user = o !== undefined && isObject(o.user) ? o.user : undefined
+              const id = typeof user?.id === 'string' && user.id !== '' ? user.id : undefined
+              return { ok: res.ok, status: res.status, id }
+            },
+          )
+          if (!drive.ok || drive.id === undefined) {
+            record({
+              kind: 'failed',
+              originalName: label,
+              reason: drive.ok
+                ? "could not read the file's drive owner (no owner)"
+                : `could not read the file's drive owner (HTTP ${drive.status})`,
+            })
+            continue
+          }
+          owner = drive.id
+          deps.driveOwnerCache?.set(meta.driveId, owner)
+        }
+        if (owner.toLowerCase() !== sender.toLowerCase()) {
+          record({
+            kind: 'skipped',
+            originalName: label,
+            reason: "the file is not in the sender's OneDrive, so it is not downloaded",
+          })
+          continue
+        }
+      }
+
+      // C4 — a size we already know is over the cap is not worth a download.
+      if (meta.size !== undefined && meta.size > MAX_ATTACHMENT_BYTES) {
         record({
           kind: 'skipped',
-          originalName: name,
-          reason:
-            `the Teams app has no Microsoft Graph permission to read this file (HTTP ${res.status}); ` +
-            'it needs the Files.Read.All application permission',
+          originalName: label,
+          reason: `exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`,
         })
         continue
-      } else if (res.status === 404) {
-        record({ kind: 'failed', originalName: name, reason: 'file not found in SharePoint (HTTP 404)' })
-        continue
-      } else {
-        record({ kind: 'failed', originalName: name, reason: `HTTP ${res.status}` })
+      }
+
+      // C5 — the bytes themselves (see `download` above for the redirect rules).
+      const bytes = await download(meta.driveId, meta.id)
+      if ('outcome' in bytes) {
+        record({ kind: bytes.outcome.kind, originalName: label, reason: bytes.outcome.reason })
         continue
       }
+      tempPath = bytes.tempPath
+
+      // C6 — into the dated directory, under the sender's prefix.
       const when = now()
       const dateDir = join(deps.baseDir, londonDate(when))
       const prefix = `${londonTime(when)}-${senderSlug(fromName)}`
@@ -378,19 +605,26 @@ async function run(
       const dot = name.lastIndexOf('.')
       const rawExt = dot < 0 ? '' : name.slice(dot + 1).toLowerCase()
       const ext = /^[a-z0-9]{1,10}$/.test(rawExt) ? rawExt : ''
+      tempPath = undefined
       record({
         kind: 'saved',
         path: finalPath,
         contentType: ext !== '' ? `application/${ext}` : 'application/octet-stream',
-        sizeBytes,
-        originalName: name,
+        sizeBytes: bytes.sizeBytes,
+        originalName: label,
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      // A temp file that never made it to its final name is not left behind.
+      if (tempPath !== undefined) {
+        try {
+          unlinkSync(tempPath)
+        } catch {}
+      }
       if (msg.startsWith('exceeds ')) {
-        record({ kind: 'skipped', originalName: name, reason: msg })
+        record({ kind: 'skipped', originalName: label, reason: msg })
       } else {
-        record({ kind: 'failed', originalName: name, reason: msg })
+        record({ kind: 'failed', originalName: label, reason: msg })
       }
     }
   }

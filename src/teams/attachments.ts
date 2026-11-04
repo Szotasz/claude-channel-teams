@@ -39,7 +39,7 @@
  * same — no MCP schema changes — Hermes reads the path out of the text.
  */
 
-import { mkdirSync, renameSync, statSync, writeFileSync, existsSync, copyFileSync, constants, unlinkSync } from 'fs'
+import { mkdirSync, renameSync, statSync, existsSync, copyFileSync, constants, unlinkSync, openSync, closeSync, writeSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import type { Attachment } from 'botframework-schema'
@@ -221,7 +221,7 @@ export function pickPath(dateDir: string, prefix: string, originalName: string):
 }
 
 /** Format a byte count as "1.2 MB" / "523 KB" / "12 B" for the annotation. */
-function formatBytes(n: number): string {
+export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
@@ -260,20 +260,66 @@ export function formatAnnotation(result: AttachmentResult): string {
  * pick the final name here because the final name depends on collision
  * detection in the dated directory, and we want to defer the mkdir until we
  * know the download succeeded).
+ *
+ * The body is streamed chunk by chunk so memory stays bounded whatever the
+ * sender pushes at us, and the temp file is created 0600 — it is world-readable
+ * otherwise, and it holds a file that has not been through the filename checks
+ * yet. A declared Content-Length over the cap is refused without reading a
+ * single byte of the body.
  */
 export async function saveResponseToTemp(res: Response): Promise<{ tempPath: string; sizeBytes: number }> {
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}`)
   }
-  // Some Teams endpoints don't send Content-Length. We enforce the cap by
-  // counting bytes as we read.
-  const buf = await res.arrayBuffer()
-  if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
+  const declared = Number(res.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > MAX_ATTACHMENT_BYTES) {
+    // Not reading a body we already know we are throwing away.
+    try {
+      await res.body?.cancel()
+    } catch {}
     throw new Error(`exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`)
   }
   const tempPath = join(tmpdir(), `cct-attach-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
-  writeFileSync(tempPath, Buffer.from(buf))
-  return { tempPath, sizeBytes: buf.byteLength }
+  let fd: number | undefined
+  let total = 0
+  try {
+    fd = openSync(tempPath, 'wx', 0o600)
+    if (res.body !== null) {
+      const reader = res.body.getReader()
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.byteLength
+        if (total > MAX_ATTACHMENT_BYTES) {
+          // Some endpoints don't send Content-Length, so the cap can only fire
+          // here, before the chunk that crosses it is written.
+          try {
+            await reader.cancel()
+          } catch {}
+          throw new Error(`exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`)
+        }
+        writeSync(fd, value)
+      }
+    }
+  } catch (err) {
+    // Only a file this call created is ours to remove: when the 'wx' open
+    // itself failed, whatever sits at tempPath belongs to someone else.
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {}
+      try {
+        unlinkSync(tempPath)
+      } catch {}
+    }
+    throw err
+  }
+  if (fd !== undefined) {
+    try {
+      closeSync(fd)
+    } catch {}
+  }
+  return { tempPath, sizeBytes: total }
 }
 
 /**
