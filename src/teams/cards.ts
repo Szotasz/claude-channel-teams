@@ -4,6 +4,8 @@
  * No msteams imBack / messageBack / signin action: it would post text in the name of the user who clicks it.
  * No refresh: its Action.Execute fires by itself when the card is shown, without a click.
  * Action.Submit and Action.Execute clicks reach the bot as marked card-action events (src/teams/cardAction.ts).
+ * No mention entity either: people and team tags are mentioned through reply's mentions, which checks that a
+ * person is a member of the conversation.
  */
 
 export const ADAPTIVE_CARD_CONTENT_TYPE = 'application/vnd.microsoft.card.adaptive'
@@ -27,6 +29,10 @@ function walk(value: unknown, path: string, depth: number): string | undefined {
       if (err) return err
     }
     return undefined
+  }
+  const type = (value as Record<string, unknown>).type
+  if (typeof type === 'string' && type.toLowerCase() === 'mention') {
+    return `card${path ? '.' + path : ''} is a mention entity; mention people and team tags with reply's mentions instead`
   }
   for (const [key, child] of Object.entries(value)) {
     const childPath = path ? `${path}.${key}` : key

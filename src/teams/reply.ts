@@ -23,6 +23,14 @@ import type { AckPlaceholders } from './ackPlaceholder.js'
 import { withSendRetry } from './sendRetry.js'
 import { isStreamClosedError, type StatusStreams } from './statusStream.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
+import {
+  isChannelReference,
+  isUsableDisplayName,
+  mentionEntity,
+  teamsMemberLookup,
+  validateMentions,
+  type MemberLookup,
+} from './mentions.js'
 import { createPipelineRequest } from '@azure/core-rest-pipeline'
 import { USER_VIEW_VERB, usesReservedVerb, validateUserCards, type UserCard } from './userViews.js'
 
@@ -152,6 +160,10 @@ export interface ReplyDeps {
   knownUsers?: { get(aadObjectId: string): string | undefined }
   /** Stored user-specific views (user_cards). */
   userViews?: { create(baseCard: Record<string, unknown>, userCards: UserCard[], userMris: string[]): { id: string; base: Record<string, unknown> } }
+  /** Team tags that may be mentioned (name -> tag id). Optional so existing tests still wire. */
+  mentionTags?: ReadonlyMap<string, string>
+  /** Membership check for mentioned people; defaults to TeamsInfo.getMember. Injected by tests. */
+  lookupMember?: MemberLookup
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -182,7 +194,7 @@ export function createReplySender(deps: ReplyDeps) {
     conversationId: string,
     text: string,
     card?: unknown,
-    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown },
+    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown; mentions?: unknown },
   ): Promise<string | undefined> {
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
@@ -208,6 +220,9 @@ export function createReplySender(deps: ReplyDeps) {
     }
     const entity = buildMessageEntity(opts ?? {})
     const { ref } = assertAllowedConversation(conversationId)
+    const mentions = opts?.mentions !== undefined
+      ? validateMentions(opts.mentions, text, deps.mentionTags ?? new Map(), isChannelReference(ref))
+      : []
     // Stop the typing pump first. We do this before the network send so the
     // indicator clears even if the connector call throws — flapping
     // "is typing…" forever after a failure is worse than the failure itself.
@@ -227,14 +242,50 @@ export function createReplySender(deps: ReplyDeps) {
         deps.config.appId,
         current,
         async turnContext => {
+          const mentionEntities: ReturnType<typeof mentionEntity>[] = []
+          const notMembers: string[] = []
+          const renames = new Map<string, string>()
+          // Compared without letter case: two entities whose texts differ only in case could be taken for one.
+          const shownNames = new Set<string>(mentions.filter(m => m.type === 'tag').map(m => m.name.toLowerCase()))
+          for (const m of mentions) {
+            if (m.type === 'tag') {
+              mentionEntities.push(mentionEntity(m.name, m.id, true))
+              continue
+            }
+            const member = await (deps.lookupMember ?? teamsMemberLookup)(turnContext, m.aadObjectId)
+            if (member === undefined) {
+              notMembers.push(m.name)
+              continue
+            }
+            if (!isUsableDisplayName(member.name)) {
+              throw new Error(`mentions: Teams returned no usable display name for ${m.name}`)
+            }
+            if (shownNames.has(member.name.toLowerCase())) {
+              throw new Error(`mentions: two entries would show the same name: ${member.name}`)
+            }
+            shownNames.add(member.name.toLowerCase())
+            renames.set(m.name, member.name)
+            mentionEntities.push(mentionEntity(member.name, member.id, false))
+          }
+          if (notMembers.length > 0) {
+            throw new Error(`mentions: not a member of this conversation: ${notMembers.join(', ')}`)
+          }
+          // One pass over the text, so a rename can never feed another rename.
+          const outText = renames.size === 0
+            ? text
+            : text.replace(/<at>([^<>]*)<\/at>/g, (whole, inner: string) => {
+                const shown = renames.get(inner)
+                return shown === undefined ? whole : `<at>${shown}</at>`
+              })
+          const entities = [...mentionEntities, ...(entity ? [entity] : [])]
           const activity = {
             type: 'message',
-            text,
+            text: outText,
             textFormat: 'markdown',
             ...(outCard !== undefined
               ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: outCard }] }
               : {}),
-            ...(entity ? { entities: [entity as { type: string }] } : {}),
+            ...(entities.length > 0 ? { entities: entities as { type: string }[] } : {}),
           }
           // Streaming is 1:1 only: close the stream only if the conversation is still 1:1 now.
           const closes = stream && isPersonalReference(current) ? stream : undefined
@@ -274,7 +325,7 @@ export function createReplySender(deps: ReplyDeps) {
     if (deps.statusStreams && isPersonalReference(ref)) await deps.statusStreams.withStream(conversationId, send)
     else await send(undefined)
     process.stderr.write(
-      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${closedStream ? ' stream=closed' : ''}${views > 0 ? ` views=${views}` : ''}\n`,
+      `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${closedStream ? ' stream=closed' : ''}${views > 0 ? ` views=${views}` : ''}${mentions.length > 0 ? ` mentions=${mentions.length}` : ''}\n`,
     )
     return sentId
   }
