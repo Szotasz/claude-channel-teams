@@ -7,11 +7,12 @@
  * goes to a 1:1 chat).
  */
 import { describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const read = (...p: string[]) => readFileSync(join(import.meta.dir, '..', 'src', ...p), 'utf8')
-const server = read('server.ts')
+const server = stripComments(read('server.ts'))
 
 /** The block that starts at `anchor`, from its first '{' up to the matching closing brace. */
 function block(src: string, anchor: string): string {
@@ -131,5 +132,17 @@ describe('server.ts wiring', () => {
     const notify = block(server, 'const onEvent: ChannelEventSink = event => {')
     const body = notify.slice(notify.indexOf('{') + 1)
     expect(firstStatement(body).startsWith('event = withInvisibleStripped(event)')).toBe(true)
+  })
+
+  test('the unmentioned filter and its held-messages store are built from config and wired in as a pair', () => {
+    // The third argument is the filter's whole environment (#44 review): without it the filter would get
+    // the default, and with process.env itself it would get the bot password.
+    expect(server.replace(/\s+/g, ' ')).toContain(
+      'createCommandFilter( config.unmentionedFilterCmd, config.unmentionedFilterTimeoutMs ?? 10000, filterEnv(process.env, config.unmentionedFilterEnv), )',
+    )
+    expect(server).toContain('createHeldMessages(config.unmentionedHistoryLimit ?? 20)')
+    // The listener gets both or neither: a filter without the store (or vice versa) would silently do nothing.
+    const listener = block(server, 'const listener = startListener({')
+    expect(listener).toContain('...(unmentionedFilter && heldMessages ? { unmentionedFilter, heldMessages } : {}),')
   })
 })
