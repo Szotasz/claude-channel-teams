@@ -65,6 +65,7 @@ import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
 import { ensureBaseDir, processAttachments } from './teams/attachments.js'
+import { fetchSharedFiles } from './teams/sharedFiles.js'
 import {
   createGraphTokenProvider,
   createPlannerTask,
@@ -941,6 +942,19 @@ const inboundDebouncer = createInboundDebouncer({ windowMs: config.inboundDeboun
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 
+// Team thread id -> Azure AD group id. Graph addresses a channel through its
+// group, so the shared-file path needs this translation; caching it keeps the
+// Bot Framework lookup to one call per team for the life of the process.
+const teamGroupIds = new Map<string, string>()
+
+// `${aadGroupId}/${channelId}` -> the drive id and item id of that channel's files
+// folder, and drive id -> the AAD object id of the OneDrive that owns it. Both feed the
+// shared-file ownership check (the bot only takes a file the conversation
+// already shares); caching them keeps the extra Graph call to one per channel
+// and one per drive for the life of the process.
+const channelDriveIds = new Map<string, { driveId: string; folderId: string }>()
+const driveOwners = new Map<string, string>()
+
 const listener = startListener({
   config,
   adapter,
@@ -966,6 +980,15 @@ const listener = startListener({
       baseDir: config.receivedFilesDir,
       getBearerToken: () => inlineImageCredentials.getToken(),
       messageText,
+    }),
+  sharedFiles: async (lookup, fromName) =>
+    fetchSharedFiles(lookup, fromName, {
+      getGraphToken: () => graphToken.getToken(),
+      getBotToken: () => inlineImageCredentials.getToken(),
+      baseDir: config.receivedFilesDir,
+      teamGroupIdCache: teamGroupIds,
+      channelDriveCache: channelDriveIds,
+      driveOwnerCache: driveOwners,
     }),
 })
 
