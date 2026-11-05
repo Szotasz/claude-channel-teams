@@ -226,6 +226,11 @@ export interface Config {
    * TEAMS_CHANNEL_CREATE_TEAMS (comma-separated); see docs/create-channel.md.
    */
   channelCreateTeams: ReadonlySet<string>
+  /**
+   * Whether replies carry Teams' thumbs up / down buttons and clicks are
+   * delivered. From TEAMS_FEEDBACK ('1' or 'true'); see docs/feedback.md.
+   */
+  feedback: boolean
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -448,5 +453,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     meetingConversations: parseIdList(env.TEAMS_MEETING_CONVERSATIONS),
     meetingTranscripts: parseFlag(env.TEAMS_MEETING_TRANSCRIPTS),
     channelCreateTeams,
+    feedback: parseFlag(env.TEAMS_FEEDBACK),
   })
 }
