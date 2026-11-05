@@ -119,11 +119,11 @@ describe('adapter: card actions', () => {
     t.cleanup()
   })
 
-  test('A6 non-card invoke is ignored', async () => {
+  test('A6 non-card invoke is ignored: no event, no card answer, only the empty 200 a composeExtension invoke needs', async () => {
     const t = setup()
     await t.run(act({ name: 'composeExtension/query' }))
     expect(t.events).toEqual([])
-    expect(t.bot.sent).toEqual([])
+    expect(t.bot.sent.map((x: any) => ({ type: x.type, value: x.value }))).toEqual([{ type: 'invokeResponse', value: { status: 200 } }])
     t.cleanup()
   })
 })
