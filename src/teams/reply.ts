@@ -25,6 +25,7 @@ import { isStreamClosedError, type StatusStreams } from './statusStream.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
 import { createPipelineRequest } from '@azure/core-rest-pipeline'
 import { USER_VIEW_VERB, usesReservedVerb, validateUserCards, type UserCard } from './userViews.js'
+import type { SeenMessages } from './seenMessages.js'
 
 export const REACTION_ID_RE = /^[a-z0-9_]{1,40}$/
 
@@ -116,6 +117,16 @@ export function buildMessageEntity(opts: {
   }
 }
 
+export const QUOTE_ID_RE = /^[0-9A-Za-z:._-]{1,128}$/
+
+/** The quote_message_id tool argument: omitted or null means no quote; any string goes on to sendReply, which rejects one
+ * that is not a valid id (the empty string included); any other type is an error. */
+export function parseQuoteArg(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string') return value
+  throw new Error('quote_message_id must be a string')
+}
+
 export class UnknownConversationError extends Error {
   constructor(conversationId: string) {
     super(
@@ -152,6 +163,8 @@ export interface ReplyDeps {
   knownUsers?: { get(aadObjectId: string): string | undefined }
   /** Stored user-specific views (user_cards). */
   userViews?: { create(baseCard: Record<string, unknown>, userCards: UserCard[], userMris: string[]): { id: string; base: Record<string, unknown> } }
+  /** Message ids seen per conversation; an outbound quote must be one of them. */
+  seenMessages?: SeenMessages
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -182,8 +195,15 @@ export function createReplySender(deps: ReplyDeps) {
     conversationId: string,
     text: string,
     card?: unknown,
-    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown },
+    opts?: { aiGenerated?: boolean; citations?: CitationInput[]; userCards?: unknown; quoteMessageId?: string },
   ): Promise<string | undefined> {
+    const quoteMessageId = opts?.quoteMessageId
+    if (quoteMessageId !== undefined && !QUOTE_ID_RE.test(quoteMessageId)) {
+      throw new Error('invalid quote message id')
+    }
+    if (quoteMessageId !== undefined && !(deps.seenMessages?.has(conversationId, quoteMessageId))) {
+      throw new Error('quote_message_id is not a message seen in this conversation')
+    }
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
       if (!checked.ok) throw new Error(`invalid card: ${checked.error}`)
@@ -227,14 +247,18 @@ export function createReplySender(deps: ReplyDeps) {
         deps.config.appId,
         current,
         async turnContext => {
+          const entities = [
+            ...(quoteMessageId !== undefined ? [{ type: 'quotedReply', quotedReply: { messageId: quoteMessageId } }] : []),
+            ...(entity ? [entity as { type: string }] : []),
+          ]
           const activity = {
             type: 'message',
-            text,
+            text: quoteMessageId === undefined ? text : `<quoted messageId="${quoteMessageId}"/> ${text}`,
             textFormat: 'markdown',
             ...(outCard !== undefined
               ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: outCard }] }
               : {}),
-            ...(entity ? { entities: [entity as { type: string }] } : {}),
+            ...(entities.length > 0 ? { entities } : {}),
           }
           // Streaming is 1:1 only: close the stream only if the conversation is still 1:1 now.
           const closes = stream && isPersonalReference(current) ? stream : undefined
@@ -273,6 +297,7 @@ export function createReplySender(deps: ReplyDeps) {
     // Other conversations never have a stream, so their replies do not wait.
     if (deps.statusStreams && isPersonalReference(ref)) await deps.statusStreams.withStream(conversationId, send)
     else await send(undefined)
+    if (sentId !== undefined) deps.seenMessages?.remember(conversationId, sentId)
     process.stderr.write(
       `teams channel: reply sent conv=${conversationId} len=${text.length}${card !== undefined ? ' card=yes' : ''}${opts?.aiGenerated === true ? ' ai=yes' : ''}${opts?.citations?.length ? ` cites=${opts.citations.length}` : ''}${closedStream ? ' stream=closed' : ''}${views > 0 ? ` views=${views}` : ''}\n`,
     )

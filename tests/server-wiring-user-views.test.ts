@@ -31,7 +31,7 @@ describe('server.ts user_cards wiring', () => {
     )
     // user_cards alone also takes the branch with options.
     expect(reply).toMatch(
-      /const id = aiGenerated \|\| rawCitations !== undefined \|\| rawUserCards !== undefined\n\s*\? await replier\.sendReply\(conversationId, text, card, \{/,
+      /const id = aiGenerated \|\| rawCitations !== undefined \|\| rawUserCards !== undefined \|\| quoteMessageId !== undefined\n\s*\? await replier\.sendReply\(conversationId, text, card, \{/,
     )
     expect(block(reply, 'await replier.sendReply(conversationId, text, card, {')).toContain(
       '...(rawUserCards !== undefined ? { userCards: rawUserCards } : {}),',
