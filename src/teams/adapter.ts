@@ -50,7 +50,7 @@ import type { DeliveredMessages } from './deliveredMessages.js'
 import type { InboundIds } from './inboundIds.js'
 import { invisibleMeta, stripInvisible } from './invisibleChars.js'
 import { makeEarlyAckTurn } from './earlyAck.js'
-import { cardActionFrom, cardActionText } from './cardAction.js'
+import { buildDialogTask, cardActionFrom, cardActionText, dialogInvokeFrom, dialogSubmitText } from './cardAction.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
 import { userViewInvokeFrom } from './userViews.js'
 import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
@@ -102,7 +102,7 @@ export type ChannelEventSink = (event: {
   hasAttachments?: boolean
   /** Set by the inbound debouncer when several quick messages were merged into this one. */
   merged?: { count: number; messageIds: string[] }
-  cardAction?: { kind: 'execute' | 'submit'; verb?: string }
+  cardAction?: { kind: 'execute' | 'submit' | 'dialog'; verb?: string }
   /** Set when the event is a Teams meeting start or end (not a message). Values are already cleaned. */
   meetingEvent?: { kind: 'started' | 'ended'; title?: string; meetingType?: string; meetingId?: string; time?: string }
 }) => void
@@ -414,6 +414,10 @@ async function respondWithCard(ctx: TurnContext, card: Record<string, unknown>) 
   } as Partial<Activity>)
 }
 
+async function respondToTaskInvoke(ctx: TurnContext, body: unknown) {
+  await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200, body } } as Partial<Activity>)
+}
+
 /**
  * Build the turn handler that bridges the SDK's TurnContext to our gate + sink.
  *
@@ -431,6 +435,11 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     } finally {
       const card = cardActionFrom(ctx.activity)
       if (card && card.kind !== 'submit' && !invoke.answered) await answer(invoke, c => respondToCardInvoke(c, 'Not allowed.'))
+      // Any task/* invoke, also one this code does not know, gets a task-format answer.
+      const taskInvoke = ctx.activity.type === 'invoke' && typeof ctx.activity.name === 'string' && ctx.activity.name.startsWith('task/')
+      if (taskInvoke && !invoke.answered) {
+        await answer(invoke, c => respondToTaskInvoke(c, { task: { type: 'message', value: 'Not allowed.' } }))
+      }
     }
   }
 
@@ -447,6 +456,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       `teams channel: inbound type=${a.type} from=${a.from?.aadObjectId ?? '<none>'} convId=${a.conversation?.id?.slice(0, 20) ?? '<none>'} text=${JSON.stringify((a.text ?? '').slice(0, 60))}\n`,
     )
     const card = cardActionFrom(a)
+    const dialog = dialogInvokeFrom(a)
     // We only care about message activities in v1. Conversation update,
     // typing, etc. are ignored — they don't carry a payload Claude needs.
     const eventType = (a.channelData as { eventType?: unknown } | undefined)?.eventType
@@ -545,7 +555,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       }
       return
     }
-    if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card) return
+    if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card && !dialog) return
     const answerInvoke = (message: string) => answer(invoke, c => respondToCardInvoke(c, message))
 
     const aadObjectIdRaw = a.from?.aadObjectId
@@ -601,6 +611,39 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
         messageEvent: 'reaction',
       })
+      return
+    }
+
+    // A dialog (task module) opened from a card button, or its submit.
+    if (dialog) {
+      const answerTask = (body: unknown) => answer(invoke, c => respondToTaskInvoke(c, body))
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop dialog invoke from a sender not on the allowlist (${aadObjectId})\n`)
+        await answerTask({ task: { type: 'message', value: 'Not allowed.' } })
+        return
+      }
+      if (dialog.kind === 'fetch') {
+        const t = buildDialogTask(dialog.dialog)
+        await answerTask(
+          t.ok
+            ? { task: { type: 'continue', value: t.task } }
+            : { task: { type: 'message', value: 'This dialog cannot be opened.' } },
+        )
+        return
+      }
+      const ref = TurnContext.getConversationReference(a)
+      deps.refs.put(conversationId, ref, aadObjectId)
+      deps.onEvent({
+        text: dialogSubmitText(dialog.dataJson),
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        cardAction: { kind: 'dialog' },
+      })
+      await answerTask({ task: { type: 'message', value: 'Sent.' } })
       return
     }
 
