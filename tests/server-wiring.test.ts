@@ -7,11 +7,12 @@
  * goes to a 1:1 chat).
  */
 import { describe, expect, test } from 'bun:test'
+import { stripComments } from './strip-comments'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const read = (...p: string[]) => readFileSync(join(import.meta.dir, '..', 'src', ...p), 'utf8')
-const server = read('server.ts')
+const server = stripComments(read('server.ts'))
 
 /** The block that starts at `anchor`, from its first '{' up to the matching closing brace. */
 function block(src: string, anchor: string): string {
@@ -131,5 +132,38 @@ describe('server.ts wiring', () => {
     const notify = block(server, 'const onEvent: ChannelEventSink = event => {')
     const body = notify.slice(notify.indexOf('{') + 1)
     expect(firstStatement(body).startsWith('event = withInvisibleStripped(event)')).toBe(true)
+  })
+
+  test('#26 send_activity_notification is wired through handleSendActivity, and only listed and described when on', () => {
+    const body = block(server, "case 'send_activity_notification': {")
+    expect(body).toContain('await handleSendActivity(args, {')
+    expect(body).toContain('enabled: config.activityFeed,')
+    expect(body).toContain('assertAllowedConversation: id => replier.assertAllowedConversation(id),')
+    expect(body).toContain('teamIdFor: id => teamGroups.get(id),')
+    expect(body).toContain('isAllowed: id => allowlist.isAllowed(id),')
+    expect(body).toContain('limiter: activityLimiter,')
+    expect(body).toContain('getToken: () => graphToken.getToken(),')
+    expect(server.split('const activityLimiter = createActivityRateLimiter()').length).toBe(2)
+    expect(server.split('...activityTools(config.activityFeed),').length).toBe(2)
+    expect(server).not.toContain('ACTIVITY_TOOL')
+    const sentence = "send_activity_notification pings one person's Teams activity feed"
+    expect(server.split(sentence).length).toBe(2)
+    expect(server).not.toContain('send_activity_notification (when enabled)')
+    const cond = server.indexOf('...(config.activityFeed')
+    expect(cond).toBeGreaterThan(-1)
+    expect(server.indexOf('?', cond)).toBeLessThan(server.indexOf(sentence))
+    expect(server.indexOf(sentence)).toBeLessThan(server.indexOf(': []', cond))
+    expect(server.slice(cond, server.indexOf(sentence))).not.toContain(']')
+    // The sentence is the first entry of the branch taken when the flag is on: a negated, compared or widened
+    // condition, or swapped branches, do not match.
+    expect(server).toMatch(/\.\.\.\(config\.activityFeed\n\s*\? \[\n\s*"send_activity_notification pings one person's/)
+  })
+
+  test('#26 the listener learns team ids when the activity feed is on, also with TEAMS_THREAD_HISTORY off', () => {
+    // teamIdFor reads teamGroups, which only the listener fills: without it every send fails with "team id unknown".
+    const l = server.slice(server.indexOf('const listener = startListener({'))
+    const deps = l.slice(0, l.indexOf('\n})') + 1)
+    expect(deps).toContain('\n  ...(config.threadHistory || config.activityFeed ? { teamGroups } : {}),\n')
+    expect(deps.split('teamGroups').length - 1).toBe(1)
   })
 })
