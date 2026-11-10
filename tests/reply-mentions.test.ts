@@ -98,6 +98,15 @@ describe('reply with mentions', () => {
     ])
   })
 
+  test('a mentioned reply keeps its mention entity with format extendedmarkdown', async () => {
+    const s = setup({ id: 'c' }, { lookupMember: async () => ({ id: '29:mri-a', name: 'Ann' }) })
+    await s.sendReply('conv', 'Hi <at>Ann</at>', undefined, { mentions: [user], format: 'extendedmarkdown' })
+    expect(s.state.sent.textFormat).toBe('extendedmarkdown')
+    expect(s.state.sent.entities).toEqual([
+      { type: 'mention', text: '<at>Ann</at>', mentioned: { id: '29:mri-a', name: 'Ann' } },
+    ])
+  })
+
   test('non-member person', async () => {
     const s = setup({ id: 'c' }, { lookupMember: async () => undefined })
     await expect(s.sendReply('conv', 'Hi <at>Ann</at>', undefined, { mentions: [user] })).rejects.toThrow(
