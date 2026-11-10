@@ -204,6 +204,19 @@ describe('targeted reply', () => {
     })
   }
 
+  test('a targeted reply keeps its targetedMessageInfo entity with format extendedmarkdown', async () => {
+    const s = setup()
+    await s.run(makeActivity())
+    await s.replier.sendReply(CHAN, 'answer', undefined, { targetedMessageId: 'msg-1', format: 'extendedmarkdown' })
+    expect(s.publicSends.length).toBe(0)
+    expect(s.posts.length).toBe(1)
+    const body = JSON.parse(s.posts[0].body)
+    expect(body.textFormat).toBe('extendedmarkdown')
+    expect(body.recipient).toEqual({ id: '29:user-1', name: 'Adnan', aadObjectId: ALLOWED, isTargeted: true })
+    expect(body.entities).toEqual([{ type: 'targetedMessageInfo', messageId: 'msg-1' }])
+    expect(body.text).toBe('answer')
+  })
+
   test('B5 card goes into attachments', async () => {
     const s = setup()
     await s.run(makeActivity())
