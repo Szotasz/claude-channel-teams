@@ -228,6 +228,17 @@ export function formatBytes(n: number): string {
 }
 
 /**
+ * A file name as the agent is allowed to see it: control characters, DEL and
+ * the Unicode line / paragraph separators become spaces (a line break would
+ * let a name forge a line of its own after the annotation), and the name is
+ * capped. The raw name still goes to pickPath, which sanitises the file name
+ * on disk.
+ */
+export function shown(s: string): string {
+  return s.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, ' ').slice(0, 200)
+}
+
+/**
  * Format an attachment outcome as a one-line annotation. The successful
  * lines look like:
  *
@@ -248,9 +259,9 @@ export function formatAnnotation(result: AttachmentResult): string {
     return `[Attached: ${result.path} (${result.contentType}, ${formatBytes(result.sizeBytes)})]`
   }
   if (result.kind === 'skipped') {
-    return `[Attachment skipped: ${result.originalName} — ${result.reason}]`
+    return `[Attachment skipped: ${shown(result.originalName)} — ${result.reason}]`
   }
-  return `[Attachment failed: ${result.originalName} — ${result.reason}]`
+  return `[Attachment failed: ${shown(result.originalName)} — ${result.reason}]`
 }
 
 /**
@@ -284,7 +295,10 @@ export function writeAll(
  * yet. A declared Content-Length over the cap is refused without reading a
  * single byte of the body.
  */
-export async function saveResponseToTemp(res: Response): Promise<{ tempPath: string; sizeBytes: number }> {
+export async function saveResponseToTemp(
+  res: Response,
+  write: (fd: number, b: Uint8Array) => number = writeSync,
+): Promise<{ tempPath: string; sizeBytes: number }> {
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}`)
   }
@@ -315,7 +329,7 @@ export async function saveResponseToTemp(res: Response): Promise<{ tempPath: str
           } catch {}
           throw new Error(`exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`)
         }
-        writeAll(fd, value)
+        writeAll(fd, value, write)
       }
     }
   } catch (err) {

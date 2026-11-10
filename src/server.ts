@@ -1132,6 +1132,7 @@ const listener = startListener({
       getGraphToken: () => graphToken.getToken(),
       getBotToken: () => inlineImageCredentials.getToken(),
       baseDir: config.receivedFilesDir,
+      timeZone: config.timeZone,
       teamGroupIdCache: teamGroupIds,
       channelDriveCache: channelDriveIds,
       driveOwnerCache: driveOwners,

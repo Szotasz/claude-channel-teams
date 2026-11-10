@@ -60,6 +60,7 @@ import {
   pickPath,
   saveResponseToTemp,
   senderSlug,
+  shown,
 } from './attachments.js'
 
 export const GRAPH_V1 = 'https://graph.microsoft.com/v1.0'
@@ -174,6 +175,8 @@ export interface SharedFilesDeps {
   getBotToken: () => Promise<string>
   /** Base storage directory, same one the 1:1 path uses. */
   baseDir: string
+  /** IANA time zone for the dated folder and the time prefix (config.timeZone); undefined = the host time zone. */
+  timeZone?: string
   /** Optional fetch override for tests. */
   fetchImpl?: typeof fetch
   /** Optional clock override for deterministic tests. Returns a Date. */
@@ -209,15 +212,6 @@ function nameFromUrl(url: string): string {
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
-
-/**
- * A file name as the agent is allowed to see it: control characters, DEL and
- * the Unicode line / paragraph separators become spaces (a line break would
- * let a name forge a line of its own after the annotation), and the name is
- * capped. The raw name still goes to pickPath, which sanitises the file name
- * on disk.
- */
-const shown = (s: string) => s.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, ' ').slice(0, 200)
 
 /** A response body as JSON, or undefined when it does not parse. */
 async function readJson(res: Response): Promise<unknown> {
@@ -674,8 +668,8 @@ async function run(
 
       // C6 — into the dated directory, under the sender's prefix.
       const when = now()
-      const dateDir = join(deps.baseDir, localDate(when))
-      const prefix = `${localTime(when)}-${senderSlug(fromName)}`
+      const dateDir = join(deps.baseDir, localDate(when, deps.timeZone))
+      const prefix = `${localTime(when, deps.timeZone)}-${senderSlug(fromName)}`
       mkdirSync(dateDir, { recursive: true, mode: 0o700 })
       const finalPath = pickPath(dateDir, prefix, name)
       moveFile(tempPath, finalPath)

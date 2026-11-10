@@ -164,7 +164,7 @@ describe('processAttachments honours deps.timeZone', () => {
     expect(basename(path).startsWith('0030-')).toBe(true)
   })
 
-  test('loadConfig carries TEAMS_PLUGIN_TZ and server.ts passes it to processAttachments', () => {
+  test('loadConfig carries TEAMS_PLUGIN_TZ and server.ts passes it to processAttachments and fetchSharedFiles', () => {
     // loadConfig re-reads process.env after the .env file load, so the keys go there and are restored after.
     const env: Record<string, string> = { TEAMS_PLUGIN_STATE_DIR: baseDir, TEAMS_BOT_APP_ID: 'id', TEAMS_BOT_APP_PASSWORD: 'pw', TEAMS_BOT_TENANT_ID: 'tenant', TEAMS_PLUGIN_TZ: 'Europe/Budapest' }
     const saved = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]))
@@ -181,5 +181,6 @@ describe('processAttachments honours deps.timeZone', () => {
     }
     const server = readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8')
     expect(server).toMatch(/processAttachments\(atts, fromName, \{[^}]*\btimeZone: config\.timeZone,/)
+    expect(server).toMatch(/fetchSharedFiles\(lookup, fromName, \{[^}]*\btimeZone: config\.timeZone,/)
   })
 })

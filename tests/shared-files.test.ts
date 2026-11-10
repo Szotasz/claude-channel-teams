@@ -12,9 +12,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test'
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync, writeSync } from 'fs'
 import { tmpdir } from 'os'
-import { join, dirname } from 'path'
+import { join, dirname, basename } from 'path'
 import type { Attachment } from 'botframework-schema'
 
 import {
@@ -1856,3 +1856,108 @@ function neverEndingBody(signal?: AbortSignal): ReadableStream<Uint8Array> {
     },
   })
 }
+
+describe('sharedFiles: time zone', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'cct-shared-files-tz-')) })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  for (const [timeZone, date, prefix] of [
+    ['Pacific/Kiritimati', '2026-10-23', '0030-'],
+    ['Europe/London', '2026-10-22', '1130-'],
+  ]) {
+    test(`${timeZone} sets the dated directory and time prefix`, async () => {
+      const f = fakeFetch(standardRoutes())
+      const { results } = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(f.fn, dir, {
+        timeZone,
+        now: () => new Date('2026-10-22T10:30:00Z'),
+      }))
+      expect(results.length).toBe(1)
+      const saved = results[0]!
+      expect(saved.kind).toBe('saved')
+      if (saved.kind !== 'saved') throw new Error('expected a saved file')
+      expect(dirname(saved.path)).toBe(join(dir, date))
+      expect(basename(saved.path).startsWith(prefix)).toBe(true)
+      expect(readFileSync(saved.path, 'utf8')).toBe(BODY)
+    })
+  }
+})
+
+describe('sharedFiles: review round 3 gaps', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'cct-shared-files-')) })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  test('a channel files-folder 404 fails without caching or downloading', async () => {
+    const channelDriveCache = new Map<string, { driveId: string; folderId: string }>()
+    const f = fakeFetch(standardRoutes({ filesFolder: () => jsonResponse({}, 404) }))
+    const { results } = await fetchSharedFiles(
+      channelLookup({ aadGroupId: GID }), SENDER, deps(f.fn, dir, { channelDriveCache }),
+    )
+    expect(results).toEqual([{
+      kind: 'failed',
+      originalName: 'report.xlsx',
+      reason: "could not read the channel's files folder (HTTP 404)",
+    }])
+    expect(channelDriveCache.size).toBe(0)
+    expect(f.calls.map(c => c.url)).toEqual([
+      `${GRAPH_V1}/teams/${GID}/channels/${encodeURIComponent(CHAN)}/messages/ROOT/replies/MSG`,
+      metaUrl(),
+      filesFolderUrl(),
+    ])
+  })
+
+  test('a group-chat drive-owner 404 fails without caching or downloading', async () => {
+    const driveOwnerCache = new Map<string, string>()
+    const f = fakeFetch(standardRoutes({ driveOwner: () => jsonResponse({}, 404) }))
+    const { results } = await fetchSharedFiles(chatLookup(), SENDER, deps(f.fn, dir, { driveOwnerCache }))
+    expect(results).toEqual([{
+      kind: 'failed',
+      originalName: 'report.xlsx',
+      reason: "could not read the file's drive owner (HTTP 404)",
+    }])
+    expect(driveOwnerCache.size).toBe(0)
+    expect(f.calls.map(c => c.url)).toEqual([
+      `${GRAPH_V1}/chats/${encodeURIComponent(CHAT)}/messages/MSG`,
+      metaUrl(),
+      driveUrl(),
+    ])
+  })
+
+  test('channel drive ids differing only in case skip without a parent walk or download', async () => {
+    const f = fakeFetch(standardRoutes({
+      metadata: () => graphMetadata({ parentReference: { driveId: 'b!abcd', id: 'sub-1' } }),
+      filesFolder: () => jsonResponse(filesFolderBody('b!AbCd')),
+    }))
+    const { results } = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(f.fn, dir))
+    expect(results).toEqual([{
+      kind: 'skipped',
+      originalName: 'report.xlsx',
+      reason: NOT_IN_FOLDER,
+    }])
+    expect(ancestryCalls(f.calls)).toEqual([])
+    expect(f.calls.map(c => c.url)).toEqual([
+      `${GRAPH_V1}/teams/${GID}/channels/${encodeURIComponent(CHAN)}/messages/ROOT/replies/MSG`,
+      metaUrl(),
+      filesFolderUrl(),
+    ])
+  })
+
+  test('saveResponseToTemp writes the whole response through short writes', async () => {
+    let calls = 0
+    const { tempPath, sizeBytes } = await saveResponseToTemp(
+      new Response('hello world, short writes'),
+      (fd, b) => {
+        calls++
+        return writeSync(fd, b.subarray(0, 3))
+      },
+    )
+    try {
+      expect(readFileSync(tempPath, 'utf8')).toBe('hello world, short writes')
+      expect(sizeBytes).toBe(25)
+      expect(calls).toBeGreaterThan(1)
+    } finally {
+      rmSync(tempPath)
+    }
+  })
+})
