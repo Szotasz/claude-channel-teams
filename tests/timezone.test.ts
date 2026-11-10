@@ -48,9 +48,11 @@ describe('unset TEAMS_PLUGIN_TZ follows the host zone, not London', () => {
       process.env.TZ = zone
       await fn()
     } finally {
+      // Never delete process.env.TZ here: after a delete, Bun ignores later runtime TZ assignments
+      // in the same process (bun test runs every file in one process). Switch back to the zone the
+      // process was using, then put back a TZ it was started with (an invalid one is ignored again).
       process.env.TZ = savedZone
-      if (savedEnv === undefined) delete process.env.TZ
-      else process.env.TZ = savedEnv
+      if (savedEnv !== undefined) process.env.TZ = savedEnv
     }
   }
 
