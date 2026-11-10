@@ -36,6 +36,68 @@ describe('localDate / localTime without a time zone', () => {
   })
 })
 
+describe('unset TEAMS_PLUGIN_TZ follows the host zone, not London', () => {
+  let baseDir: string
+  beforeEach(() => { baseDir = mkdtempSync(join(tmpdir(), 'cct-tz-')) })
+  afterEach(() => { rmSync(baseDir, { recursive: true, force: true }) })
+
+  async function withHostZone(zone: string, fn: () => void | Promise<void>) {
+    const savedEnv = process.env.TZ
+    const savedZone = new Intl.DateTimeFormat().resolvedOptions().timeZone
+    try {
+      process.env.TZ = zone
+      await fn()
+    } finally {
+      process.env.TZ = savedZone
+      if (savedEnv === undefined) delete process.env.TZ
+      else process.env.TZ = savedEnv
+    }
+  }
+
+  test('localDate / localTime use the host zone and restore it afterwards', async () => {
+    const savedZone = new Intl.DateTimeFormat().resolvedOptions().timeZone
+    await withHostZone('Pacific/Kiritimati', () => {
+      const t = new Date('2026-10-22T10:30:00Z')
+      expect(localDate(t)).toBe('2026-10-23')
+      expect(localTime(t)).toBe('0030')
+    })
+    expect(new Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(savedZone)
+  })
+
+  test('loadConfig leaves timeZone unset and attachments use the host zone', async () => {
+    await withHostZone('Pacific/Kiritimati', async () => {
+      const env: Record<string, string> = { TEAMS_PLUGIN_STATE_DIR: baseDir, TEAMS_BOT_APP_ID: 'id', TEAMS_BOT_APP_PASSWORD: 'pw', TEAMS_BOT_TENANT_ID: 'tenant' }
+      const saved = Object.fromEntries([...Object.keys(env), 'TEAMS_PLUGIN_TZ'].map(k => [k, process.env[k]]))
+      try {
+        Object.assign(process.env, env)
+        delete process.env.TEAMS_PLUGIN_TZ
+        const cfg = loadConfig()
+        expect(cfg.timeZone).toBeUndefined()
+        const imageUrl = 'https://smba.trafficmanager.net/uk/v3/attachments/abc/views/original'
+        const fetchImpl = (async () =>
+          new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), { status: 200 })) as unknown as typeof fetch
+        const att = { contentType: 'image/png', contentUrl: imageUrl } as Attachment
+        const { results } = await processAttachments([att], 'Adnan Khan', {
+          baseDir,
+          fetchImpl,
+          getBearerToken: async () => 'T',
+          now: () => new Date('2026-10-22T10:30:00Z'),
+          timeZone: cfg.timeZone,
+        })
+        expect(results[0]!.kind).toBe('saved')
+        const path = (results[0] as { path: string }).path
+        expect(dirname(path)).toBe(join(baseDir, '2026-10-23'))
+        expect(basename(path).startsWith('0030-')).toBe(true)
+      } finally {
+        for (const [k, v] of Object.entries(saved)) {
+          if (v === undefined) delete process.env[k]
+          else process.env[k] = v
+        }
+      }
+    })
+  })
+})
+
 describe('resolveTimeZone', () => {
   function capture<T>(fn: () => T): { result: T; lines: string[] } {
     const lines: string[] = []
