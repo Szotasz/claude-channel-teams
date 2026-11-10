@@ -228,14 +228,15 @@ export function formatBytes(n: number): string {
 }
 
 /**
- * A file name as the agent is allowed to see it: control characters, DEL and
- * the Unicode line / paragraph separators become spaces (a line break would
+ * A file name as the agent is allowed to see it: C0 and C1 control characters
+ * (U+0000-U+001F, DEL, U+0080-U+009F, which holds NEL), and the Unicode line /
+ * paragraph separators become spaces (a line break would
  * let a name forge a line of its own after the annotation), and the name is
  * capped. The raw name still goes to pickPath, which sanitises the file name
  * on disk.
  */
 export function shown(s: string): string {
-  return s.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, ' ').slice(0, 200)
+  return s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').slice(0, 200)
 }
 
 /**

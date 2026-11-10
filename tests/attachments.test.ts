@@ -535,6 +535,13 @@ describe('formatAnnotation: shown names', () => {
     }
   })
 
+  test('replaces C1 control characters (NEL, CSI, U+0080) with spaces', () => {
+    for (const kind of ['skipped', 'failed'] as const) {
+      expect(formatAnnotation({ kind, originalName: 'a\u0085b\u009bc\u0080d', reason: 'r' }))
+        .toBe(`[Attachment ${kind}: a b c d — r]`)
+    }
+  })
+
   test('a failed 1:1 download cannot forge a new annotation line through its name', async () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'cct-att-shown-'))
     try {
