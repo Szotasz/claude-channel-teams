@@ -25,7 +25,9 @@ describe('server.ts mentions wiring', () => {
     )
   })
   test('branch condition and options spread', () => {
-    expect(reply).toContain('aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || rawMentions !== undefined\n')
+    expect(reply).toContain(
+      "aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown' || rawMentions !== undefined\n",
+    )
     const first = block(reply, 'await replier.sendReply(conversationId, text, card, {')
     expect(first).toContain('...(rawMentions !== undefined ? { mentions: rawMentions } : {}),')
   })
