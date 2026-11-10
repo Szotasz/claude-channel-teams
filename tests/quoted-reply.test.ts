@@ -126,6 +126,13 @@ describe('sendReply quoting', () => {
     expect(sent[0].entities).toEqual(ent({ messageId: '1716' }))
     expect(sent[0].text).toBe('<quoted messageId="1716"/> ok')
   })
+  test('a quoted reply keeps its quote with format extendedmarkdown', async () => {
+    const { sent, sender } = setup()
+    await sender.sendReply('conv-abc', 'ok', undefined, { quoteMessageId: '1716', format: 'extendedmarkdown' })
+    expect(sent[0].textFormat).toBe('extendedmarkdown')
+    expect(sent[0].entities).toEqual(ent({ messageId: '1716' }))
+    expect(sent[0].text).toBe('<quoted messageId="1716"/> ok')
+  })
   test('invalid id', async () => {
     const { sent, sender } = setup()
     await expect(sender.sendReply('conv-abc', 'ok', undefined, { quoteMessageId: 'x"y' })).rejects.toThrow('invalid quote message id')
