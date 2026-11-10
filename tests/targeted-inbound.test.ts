@@ -323,7 +323,7 @@ describe('targeted reply', () => {
     await s.run(makeActivity())
     await expect(s.replier.editReply(CHAN, id!, 'y')).rejects.toThrow(LATEST_PRIVATE_MESSAGE)
     expect(s.edits.length).toBe(0)
-    await s.replier.editReply(CHAN, id!, 'y', true)
+    await s.replier.editReply(CHAN, id!, 'y', 'markdown', true)
     expect(s.edits.length).toBe(1)
   })
 
@@ -440,7 +440,7 @@ describe('targeted wiring', () => {
     const sendFileCase = server.slice(server.indexOf("case 'send_file': {"))
     expect(sendFileCase.slice(0, sendFileCase.indexOf('return {'))).toContain('...(args.public === true ? { public: true } : {}),')
     const edit = server.slice(server.indexOf("case 'edit_message': {"), server.indexOf("case 'react': {"))
-    expect(edit).toContain('await replier.editReply(conversationId, messageId, text, args.public === true)')
+    expect(edit).toContain('await replier.editReply(conversationId, messageId, text, format, args.public === true)')
     // With the switch off, Claude is not told to answer privately: that reply would be refused.
     expect(server).toMatch(/config\.targetedMessages\s*\?\s*'A tag with targeted="true"[^']*targeted_message_id[^']*'\s*:\s*'A tag with targeted="true"[^']*cannot answer privately/)
   })
