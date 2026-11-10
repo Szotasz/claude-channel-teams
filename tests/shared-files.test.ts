@@ -1881,6 +1881,27 @@ describe('sharedFiles: time zone', () => {
       expect(readFileSync(saved.path, 'utf8')).toBe(BODY)
     })
   }
+
+  test('an unset timeZone follows the host zone, not London', async () => {
+    const savedEnv = process.env.TZ
+    const savedZone = new Intl.DateTimeFormat().resolvedOptions().timeZone
+    try {
+      process.env.TZ = 'Pacific/Kiritimati'
+      const f = fakeFetch(standardRoutes())
+      const { results } = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(f.fn, dir, {
+        now: () => new Date('2026-10-22T10:30:00Z'),
+      }))
+      expect(results.length).toBe(1)
+      const saved = results[0]!
+      if (saved.kind !== 'saved') throw new Error('expected a saved file')
+      expect(dirname(saved.path)).toBe(join(dir, '2026-10-23'))
+      expect(basename(saved.path).startsWith('0030-')).toBe(true)
+    } finally {
+      process.env.TZ = savedZone
+      if (savedEnv === undefined) delete process.env.TZ
+      else process.env.TZ = savedEnv
+    }
+  })
 })
 
 describe('sharedFiles: review round 3 gaps', () => {
