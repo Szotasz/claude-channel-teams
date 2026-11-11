@@ -704,3 +704,9 @@ Inbound quotes (the `quotedReply` entity) become a `[Quote] <author>: <preview>`
 ## Dialogs from card buttons
 
 A card button (`Action.Submit` with `"msteams": {"type": "task/fetch"}`) can open a Teams dialog; its submit reaches Claude as a `[Dialog submit]` event with `card_action="dialog"`. See [dialogs.md](dialogs.md).
+
+## Message actions
+
+The "..." menu of a message can start an action (`make-teams-manifest.sh --message-action`). The submitted invoke is
+turned into a marked `message_action` event for allowlisted users only, and the bot answers the invoke at once with
+status 200 and no body. See [message-actions.md](message-actions.md).

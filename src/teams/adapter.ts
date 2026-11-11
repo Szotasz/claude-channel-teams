@@ -58,6 +58,7 @@ import { userViewInvokeFrom } from './userViews.js'
 import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
 import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
 import { withHeldContext, type FilterDecision, type HeldMessages, type UnmentionedFilter } from './unmentionedFilter.js'
+import { messageActionFrom } from './messageAction.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -140,6 +141,8 @@ export type ChannelEventSink = (event: {
   cardAction?: { kind: 'execute' | 'submit' | 'dialog'; verb?: string }
   /** Set when the event is a Teams meeting start or end (not a message). Values are already cleaned. */
   meetingEvent?: { kind: 'started' | 'ended'; title?: string; meetingType?: string; meetingId?: string; time?: string }
+  /** Set when the event is a message action submitted from a message's "..." menu (the cleaned command id). */
+  messageAction?: string
 }) => void
 
 // The most mention names one event carries.
@@ -199,6 +202,7 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.quotedMessageId ? { quoted_message_id: event.quotedMessageId } : {}),
     ...(event.ts ? { ts: event.ts } : {}),
     ...(event.messageEvent ? { message_event: event.messageEvent } : {}),
+    ...(event.messageAction ? { message_action: event.messageAction } : {}),
     ...(event.mentioned !== undefined ? { mentioned: event.mentioned ? 'true' : 'false' } : {}),
     ...(event.cardAction ? { card_action: event.cardAction.kind, ...(event.cardAction.verb ? { action_verb: event.cardAction.verb } : {}) } : {}),
     ...(event.isGroup !== undefined ? { is_group: String(event.isGroup) } : {}),
@@ -492,6 +496,10 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       if (taskInvoke && !invoke.answered) {
         await answer(invoke, c => respondToTaskInvoke(c, { task: { type: 'message', value: 'Not allowed.' } }))
       }
+      // A composeExtension invoke must be answered within five seconds; "no response" is status 200 without a body.
+      if (!invoke.answered && ctx.activity.type === 'invoke' && ctx.activity.name?.startsWith('composeExtension/')) {
+        await answer(invoke, respondEmptyInvoke)
+      }
     }
   }
 
@@ -499,6 +507,14 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     invoke.answered = true
     if (invoke.ctx) await respond(invoke.ctx)
     else process.stderr.write('teams channel: card action without an invoke context, not answered\n')
+  }
+
+  async function respondEmptyInvoke(ctx: TurnContext) {
+    try {
+      await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200 } } as Partial<Activity>)
+    } catch (err) {
+      process.stderr.write(`teams channel: invoke response failed: ${err}\n`)
+    }
   }
 
   async function turn(ctx: InboundTurn, invoke: InvokeState) {
@@ -607,7 +623,13 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       }
       return
     }
-    if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card && !dialog) return
+    const action = messageActionFrom(a)
+    if (action && !deps.config.messageActions) {
+      process.stderr.write('teams channel: drop message action: TEAMS_MESSAGE_ACTIONS is not on\n')
+      await answer(invoke, respondEmptyInvoke)
+      return
+    }
+    if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card && !dialog && !action) return
     const answerInvoke = (message: string) => answer(invoke, c => respondToCardInvoke(c, message))
 
     const aadObjectIdRaw = a.from?.aadObjectId
@@ -740,6 +762,35 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         cardAction: { kind: card.kind, ...(card.verb ? { verb: card.verb } : {}) },
       })
       if (card.kind === 'execute') await answerInvoke('Received.')
+      return
+    }
+
+    if (action) {
+      // Message action from a message's "..." menu: allowlisted senders only, never pairs, answered with no body.
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop message action from a sender not on the allowlist (${aadObjectId})\n`)
+        await answer(invoke, respondEmptyInvoke)
+        return
+      }
+      // Answer first (Teams allows five seconds), then hand the event over; a failing hand-over is logged, the
+      // invoke is already answered.
+      await answer(invoke, respondEmptyInvoke)
+      try {
+        deps.refs.put(conversationId, TurnContext.getConversationReference(a), aadObjectId)
+        const payloadId = (a.value as { messagePayload?: { id?: unknown } } | undefined)?.messagePayload?.id
+        deps.onEvent({
+          text: action.text,
+          conversationId,
+          aadObjectId,
+          tenantId: tenantId ?? deps.config.tenantId,
+          fromName,
+          messageId: typeof payloadId === 'string' && payloadId.length > 0 ? payloadId : a.id,
+          ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+          messageAction: action.command,
+        })
+      } catch (err) {
+        process.stderr.write(`teams channel: message action event failed: ${err instanceof Error ? err.message : 'error'}\n`)
+      }
       return
     }
 
