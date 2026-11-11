@@ -230,6 +230,11 @@ export interface Config {
    * Opt-in SharePoint target for send_file in team channels and group chats (TEAMS_SHAREPOINT_SITE_ID, TEAMS_SHAREPOINT_FOLDER); null = off. See docs/sharepoint.md.
    */
   sharePoint: { siteId: string; folder: string } | null
+  /**
+   * IANA time zone for the received-files folder and time prefix (TEAMS_PLUGIN_TZ).
+   * undefined = the host's time zone.
+   */
+  timeZone: string | undefined
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -358,6 +363,21 @@ export function resolveSharePoint(
   return { siteId, folder: segments.join('/') }
 }
 
+export function resolveTimeZone(env: NodeJS.ProcessEnv): string | undefined {
+  const value = env.TEAMS_PLUGIN_TZ?.trim()
+  if (!value) return undefined
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: value })
+    return value
+  } catch {
+    const shown = value.slice(0, 64).replace(/[^A-Za-z0-9_+\-/]/g, '?')
+    process.stderr.write(
+      `teams channel: TEAMS_PLUGIN_TZ "${shown}" is not a known time zone; using the host time zone\n`,
+    )
+    return undefined
+  }
+}
+
 function parseHttpsUrl(raw: string): URL | null {
   try {
     const url = new URL(raw)
@@ -480,5 +500,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     meetingTranscripts: parseFlag(env.TEAMS_MEETING_TRANSCRIPTS),
     channelCreateTeams,
     sharePoint: resolveSharePoint(env),
+    timeZone: resolveTimeZone(env),
   })
 }
