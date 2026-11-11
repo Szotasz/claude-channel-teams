@@ -3,7 +3,10 @@
  * sends these as conversationUpdate activities; they are delivered to Claude only with TEAMS_CHANNEL_EVENTS.
  * The names are user content (anyone who can create a channel in the team sets them, and the event carries no
  * allowlisted sender), so they are cleaned of control, line-separator and bidi characters and capped.
+ * The adapter also passes both names through metaText (no double quotes or angle brackets in the meta), and the text escapes < and >.
  */
+
+import { neutralizeMarkup } from './richContent.js'
 
 export const MAX_EVENT_NAME = 100
 
@@ -60,5 +63,5 @@ export function channelEventFrom(activity: { type?: string; channelData?: unknow
 }
 
 export function channelEventText(e: ChannelEventInfo): string {
-  return `[Channel ${e.kind}]` + (e.channelName ? ` ${e.channelName}` : '') + (e.teamName ? ` (team ${e.teamName})` : '')
+  return `[Channel ${e.kind}]` + (e.channelName ? ` ${neutralizeMarkup(e.channelName)}` : '') + (e.teamName ? ` (team ${neutralizeMarkup(e.teamName)})` : '')
 }

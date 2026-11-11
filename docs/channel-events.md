@@ -25,7 +25,8 @@ permission is needed.
 ## Names are user content
 
 Anyone who can create a channel in the team sets its name, and the event carries no allowlisted sender. The names are
-therefore cleaned of control, line-separator and bidi characters and capped at 100 Unicode code points. The instructions tell
-Claude that such an event is not a request.
+therefore cleaned of control, line-separator and bidi characters and capped at 100 Unicode code points.
+Double quotes and angle brackets are removed from the names in the meta and in the text, the same way as for every other untrusted name.
+The instructions tell Claude that such an event is not a request.
 
 Not measured against a live Teams: the shapes follow the Microsoft Teams documentation on conversation events.

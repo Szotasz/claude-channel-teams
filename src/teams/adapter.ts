@@ -716,8 +716,11 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         process.stderr.write('teams channel: drop — channel event from a team not in TEAMS_CHANNEL_EVENT_TEAMS\n')
         return
       }
+      // Anyone who can edit the team's channels sets these names, so they pass the same cleaner as every other untrusted meta value.
+      const channelName = metaText(channelEvent.channelName)
+      const teamName = metaText(channelEvent.teamName)
       deps.onEvent({
-        text: channelEventText(channelEvent),
+        text: channelEventText({ kind: channelEvent.kind, channelId: channelEvent.channelId, ...(channelName ? { channelName } : {}), ...(teamName ? { teamName } : {}) }),
         conversationId: evConversation,
         // Empty on purpose: elsewhere aad_object_id is an allowlisted sender, and whoever changed the channel is not checked.
         aadObjectId: '',
@@ -727,7 +730,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         channelEvent: {
           kind: channelEvent.kind,
           channelId: channelEvent.channelId,
-          ...(channelEvent.channelName ? { channelName: channelEvent.channelName } : {}),
+          ...(channelName ? { channelName } : {}),
           ...(channelEvent.teamId ? { teamId: channelEvent.teamId } : {}),
         },
       })
