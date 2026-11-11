@@ -3,6 +3,8 @@
  * card (which the model wrote), so the event is marked as a card action and never goes through the permission-reply match.
  */
 
+import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
+
 export interface CardAction {
   /** 'automatic': an Action.Execute the client fired by itself (a card refresh), not a click. */
   kind: 'execute' | 'submit' | 'automatic'
@@ -65,4 +67,47 @@ export function cardActionFrom(activity: { type?: string; name?: string; value?:
 export function cardActionText(action: CardAction): string {
   const head = `[Card action]${action.title ? ` title="${action.title}"` : ''}${action.verb ? ` verb="${action.verb}"` : ''}`
   return `${head}\ndata: ${action.dataJson}`
+}
+
+/** A dialog (task module) invoke: 'fetch' when a card button asks to open one, 'submit' when the user submits it. */
+export type DialogInvoke = { kind: 'fetch'; dialog: unknown } | { kind: 'submit'; dataJson: string }
+
+export function dialogInvokeFrom(activity: { type?: string; name?: string; value?: unknown }): DialogInvoke | undefined {
+  if (activity.type !== 'invoke') return undefined
+  const v = activity.value
+  const data = isPlainObject(v) ? v.data : undefined
+  if (activity.name === 'task/fetch') return { kind: 'fetch', dialog: isPlainObject(data) ? data.dialog : undefined }
+  if (activity.name === 'task/submit') return { kind: 'submit', dataJson: json(data) }
+  return undefined
+}
+
+export interface TaskInfoLike {
+  title?: string
+  width: 'small' | 'medium' | 'large'
+  height: 'small' | 'medium' | 'large'
+  card: { contentType: string; content: unknown }
+}
+
+const DIALOG_SIZES = ['small', 'medium', 'large']
+
+export function buildDialogTask(dialog: unknown): { ok: true; task: TaskInfoLike } | { ok: false } {
+  if (!isPlainObject(dialog)) return { ok: false }
+  if (!validateAdaptiveCard(dialog.card).ok) return { ok: false }
+  for (const size of [dialog.width, dialog.height]) {
+    if (size !== undefined && !(typeof size === 'string' && DIALOG_SIZES.includes(size))) return { ok: false }
+  }
+  const title = cleanLabel(dialog.title, 100)
+  return {
+    ok: true,
+    task: {
+      ...(title !== undefined ? { title } : {}),
+      width: (dialog.width as TaskInfoLike['width'] | undefined) ?? 'medium',
+      height: (dialog.height as TaskInfoLike['height'] | undefined) ?? 'medium',
+      card: { contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: dialog.card },
+    },
+  }
+}
+
+export function dialogSubmitText(dataJson: string): string {
+  return `[Dialog submit]\ndata: ${dataJson}`
 }
