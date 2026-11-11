@@ -8,6 +8,7 @@ import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
 import { channelEventMeta, makeTurnHandler } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
+import { createSeenMessages } from '../src/teams/seenMessages'
 import {
   ConversationNotAllowedError,
   LATEST_PRIVATE_MESSAGE,
@@ -357,6 +358,22 @@ describe('targeted reply', () => {
     await expect(
       s.replier.sendReply(CHAN, 'x', card, { targetedMessageId: 'msg-1', userCards: [{ aad_object_id: ALLOWED, card }] }),
     ).rejects.toThrow('targeted_message_id and user_cards cannot be combined')
+    expect(s.posts.length).toBe(0)
+    expect(s.publicSends.length).toBe(0)
+  })
+
+  test('targeted_message_id together with quote_message_id throws', async () => {
+    const s = setup()
+    await s.run(makeActivity())
+    const seenMessages = createSeenMessages()
+    seenMessages.remember(CHAN, 'msg-1')
+    const replier = createReplySender({
+      config: s.config, adapter: s.adapter, allowlist: s.allowlist, refs: s.refs,
+      targetedInbound: s.targetedInbound, seenMessages, now: s.getNow,
+    })
+    await expect(
+      replier.sendReply(CHAN, 'x', undefined, { targetedMessageId: 'msg-1', quoteMessageId: 'msg-1' }),
+    ).rejects.toThrow('targeted_message_id and quote_message_id cannot be combined')
     expect(s.posts.length).toBe(0)
     expect(s.publicSends.length).toBe(0)
   })
