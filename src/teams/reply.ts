@@ -316,6 +316,9 @@ export function createReplySender(deps: ReplyDeps) {
     if (opts.targetedMessageId !== undefined && opts.userCards !== undefined) {
       throw new Error('targeted_message_id and user_cards cannot be combined')
     }
+    if (opts.targetedMessageId !== undefined && quoteMessageId !== undefined) {
+      throw new Error('targeted_message_id and quote_message_id cannot be combined')
+    }
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
       if (!checked.ok) throw new Error(`invalid card: ${checked.error}`)
