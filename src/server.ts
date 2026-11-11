@@ -69,6 +69,7 @@ import { createInboundIds } from './teams/inboundIds.js'
 import { createInboundDebouncer } from './teams/inboundDebounce.js'
 import { withInvisibleStripped } from './teams/invisibleChars.js'
 import { createSharePointUploader } from './teams/sharepoint.js'
+import { createCommandFilter, createHeldMessages, filterEnv } from './teams/unmentionedFilter.js'
 import { createAllowlist } from './pairing/allowlist.js'
 import { codesEqual, createPendingStore } from './pairing/pair.js'
 import { createPermissionRelay } from './permission/relay.js'
@@ -1010,6 +1011,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 const deliveredMessages = createDeliveredMessages()
 const inboundIds = createInboundIds()
 
+const unmentionedFilter = config.unmentionedFilterCmd
+  ? createCommandFilter(
+      config.unmentionedFilterCmd,
+      config.unmentionedFilterTimeoutMs ?? 10000,
+      filterEnv(process.env, config.unmentionedFilterEnv),
+    )
+  : undefined
+const heldMessages = unmentionedFilter ? createHeldMessages(config.unmentionedHistoryLimit ?? 20) : undefined
+if (unmentionedFilter) {
+  process.stderr.write(
+    `teams channel: unmentioned filter on (timeout ${config.unmentionedFilterTimeoutMs ?? 10000} ms, ${config.unmentionedHistoryLimit ?? 20} held per conversation)\n`,
+  )
+}
+
 const onEvent: ChannelEventSink = event => {
   // Strip invisible Unicode characters (hidden tag-character payloads, bidi
   // controls, zero-width spaces, BOM) before the text reaches the model. The
@@ -1074,6 +1089,7 @@ const listener = startListener({
   // The thread history and the activity feed tools need the team ids: with both off, no team details lookup
   // runs on inbound messages.
   ...(config.threadHistory || config.activityFeed ? { teamGroups } : {}),
+  ...(unmentionedFilter && heldMessages ? { unmentionedFilter, heldMessages } : {}),
   sendPairingDm: async (ref, text) => {
     await sendActivityRaw(ref, text)
   },

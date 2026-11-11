@@ -166,4 +166,16 @@ describe('server.ts wiring', () => {
     expect(deps).toContain('\n  ...(config.threadHistory || config.activityFeed ? { teamGroups } : {}),\n')
     expect(deps.split('teamGroups').length - 1).toBe(1)
   })
+
+  test('the unmentioned filter and its held-messages store are built from config and wired in as a pair', () => {
+    // The third argument is the filter's whole environment (#44 review): without it the filter would get
+    // the default, and with process.env itself it would get the bot password.
+    expect(server.replace(/\s+/g, ' ')).toContain(
+      'createCommandFilter( config.unmentionedFilterCmd, config.unmentionedFilterTimeoutMs ?? 10000, filterEnv(process.env, config.unmentionedFilterEnv), )',
+    )
+    expect(server).toContain('createHeldMessages(config.unmentionedHistoryLimit ?? 20)')
+    // The listener gets both or neither: a filter without the store (or vice versa) would silently do nothing.
+    const listener = block(server, 'const listener = startListener({')
+    expect(listener).toContain('...(unmentionedFilter && heldMessages ? { unmentionedFilter, heldMessages } : {}),')
+  })
 })
