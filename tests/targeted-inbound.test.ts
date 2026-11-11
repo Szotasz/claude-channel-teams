@@ -61,7 +61,7 @@ const mentionActivity = (o: Partial<Activity> = {}) =>
   untargeted({ text: '<at>Bot</at> hi', entities: MENTION, ...o })
 
 function setup(
-  opts: { targetedMessages?: boolean; status?: number; body?: string; pairing?: boolean; unmentioned?: boolean } = {},
+  opts: { targetedMessages?: boolean; status?: number; body?: string; pairing?: boolean; unmentioned?: boolean; seenMessages?: ReturnType<typeof createSeenMessages> } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'cct-targeted-inbound-'))
   const allowlist = createAllowlist(join(dir, 'allowlist.json'))
@@ -81,6 +81,7 @@ function setup(
   let now = Date.now()
   const handler = makeTurnHandler({
     config, adapter: {} as any, allowlist, refs, targetedInbound,
+    ...(opts.seenMessages ? { seenMessages: opts.seenMessages } : {}),
     onEvent: e => events.push(e),
     permission: { resolve: (id: string, v: string) => { resolved.push([id, v]); return true } } as any,
     ...(opts.pairing
@@ -358,6 +359,24 @@ describe('targeted reply', () => {
     await expect(
       s.replier.sendReply(CHAN, 'x', card, { targetedMessageId: 'msg-1', userCards: [{ aad_object_id: ALLOWED, card }] }),
     ).rejects.toThrow('targeted_message_id and user_cards cannot be combined')
+    expect(s.posts.length).toBe(0)
+    expect(s.publicSends.length).toBe(0)
+  })
+
+  test('a targeted inbound message cannot be quoted in a public reply', async () => {
+    const seenMessages = createSeenMessages()
+    const s = setup({ seenMessages })
+    await s.run(makeActivity({ id: 'priv-1' }))
+    await s.run(mentionActivity({ id: 'pub-1' }))
+    expect(seenMessages.has(CHAN, 'pub-1')).toBe(true)
+    expect(seenMessages.has(CHAN, 'priv-1')).toBe(false)
+    const replier = createReplySender({
+      config: s.config, adapter: s.adapter, allowlist: s.allowlist, refs: s.refs,
+      targetedInbound: s.targetedInbound, seenMessages, now: s.getNow,
+    })
+    await expect(
+      replier.sendReply(CHAN, 'x', undefined, { public: true, quoteMessageId: 'priv-1' }),
+    ).rejects.toThrow('quote_message_id is not a message seen in this conversation')
     expect(s.posts.length).toBe(0)
     expect(s.publicSends.length).toBe(0)
   })
