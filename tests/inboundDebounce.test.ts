@@ -177,7 +177,7 @@ describe('inbound debounce', () => {
     expect(delivered.length).toBe(1)
   })
 
-  test('B5 edits, attachments, slash commands, card button clicks and message actions flush what is pending, then go through unchanged', () => {
+  test('B5 edits, attachments, slash commands, card button clicks, message actions and feedback clicks flush what is pending, then go through unchanged', () => {
     const immediates: { label: string; event: Ev }[] = [
       { label: 'edit', event: fragment({ text: '[Message edited] hi', messageEvent: 'edited' }) },
       { label: 'attachments', event: fragment({ text: 'see this', hasAttachments: true }) },
@@ -185,6 +185,7 @@ describe('inbound debounce', () => {
       { label: 'indented slash command', event: fragment({ text: '   /status' }) },
       { label: 'card button click', event: fragment({ text: '[Card action] approve', messageId: 'bot-1', cardAction: { kind: 'execute', verb: 'approve' } }) },
       { label: 'message action', event: fragment({ text: 'summarize this', messageAction: 'summarize' }) },
+      { label: 'feedback click', event: fragment({ text: '[Feedback] like', messageId: 'bot-1', feedback: 'like' }) },
     ]
     for (const { label, event } of immediates) {
       const { clock, delivered, debouncer } = makeHarness({ windowMs: 1500 })

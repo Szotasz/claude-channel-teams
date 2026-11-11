@@ -22,6 +22,7 @@ import type { TypingPump } from './typingPump.js'
 import type { AckPlaceholders } from './ackPlaceholder.js'
 import { withSendRetry } from './sendRetry.js'
 import { isStreamClosedError, type StatusStreams } from './statusStream.js'
+import { feedbackChannelData } from './feedback.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE, validateAdaptiveCard } from './cards.js'
 import { createPipelineRequest } from '@azure/core-rest-pipeline'
 import { USER_VIEW_VERB, usesReservedVerb, validateUserCards, type UserCard } from './userViews.js'
@@ -175,6 +176,8 @@ export interface ReplyDeps {
   userViews?: { create(baseCard: Record<string, unknown>, userCards: UserCard[], userMris: string[]): { id: string; base: Record<string, unknown> } }
   /** Message ids seen per conversation; an outbound quote must be one of them. */
   seenMessages?: SeenMessages
+  /** Thumbs up / down buttons on every reply (TEAMS_FEEDBACK). Optional so existing tests still wire. */
+  feedback?: boolean
 }
 
 export function createReplySender(deps: ReplyDeps) {
@@ -270,6 +273,7 @@ export function createReplySender(deps: ReplyDeps) {
               ? { attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content: outCard }] }
               : {}),
             ...(entities.length > 0 ? { entities } : {}),
+            ...(deps.feedback ? { channelData: feedbackChannelData() } : {}),
           }
           // Streaming is 1:1 only: close the stream only if the conversation is still 1:1 now.
           const closes = stream && isPersonalReference(current) ? stream : undefined

@@ -273,6 +273,11 @@ export interface Config {
    * See docs/activity-feed.md.
    */
   activityFeed: boolean
+  /**
+   * Whether replies carry Teams' thumbs up / down buttons and clicks are
+   * delivered. From TEAMS_FEEDBACK ('1' or 'true'); see docs/feedback.md.
+   */
+  feedback: boolean
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -568,5 +573,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sharePoint: resolveSharePoint(env),
     timeZone: resolveTimeZone(env),
     activityFeed: env.TEAMS_ACTIVITY_FEED === '1',
+    feedback: parseFlag(env.TEAMS_FEEDBACK),
   })
 }
