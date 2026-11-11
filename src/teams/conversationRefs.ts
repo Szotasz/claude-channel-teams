@@ -100,6 +100,8 @@ export interface ConversationRefStore {
    * (single-operator scope; see docs/security.md).
    */
   mostRecentConversationId(): string | undefined
+  /** Like mostRecentConversationId(), but never a chat the bot opened (botOpened): the permission-relay target when targeted messages are on. */
+  mostRecentPromptConversationId(): string | undefined
   /** Like mostRecentConversationId(), but only over 1:1 chats (isPersonalReference). */
   mostRecentPersonalConversationId(): string | undefined
   /**
@@ -300,6 +302,9 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
     },
     mostRecentConversationId(): string | undefined {
       return mostRecent(() => true)
+    },
+    mostRecentPromptConversationId(): string | undefined {
+      return mostRecent(stored => stored.botOpened !== true)
     },
     mostRecentPersonalConversationId(): string | undefined {
       // A chat the bot opened and the user never wrote in is never the permission-relay target.

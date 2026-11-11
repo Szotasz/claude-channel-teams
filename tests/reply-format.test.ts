@@ -94,6 +94,6 @@ describe('server.ts format wiring', () => {
   test('edit_message parses args.format and passes it to editReply', () => {
     const body = caseBody('edit_message')
     expect(body).toContain('const format = parseReplyFormat(args.format)')
-    expect(body).toContain('await replier.editReply(conversationId, messageId, text, format)')
+    expect(body).toContain('await replier.editReply(conversationId, messageId, text, format, args.public === true)')
   })
 })

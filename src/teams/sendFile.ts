@@ -19,6 +19,8 @@ import type { ConversationRefStore } from './conversationRefs.js'
 import type { Outbox } from './outbox.js'
 import { withSendRetry } from './sendRetry.js'
 import { buildDownloadCardActivity } from './files.js'
+import { LATEST_PRIVATE_MESSAGE } from './reply.js'
+import type { TargetedInbound } from './targetedInbound.js'
 
 /** Max file size — matches the inbound cap. */
 const MAX_BYTES = 50 * 1024 * 1024
@@ -83,6 +85,10 @@ export interface FileSenderDeps {
   sharePoint?: {
     upload(filename: string, content: Buffer): Promise<{ webUrl: string; name: string }>
   }
+  /** Memory of inbound targeted messages; set = refuse a public file right after a private message. */
+  targetedInbound?: TargetedInbound
+  /** Clock, for tests. */
+  now?: () => number
 }
 
 export interface SendFileInput {
@@ -93,6 +99,8 @@ export interface SendFileInput {
   content?: Buffer
   filename?: string
   mime?: string
+  /** Post publicly even though the latest message in the conversation was a private (targeted) one. */
+  public?: boolean
 }
 
 export interface SendFileResult {
@@ -159,6 +167,12 @@ export function createFileSender(deps: FileSenderDeps) {
   }
 
   async function sendFile(input: SendFileInput): Promise<SendFileResult> {
+    if (
+      input.public !== true &&
+      deps.targetedInbound?.latestIsTargeted(input.conversationId, (deps.now ?? Date.now)())
+    ) {
+      throw new Error(LATEST_PRIVATE_MESSAGE)
+    }
     if (!input.path && !input.content) {
       throw new Error('send_file: either `path` or `content` is required')
     }
