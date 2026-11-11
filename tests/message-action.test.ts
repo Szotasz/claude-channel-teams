@@ -244,7 +244,8 @@ describe('message action turn handler', () => {
 
   test('other invoke names and normal messages are not answered', async () => {
     const s = setup()
-    await s.run(invoke(value(), { name: 'task/fetch' }))
+    // Not task/*: since the dialogs change every task/* invoke gets a task-format answer.
+    await s.run(invoke(value(), { name: 'signin/verifyState' }))
     await s.run(invoke(value(), { type: 'message', name: undefined, text: 'hi' }))
     expect(s.events.length).toBe(1)
     expect(s.responses().length).toBe(0)
