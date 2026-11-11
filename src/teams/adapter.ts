@@ -243,6 +243,8 @@ export interface AdapterDeps {
   /** How long the meeting-info lookup after a meeting event may take, in milliseconds (default 5000).
    *  A lookup that takes longer is given up on. Injectable so tests can use a short one. */
   meetingInfoTimeoutMs?: number
+  /** Remembers the team AAD group id per channel (for thread history). Optional. */
+  teamGroups?: { set(channelId: string, groupId: string): void; get(channelId: string): string | undefined }
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -844,6 +846,42 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       if (deps.config.proactiveChannels?.has(channelId)) deps.channelRefs.put(channelId, ref, aadObjectId)
     }
     if (typeof a.from?.id === 'string' && a.from.id) deps.knownUsers?.set(aadObjectId, a.from.id)
+
+    // Learn the team's AAD group id for this channel (thread history tool).
+    // Best effort and never awaited: a slow or failing lookup must not delay
+    // or fail the delivery below.
+    if (deps.teamGroups && (conversationType === 'channel' || threadConv)) {
+      const groups = deps.teamGroups
+      const channelKey = baseConversationId(conversationId)
+      try {
+        const team = (a.channelData as { team?: { aadGroupId?: unknown; id?: unknown } } | undefined)?.team
+        if (typeof team?.aadGroupId === 'string' && team.aadGroupId) {
+          groups.set(channelKey, team.aadGroupId)
+        } else if (typeof team?.id === 'string' && team.id && !groups.get(channelKey)) {
+          // A queued message turn carries only its activity (makeEarlyAckTurn), so the lookup goes through a
+          // proactive context, like every send outside the turn.
+          const teamId = team.id
+          const lookup = new Promise<Awaited<ReturnType<typeof TeamsInfo.getTeamDetails>>>((resolve, reject) => {
+            deps.adapter
+              .continueConversationAsync(deps.config.appId, ref, async c => resolve(await TeamsInfo.getTeamDetails(c, teamId)))
+              .catch(reject)
+          })
+          lookup.then(
+            details => {
+              // An id that arrived directly in the meantime wins over this late answer.
+              if (typeof details?.aadGroupId === 'string' && details.aadGroupId && !groups.get(channelKey)) {
+                groups.set(channelKey, details.aadGroupId)
+              }
+            },
+            err => {
+              process.stderr.write(`teams channel: team details lookup failed: ${err instanceof Error ? err.message : 'error'}\n`)
+            },
+          )
+        }
+      } catch (err) {
+        process.stderr.write(`teams channel: team group store failed: ${err instanceof Error ? err.message : 'error'}\n`)
+      }
+    }
 
     // Start the typing-indicator pump as early as possible — the user sees
     // "is typing…" while attachments are processed and Claude is notified.

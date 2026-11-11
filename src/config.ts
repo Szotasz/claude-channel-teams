@@ -197,6 +197,11 @@ export interface Config {
    */
   statusUpdates: boolean
   /**
+   * Whether the get_thread_history tool is offered, and the team ids it needs are learned from inbound
+   * channel messages. From TEAMS_THREAD_HISTORY ('1' or 'true'); unset = off, the old tool surface.
+   */
+  threadHistory: boolean
+  /**
    * Text of the acknowledgement sent when Claude has not replied within
    * ackDelayMs; the next reply overwrites it. From TEAMS_ACK_TEXT; unset = off.
    * See docs/ack-placeholder.md.
@@ -493,6 +498,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     filesBaseUrl: resolveFilesBaseUrl(env),
     plannerPlanIds,
     statusUpdates: parseFlag(env.TEAMS_STATUS_UPDATES),
+    threadHistory: parseFlag(env.TEAMS_THREAD_HISTORY),
     ackText,
     ackDelayMs,
     meetingEvents: parseFlag(env.TEAMS_MEETING_EVENTS),
