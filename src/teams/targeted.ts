@@ -80,7 +80,7 @@ export interface PromptDelivery {
 /** The conversation the permission prompt goes to, or undefined. */
 export function selectPromptConversation(d: PromptDelivery): string | undefined {
   const id = d.sendTargeted
-    ? d.refs.mostRecentConversationId()
+    ? d.refs.mostRecentPromptConversationId()
     : d.refs.mostRecentPersonalConversationId()
   if (!id) return undefined
   const stored = d.refs.get(id)

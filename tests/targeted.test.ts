@@ -168,6 +168,21 @@ test('T5 selectPromptConversation', async () => {
   expect(selectPromptConversation({ ...base, refs: createConversationRefStore(), sendTargeted: st })).toBeUndefined()
 })
 
+test('T5b a chat the bot opened is never the prompt target, with targeted messages on or off', async () => {
+  const refs = await seeded()
+  await Bun.sleep(5)
+  refs.put('a:opened', { conversation: { id: 'a:opened', conversationType: 'personal' }, user: { id: 'u3' } } as any, C(3), { botOpened: true })
+  const allowed = new Set([C(1), C(2), C(3)])
+  const base = { refs, isAllowed: (id: string) => allowed.has(id), sendPlain: async () => {} }
+  const st = async () => {}
+  expect(selectPromptConversation({ ...base, sendTargeted: st })).toBe('19:chan@thread.tacv2')
+  expect(selectPromptConversation(base)).toBe('a:dm')
+  expect(refs.mostRecentPromptConversationId()).toBe('19:chan@thread.tacv2')
+  expect(refs.mostRecentConversationId()).toBe('a:opened')
+  refs.put('a:opened', { conversation: { id: 'a:opened', conversationType: 'personal' }, user: { id: 'u3' } } as any, C(3))
+  expect(selectPromptConversation({ ...base, sendTargeted: st })).toBe('a:opened')
+})
+
 describe('T6 deliverPrompt', () => {
   async function mk(opts: { targeted?: 'ok' | 'fail' | 'none'; dm?: boolean; dmAllowed?: boolean }) {
     const refs = createConversationRefStore()
