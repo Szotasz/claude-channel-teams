@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# claude-channel-teams — local setup helper.
+# claude-channel-teams - local setup helper.
 #
 # Creates the state directory, writes a placeholder .env from .env.example,
 # and chmods it correctly. Idempotent: safe to re-run.
@@ -21,10 +21,10 @@ chmod 700 "$STATE_DIR" "$STATE_DIR/approved" "$STATE_DIR/inbox"
 if [[ ! -f "$ENV_FILE" ]]; then
   if [[ -f "$EXAMPLE" ]]; then
     cp "$EXAMPLE" "$ENV_FILE"
-    echo "wrote placeholder $ENV_FILE — edit and fill in the real values"
+    echo "wrote placeholder $ENV_FILE, edit and fill in the real values"
   else
     : > "$ENV_FILE"
-    echo "created empty $ENV_FILE — copy values from .env.example"
+    echo "created empty $ENV_FILE, copy values from .env.example"
   fi
 fi
 chmod 600 "$ENV_FILE"

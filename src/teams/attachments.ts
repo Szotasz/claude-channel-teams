@@ -10,11 +10,11 @@
  *
  *   <baseDir>/YYYY-MM-DD/HHMM-<sender-slug>-<original-filename>
  *
- * Date and time are evaluated in Europe/London because that's where Adnan
- * works and the morning brief / scheduling cadence is UK-time aligned. On
+ * Date and time are evaluated in the configured time zone (TEAMS_PLUGIN_TZ),
+ * or the host's time zone when it is not set. On
  * filename collision we append "-1", "-2" before the extension.
  *
- * Two attachment shapes are handled:
+ * Three attachment shapes are handled:
  *
  *   1. SharePoint / OneDrive file attachments — contentType
  *      `application/vnd.microsoft.teams.file.download.info`. The `content`
@@ -25,6 +25,12 @@
  *      requires the bot's service-to-service token in the
  *      `Authorization: Bearer <token>` header.
  *
+ *   3. `text/html` parts (forwarded messages, quoted replies, pasted tables)
+ *      and card attachments (adaptive, hero, thumbnail, o365connector) —
+ *      converted to plain text and inlined into the message. Nothing is
+ *      fetched; see richContent.ts. An HTML part that only repeats the
+ *      message's own text is ignored.
+ *
  * Anything else is logged and skipped with an annotation so Hermes can tell
  * the user the bot ignored that bit.
  *
@@ -33,10 +39,11 @@
  * same — no MCP schema changes — Hermes reads the path out of the text.
  */
 
-import { mkdirSync, renameSync, statSync, writeFileSync, existsSync } from 'fs'
+import { mkdirSync, renameSync, statSync, writeFileSync, existsSync, copyFileSync, constants, unlinkSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import type { Attachment } from 'botframework-schema'
+import { CARD_CONTENT_TYPES, capInline, cardToText, comparableHtml, comparableMessage, htmlToText, neutralizeMarkup } from './richContent.js'
 
 /** 50 MB cap per file. Anything larger is skipped with an annotation. */
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
@@ -46,6 +53,30 @@ export const DOWNLOAD_TIMEOUT_MS = 30_000
 
 const TEAMS_FILE_DOWNLOAD_CONTENT_TYPE =
   'application/vnd.microsoft.teams.file.download.info'
+
+// The temp file lives under the OS temp directory, which can be another
+// filesystem than the state directory, and rename cannot cross filesystems.
+export function moveFile(src: string, dst: string, rename: (from: string, to: string) => void = renameSync): void {
+  try {
+    rename(src, dst)
+    return
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'EXDEV') throw err
+  }
+  // A failed copy may only remove its own partial file. The copy can fail on the source
+  // (ENOENT, EACCES) before it ever reaches the destination, so EEXIST alone does not say
+  // whether a destination was there before.
+  const existed = existsSync(dst)
+  try {
+    copyFileSync(src, dst, constants.COPYFILE_EXCL)
+  } catch (err) {
+    if (!existed && (err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+      try { unlinkSync(dst) } catch {}
+    }
+    throw err
+  }
+  unlinkSync(src)
+}
 
 /**
  * Host gate for inline-image content URLs.
@@ -90,6 +121,8 @@ export type AttachmentResult =
   | { kind: 'saved'; path: string; contentType: string; sizeBytes: number; originalName: string }
   | { kind: 'skipped'; reason: string; originalName: string }
   | { kind: 'failed'; reason: string; originalName: string }
+  | { kind: 'inline'; label: string; text: string; originalName: string }
+  | { kind: 'ignored'; reason: string; originalName: string }
 
 export interface ProcessAttachmentsDeps {
   /**
@@ -104,6 +137,12 @@ export interface ProcessAttachmentsDeps {
   fetchImpl?: typeof fetch
   /** Optional clock override for deterministic tests. Returns a Date. */
   now?: () => Date
+  /**
+   * The message's own text, used to drop an HTML part that only repeats it.
+   */
+  messageText?: string
+  /** IANA time zone for the date folder and time prefix. Unset = host time zone. */
+  timeZone?: string
 }
 
 /**
@@ -136,14 +175,11 @@ export function sanitiseFilename(name: string | undefined): string {
 }
 
 /**
- * Date stamp in Europe/London — YYYY-MM-DD.
- *
- * We use `Intl.DateTimeFormat` with the timezone explicitly set so the host
- * VM's TZ doesn't sneak in. Bristol summer time is UTC+1, winter is UTC.
+ * Date stamp in the configured time zone (host time zone when unset): YYYY-MM-DD.
  */
-function londonDate(now: Date): string {
+export function localDate(now: Date, timeZone?: string): string {
   const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/London',
+    ...(timeZone ? { timeZone } : {}),
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -153,11 +189,11 @@ function londonDate(now: Date): string {
 }
 
 /**
- * Time stamp in Europe/London — HHMM (24h).
+ * Time stamp in the configured time zone (host time zone when unset): HHMM (24h).
  */
-function londonTime(now: Date): string {
+export function localTime(now: Date, timeZone?: string): string {
   const fmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London',
+    ...(timeZone ? { timeZone } : {}),
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -206,6 +242,8 @@ function formatBytes(n: number): string {
  *   [Attachment skipped: report.pdf — exceeds 50 MB limit]
  */
 export function formatAnnotation(result: AttachmentResult): string {
+  if (result.kind === 'inline') return `[${result.label}]\n${result.text}`
+  if (result.kind === 'ignored') return ''
   if (result.kind === 'saved') {
     return `[Attached: ${result.path} (${result.contentType}, ${formatBytes(result.sizeBytes)})]`
   }
@@ -302,7 +340,7 @@ export async function processOne(
       const { tempPath, sizeBytes } = await downloadToTemp(downloadUrl, {}, fetchImpl)
       mkdirSync(dateDir, { recursive: true, mode: 0o700 })
       const finalPath = pickPath(dateDir, prefix, declaredName)
-      renameSync(tempPath, finalPath)
+      moveFile(tempPath, finalPath)
       // For SharePoint files we use a generic content-type if absent. The
       // sender's fileType (e.g. "pdf") is the best hint we have.
       const ct =
@@ -360,7 +398,7 @@ export async function processOne(
       const fallback = `image.${ext}`
       const name = declaredName === 'file' ? fallback : declaredName
       const finalPath = pickPath(dateDir, prefix, name)
-      renameSync(tempPath, finalPath)
+      moveFile(tempPath, finalPath)
       return {
         kind: 'saved',
         path: finalPath,
@@ -375,6 +413,21 @@ export async function processOne(
       }
       return { kind: 'failed', reason: msg, originalName: declaredName }
     }
+  }
+
+  if (att.contentType === 'text/html') {
+    const html = typeof att.content === 'string' ? att.content : ''
+    const text = htmlToText(html)
+    // A pasted image or a plain message often carries an HTML copy of the same text: drop it then.
+    const comparable = comparableHtml(html)
+    const own = comparableMessage(deps.messageText ?? '')
+    if (!comparable || comparable === own) return { kind: 'ignored', reason: 'html repeats the message text', originalName: declaredName }
+    return { kind: 'inline', label: 'HTML content', text: capInline(neutralizeMarkup(text)), originalName: declaredName }
+  }
+  if (typeof att.contentType === 'string' && CARD_CONTENT_TYPES.has(att.contentType)) {
+    const text = cardToText(att.contentType, att.content)
+    if (!text) return { kind: 'skipped', reason: 'card with no text', originalName: declaredName }
+    return { kind: 'inline', label: 'Card content', text: capInline(neutralizeMarkup(text)), originalName: declaredName }
   }
 
   // Unknown shape — log and skip with an annotation so Hermes can tell the
@@ -400,8 +453,8 @@ export async function processAttachments(
   if (attachments.length === 0) return { annotations: [], results: [] }
 
   const now = (deps.now ?? (() => new Date()))()
-  const date = londonDate(now)
-  const time = londonTime(now)
+  const date = localDate(now, deps.timeZone)
+  const time = localTime(now, deps.timeZone)
   const slug = senderSlug(fromName)
   const prefix = `${time}-${slug}`
   const dateDir = join(deps.baseDir, date)
@@ -413,6 +466,14 @@ export async function processAttachments(
       process.stderr.write(
         `teams channel: attachment ${result.kind} — ${result.originalName}: ${result.reason}\n`,
       )
+    } else if (result.kind === 'inline') {
+      process.stderr.write(
+        `teams channel: attachment inlined — ${result.originalName} (${result.label}, ${result.text.length} chars)\n`,
+      )
+    } else if (result.kind === 'ignored') {
+      process.stderr.write(
+        `teams channel: attachment ignored — ${result.originalName}: ${result.reason}\n`,
+      )
     } else {
       process.stderr.write(
         `teams channel: attachment saved — ${result.path} (${formatBytes(result.sizeBytes)})\n`,
@@ -420,7 +481,7 @@ export async function processAttachments(
     }
     results.push(result)
   }
-  return { annotations: results.map(formatAnnotation), results }
+  return { annotations: results.map(formatAnnotation).filter((a) => a.length > 0), results }
 }
 
 /**

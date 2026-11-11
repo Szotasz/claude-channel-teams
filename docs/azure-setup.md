@@ -3,7 +3,7 @@
 How to register the Entra ID application, create the Azure Bot resource,
 and add the Microsoft Teams channel. Placeholders in angle brackets.
 
-This document is generalised — substitute your own tenant, subscription, and
+This document is generalised, substitute your own tenant, subscription, and
 hostnames. Nothing here is specific to any one organisation.
 
 ## Prerequisites
@@ -18,7 +18,7 @@ hostnames. Nothing here is specific to any one organisation.
 
 1. **Register the application.** Azure portal → *Microsoft Entra ID* →
    *App registrations* → *New registration*.
-   - Name: `<bot-display-name>` (operator's choice — appears nowhere
+   - Name: `<bot-display-name>` (operator's choice, appears nowhere
      end-user-facing).
    - Supported account types: *Accounts in this organizational directory
      only* (single tenant).
@@ -48,7 +48,7 @@ hostnames. Nothing here is specific to any one organisation.
 ## Path B: `az` CLI
 
 ```sh
-# Variables — substitute your own
+# Variables: substitute your own
 TENANT_ID=<tenant-id>
 SUBSCRIPTION=<subscription-id>
 RESOURCE_GROUP=<resource-group>
@@ -135,7 +135,7 @@ zipped) before users can install the bot. Minimal template:
 }
 ```
 
-- `<manifest-guid>` is a freshly generated GUID — `uuidgen` or
+- `<manifest-guid>` is a freshly generated GUID, `uuidgen` or
   `python -c 'import uuid; print(uuid.uuid4())'`.
 - `<app-id>` must match the Entra ID application's client ID.
 - Icons are PNG; the colour icon is 192×192, outline 32×32.

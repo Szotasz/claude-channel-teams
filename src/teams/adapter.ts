@@ -30,20 +30,36 @@
 
 import {
   CloudAdapter,
+  TeamsInfo,
   TurnContext,
   type Activity,
   type ConversationReference,
 } from 'botbuilder'
 import type { Attachment } from 'botframework-schema'
+import { isFeedbackInvoke, parseFeedback, feedbackEventText } from './feedback.js'
 import type { Config } from '../config.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { PendingStore } from '../pairing/pair.js'
 import type { PermissionRelay } from '../permission/relay.js'
 import { PERMISSION_REPLY_RE } from '../permission/relay.js'
-import type { ConversationRefStore } from './conversationRefs.js'
+import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
+import type { ChannelRefStore } from './channelRefs.js'
 import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
+import type { SeenMessages } from './seenMessages.js'
+import { QUOTE_ID_RE } from './reply.js'
 import { handleFilesRequest } from './filesRoute.js'
+import type { DeliveredMessages } from './deliveredMessages.js'
+import type { InboundIds } from './inboundIds.js'
+import { invisibleMeta, stripInvisible } from './invisibleChars.js'
+import { makeEarlyAckTurn } from './earlyAck.js'
+import { buildDialogTask, cardActionFrom, cardActionText, dialogInvokeFrom, dialogSubmitText } from './cardAction.js'
+import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
+import { userViewInvokeFrom } from './userViews.js'
+import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
+import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
+import { withHeldContext, type FilterDecision, type HeldMessages, type UnmentionedFilter } from './unmentionedFilter.js'
+import { messageActionFrom } from './messageAction.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -53,7 +69,39 @@ import { handleFilesRequest } from './filesRoute.js'
 export type AttachmentHandler = (
   attachments: Attachment[],
   fromName: string,
+  messageText?: string,
 ) => Promise<{ annotations: string[] }>
+
+export interface InboundQuote { messageId: string; senderName?: string; preview?: string; deleted: boolean }
+
+function cleanQuoteField(v: unknown, max: number): string | undefined {
+  if (typeof v !== 'string') return undefined
+  const c = v.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
+  return c.length > 0 ? c : undefined
+}
+
+/** The first quotedReply entity of an activity, cleaned; undefined when there is none or its messageId is invalid. */
+export function inboundQuote(entities: unknown): InboundQuote | undefined {
+  if (!Array.isArray(entities)) return undefined
+  const e = entities.find(
+    x => x && typeof x === 'object' && (x as any).type === 'quotedReply' &&
+      (x as any).quotedReply && typeof (x as any).quotedReply === 'object',
+  ) as { quotedReply: Record<string, unknown> } | undefined
+  if (!e) return undefined
+  const q = e.quotedReply
+  if (typeof q.messageId !== 'string' || !QUOTE_ID_RE.test(q.messageId)) return undefined
+  return {
+    messageId: q.messageId,
+    senderName: cleanQuoteField(q.senderName, 100),
+    preview: cleanQuoteField(q.preview, 300),
+    deleted: q.isReplyDeleted === true,
+  }
+}
+
+/** The text with every <quoted messageId="..."/> placeholder removed and the result trimmed. */
+export function stripQuotePlaceholders(text: string): string {
+  return text.replace(/<quoted\s+messageId="[^"]*"\s*\/>/g, '').trim()
+}
 
 /**
  * Sink type — what the adapter pushes when an inbound message clears the gate.
@@ -67,8 +115,121 @@ export type ChannelEventSink = (event: {
   tenantId: string
   fromName: string
   messageId?: string
+  quotedMessageId?: string
   ts?: string
+  /** Group context only: whether the bot was @mentioned. Undefined in 1:1 chats. */
+  mentioned?: boolean
+  /** Set when the event is about an earlier message: an edit / restore / delete, or a user's reaction to it. */
+  messageEvent?: 'edited' | 'restored' | 'deleted' | 'reaction'
+  /** true for a team channel or a group chat (the same isGroupContext the mention gate uses). */
+  isGroup?: boolean
+  teamId?: string
+  teamName?: string
+  /** The Teams channel (channelData.channel), not the Bot Framework channelId 'msteams'. */
+  teamsChannelId?: string
+  teamsChannelName?: string
+  /** The root message id of a channel thread (the `;messageid=` part of the conversation id). */
+  threadId?: string
+  replyToId?: string
+  /** Display names of the people @mentioned in the message, the bot itself excluded. */
+  mentions?: string[]
+  /** Set by withInvisibleStripped when invisible characters were removed from `text`. */
+  invisible?: { tag: number; zwsp: number; bidi: number; bom: number }
+  /** True when the inbound activity carried attachments (their notes are already in `text`). */
+  hasAttachments?: boolean
+  /** Set by the inbound debouncer when several quick messages were merged into this one. */
+  merged?: { count: number; messageIds: string[] }
+  cardAction?: { kind: 'execute' | 'submit' | 'dialog'; verb?: string }
+  /** Set when the event is a Teams meeting start or end (not a message). Values are already cleaned. */
+  meetingEvent?: { kind: 'started' | 'ended'; title?: string; meetingType?: string; meetingId?: string; time?: string }
+  /** Set when the event is a message action submitted from a message's "..." menu (the cleaned command id). */
+  messageAction?: string
+  /** Set when the event is a feedback click on an earlier bot message (message_id). */
+  feedback?: 'like' | 'dislike'
 }) => void
+
+// The most mention names one event carries.
+export const MAX_MENTION_NAMES = 20
+// The most characters the mention names take, joined with ', '.
+export const MAX_MENTIONS_CHARS = 200
+
+// Meta values end up as attributes of the <channel> tag. Team, channel and user names are set by people
+// in the tenant, so they are untrusted: no double quotes, angle brackets, control characters (C0, C1) or
+// bidi controls, tag characters (except the three RGI flags), zero-width spaces, word joiners and BOM, bounded length.
+export function metaText(value: unknown, max = 200): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const bounded = stripInvisible(value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069"<>]/g, ' '))
+    .text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max)
+    .replace(/[\ud800-\udbff]$/, '')
+  // The bound counts UTF-16 units and can cut a kept RGI flag: strip again, so no partial tag run survives.
+  const cleaned = stripInvisible(bounded).text.trim()
+  return cleaned === '' ? undefined : cleaned
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null && !Array.isArray(v) }
+
+export function threadIdFromConversationId(conversationId: string): string | undefined {
+  const marker = ';messageid='
+  const i = conversationId.indexOf(marker)
+  if (i < 0) return undefined
+  const rest = conversationId.slice(i + marker.length)
+  const end = rest.indexOf(';')
+  return metaText(end < 0 ? rest : rest.slice(0, end))
+}
+
+/** merged_count, and merged_message_ids built from the ids that survive metaText one by one (an id that sanitises
+ *  to nothing is left out, and the key is omitted when none is left), whole ids only, at most 1000 characters. */
+function mergedMeta(merged: { count: number; messageIds: string[] }): Record<string, string> {
+  const ids = merged.messageIds.map(id => metaText(id, 200)).filter((id): id is string => id !== undefined)
+  // Whole ids only: the next id goes in only if the joined value stays within 1000 characters.
+  let joined = ''
+  for (const id of ids) {
+    const next = joined === '' ? id : `${joined},${id}`
+    if (next.length > 1000) break
+    joined = next
+  }
+  return { merged_count: String(merged.count), ...(joined !== '' ? { merged_message_ids: joined } : {}) }
+}
+
+/** The meta of the channel notification for one event. Keys are snake_case: Claude Code drops a key that is not [A-Za-z0-9_]+. */
+export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record<string, string> {
+  return {
+    aad_object_id: event.aadObjectId,
+    conversation_id: event.conversationId,
+    tenant_id: event.tenantId,
+    from_name: stripInvisible(event.fromName).text,
+    ...(event.messageId ? { message_id: event.messageId } : {}),
+    ...(event.quotedMessageId ? { quoted_message_id: event.quotedMessageId } : {}),
+    ...(event.ts ? { ts: event.ts } : {}),
+    ...(event.messageEvent ? { message_event: event.messageEvent } : {}),
+    ...(event.messageAction ? { message_action: event.messageAction } : {}),
+    ...(event.feedback ? { feedback: event.feedback } : {}),
+    ...(event.mentioned !== undefined ? { mentioned: event.mentioned ? 'true' : 'false' } : {}),
+    ...(event.cardAction ? { card_action: event.cardAction.kind, ...(event.cardAction.verb ? { action_verb: event.cardAction.verb } : {}) } : {}),
+    ...(event.isGroup !== undefined ? { is_group: String(event.isGroup) } : {}),
+    ...(event.teamId !== undefined ? { team_id: event.teamId } : {}),
+    ...(event.teamName !== undefined ? { team_name: event.teamName } : {}),
+    ...(event.teamsChannelId !== undefined ? { channel_id: event.teamsChannelId } : {}),
+    ...(event.teamsChannelName !== undefined ? { channel_name: event.teamsChannelName } : {}),
+    ...(event.threadId !== undefined ? { thread_id: event.threadId } : {}),
+    ...(event.replyToId !== undefined ? { reply_to_id: event.replyToId } : {}),
+    ...(event.mentions !== undefined ? { mentions: event.mentions.join(', ') } : {}),
+    ...(event.merged ? mergedMeta(event.merged) : {}),
+    ...(event.invisible ? invisibleMeta(event.invisible) : {}),
+    ...(event.meetingEvent
+      ? {
+          meeting_event: event.meetingEvent.kind,
+          ...(event.meetingEvent.title !== undefined ? { meeting_title: event.meetingEvent.title } : {}),
+          ...(event.meetingEvent.meetingType !== undefined ? { meeting_type: event.meetingEvent.meetingType } : {}),
+          ...(event.meetingEvent.meetingId !== undefined ? { meeting_id: event.meetingEvent.meetingId } : {}),
+          ...(event.meetingEvent.time !== undefined ? { meeting_time: event.meetingEvent.time } : {}),
+        }
+      : {}),
+  }
+}
 
 /** Hook the adapter calls when an unknown sender needs the pairing DM sent. */
 export type PairingDmSender = (
@@ -77,6 +238,8 @@ export type PairingDmSender = (
 ) => Promise<void>
 
 export interface AdapterDeps {
+  /** Whether feedback clicks are delivered (TEAMS_FEEDBACK). Optional so existing tests still wire. */
+  feedback?: boolean
   config: Config
   adapter: CloudAdapter
   allowlist: Allowlist
@@ -95,6 +258,8 @@ export interface AdapterDeps {
    * sets it.
    */
   attachments?: AttachmentHandler
+  /** Persisted per-channel references for post_to_channel. Optional. */
+  channelRefs?: ChannelRefStore
   /** Optional typing-indicator pump. Started after the gate passes so the
    *  Teams user sees "is typing…" while Claude works. Optional so existing
    *  tests still wire. */
@@ -103,10 +268,72 @@ export interface AdapterDeps {
    *  `GET /files/<token>` from this store. Optional so existing tests still
    *  wire. */
   outbox?: Outbox
+  /** Messages already delivered to Claude; edit/delete/restore events are only
+   *  forwarded for these. Optional so existing tests still wire. */
+  deliveredMessages?: DeliveredMessages
+  /** Ids of inbound messages already received; a repeated delivery of the same message is dropped. Optional so
+   *  existing tests still wire. */
+  inboundIds?: InboundIds
+  /** Person -> user MRI, filled from allowlisted inbound activities. Optional so existing tests still wire. */
+  knownUsers?: { set(aadObjectId: string, mri: string): void }
+  /** User-specific views; a refresh invoke with the reserved verb is answered from here. Optional for tests. */
+  userViews?: { cardFor(viewId: string, aadObjectId: string): Record<string, unknown> | undefined }
+  /** Whether meeting start / end events are delivered (TEAMS_MEETING_EVENTS). Optional so existing
+   *  tests still wire. */
+  meetingEvents?: boolean
+  /** Meetings this channel saw an event for, so get_meeting_transcript can find their transcript. Optional so existing
+   *  tests still wire. */
+  meetingStore?: MeetingStore
+  /** Looks up a meeting's Graph id and organizer; defaults to TeamsInfo.getMeetingInfo. Injectable for tests. */
+  getMeetingInfo?: (ctx: TurnContext, meetingId: string) => Promise<unknown>
+  /** How long the meeting-info lookup after a meeting event may take, in milliseconds (default 5000).
+   *  A lookup that takes longer is given up on. Injectable so tests can use a short one. */
+  meetingInfoTimeoutMs?: number
+  /** Remembers the team AAD group id per channel (for thread history). Optional. */
+  teamGroups?: { set(channelId: string, groupId: string): void; get(channelId: string): string | undefined }
+  /** Records the ids of delivered messages per conversation, for outbound quote checks. A quoted message's id is
+   *  not recorded: nothing proves it belongs to this conversation. */
+  seenMessages?: SeenMessages
+  /** Optional filter for unmentioned messages (TEAMS_UNMENTIONED_FILTER_CMD). Only used
+   *  together with heldMessages; without them every unmentioned message that passes the
+   *  gates is delivered, as before. */
+  unmentionedFilter?: UnmentionedFilter
+  /** Where the messages the filter holds back wait for the next delivered message in the
+   *  same conversation. */
+  heldMessages?: HeldMessages
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
 const rejectedSeen = new Set<string>()
+/** Senders already told (once) to pair in a 1:1 chat instead of a shared one. */
+const groupPairingHinted = new Set<string>()
+
+const REACTION_TYPE_RE = /^[a-z0-9_]{1,40}$/
+
+function reactionTypes(list: unknown): string[] {
+  if (!Array.isArray(list)) return []
+  const out: string[] = []
+  for (const el of list) {
+    if (!el || typeof el !== 'object') continue
+    const t = (el as { type?: unknown }).type
+    if (typeof t === 'string' && REACTION_TYPE_RE.test(t)) out.push(t)
+    if (out.length >= 10) break
+  }
+  return out
+}
+
+/** Text for an inbound user reaction, or undefined when nothing valid remains. */
+export function reactionEventText(activity: {
+  reactionsAdded?: unknown
+  reactionsRemoved?: unknown
+}): string | undefined {
+  const added = reactionTypes(activity.reactionsAdded)
+  const removed = reactionTypes(activity.reactionsRemoved)
+  const lines: string[] = []
+  if (added.length > 0) lines.push(`[Reaction] added: ${added.join(', ')}`)
+  if (removed.length > 0) lines.push(`[Reaction] removed: ${removed.join(', ')}`)
+  return lines.length > 0 ? lines.join('\n') : undefined
+}
 
 /**
  * Adapt a Bun-native fetch-style Request to the minimal `Request` interface
@@ -210,6 +437,45 @@ function makeResponseSink(): {
   return { res, done }
 }
 
+/** The channel / chat part of a conversation id (drops ';messageid=...'). */
+export function baseConversationId(conversationId: string): string {
+  const i = conversationId.indexOf(';')
+  return i === -1 ? conversationId : conversationId.slice(0, i)
+}
+
+/**
+ * What a turn gets. A message turn gets only the activity, because makeEarlyAckTurn may run it after botbuilder
+ * revoked the context; an invoke turn (a card Action.Execute) is never queued there and keeps the whole context,
+ * because its answer goes back through it.
+ */
+export type InboundTurn = Pick<TurnContext, 'activity'> | TurnContext
+
+/** Whether this turn's invoke was answered, and the context it is answered through (none for an activity-only turn). */
+type InvokeState = { answered: boolean; ctx: TurnContext | undefined }
+
+/** The context an invoke is answered through; a turn that carries only its activity has none. */
+function invokeContext(ctx: InboundTurn): TurnContext | undefined {
+  return ctx.activity.type === 'invoke' && 'sendActivity' in ctx ? ctx : undefined
+}
+
+async function respondToCardInvoke(ctx: TurnContext, message: string) {
+  await ctx.sendActivity({
+    type: 'invokeResponse',
+    value: { status: 200, body: { statusCode: 200, type: 'application/vnd.microsoft.activity.message', value: message } },
+  } as Partial<Activity>)
+}
+
+async function respondWithCard(ctx: TurnContext, card: Record<string, unknown>) {
+  await ctx.sendActivity({
+    type: 'invokeResponse',
+    value: { status: 200, body: { statusCode: 200, type: ADAPTIVE_CARD_CONTENT_TYPE, value: card } },
+  } as Partial<Activity>)
+}
+
+async function respondToTaskInvoke(ctx: TurnContext, body: unknown) {
+  await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200, body } } as Partial<Activity>)
+}
+
 /**
  * Build the turn handler that bridges the SDK's TurnContext to our gate + sink.
  *
@@ -217,16 +483,191 @@ function makeResponseSink(): {
  * TurnContext — bypassing the JWT validator (which requires Microsoft-signed
  * tokens, impractical to produce in tests).
  */
-export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promise<void> {
-  return async function turn(ctx: TurnContext) {
+export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promise<void> {
+  // Per conversation: the filter decision still running for the latest unmentioned message.
+  // A later message in that conversation waits for it, so a held message is always in the
+  // context of the message that follows it.
+  const filterTails = new Map<string, Promise<FilterDecision>>()
+  // An Action.Execute invoke must always be answered (no answer = HTTP 501): every path of turn() that does not answer
+  // it, the early drops and a throw included, gets 'Not allowed.' here.
+  const handle = async function answeredTurn(ctx: InboundTurn) {
+    const invoke = { answered: false, ctx: invokeContext(ctx) }
+    try {
+      await turn(ctx, invoke)
+    } finally {
+      const card = cardActionFrom(ctx.activity)
+      if (card && card.kind !== 'submit' && !invoke.answered) await answer(invoke, c => respondToCardInvoke(c, 'Not allowed.'))
+      // Any task/* invoke, also one this code does not know, gets a task-format answer.
+      const taskInvoke = ctx.activity.type === 'invoke' && typeof ctx.activity.name === 'string' && ctx.activity.name.startsWith('task/')
+      if (taskInvoke && !invoke.answered) {
+        await answer(invoke, c => respondToTaskInvoke(c, { task: { type: 'message', value: 'Not allowed.' } }))
+      }
+      // A composeExtension invoke must be answered within five seconds; "no response" is status 200 without a body.
+      if (!invoke.answered && ctx.activity.type === 'invoke' && ctx.activity.name?.startsWith('composeExtension/')) {
+        await answer(invoke, respondEmptyInvoke)
+      }
+    }
+  }
+
+  async function answer(invoke: InvokeState, respond: (ctx: TurnContext) => Promise<void>) {
+    invoke.answered = true
+    if (invoke.ctx) await respond(invoke.ctx)
+    else process.stderr.write('teams channel: card action without an invoke context, not answered\n')
+  }
+
+  async function respondEmptyInvoke(ctx: TurnContext) {
+    try {
+      await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200 } } as Partial<Activity>)
+    } catch (err) {
+      process.stderr.write(`teams channel: invoke response failed: ${err}\n`)
+    }
+  }
+
+  async function turn(ctx: InboundTurn, invoke: InvokeState) {
     const a = ctx.activity
     // Diagnostic: log every inbound so we know what arrived.
     process.stderr.write(
       `teams channel: inbound type=${a.type} from=${a.from?.aadObjectId ?? '<none>'} convId=${a.conversation?.id?.slice(0, 20) ?? '<none>'} text=${JSON.stringify((a.text ?? '').slice(0, 60))}\n`,
     )
+    const card = cardActionFrom(a)
+    const dialog = dialogInvokeFrom(a)
     // We only care about message activities in v1. Conversation update,
     // typing, etc. are ignored — they don't carry a payload Claude needs.
-    if (a.type !== 'message') return
+    const eventType = (a.channelData as { eventType?: unknown } | undefined)?.eventType
+    const messageEvent: 'edited' | 'restored' | 'deleted' | undefined =
+      a.type === 'messageUpdate' && eventType === 'editMessage' ? 'edited'
+      : a.type === 'messageUpdate' && eventType === 'undeleteMessage' ? 'restored'
+      : a.type === 'messageDelete' && eventType === 'softDeleteMessage' ? 'deleted'
+      : undefined
+    // Meeting start / end (an 'event' activity, delivered only with the RSC
+    // meeting permissions and TEAMS_MEETING_EVENTS). Runs before the message
+    // path: there is no sender to allowlist (the conversation must be on
+    // TEAMS_MEETING_CONVERSATIONS) and no mention to strip.
+    const meeting = meetingEventFrom(a)
+    if (meeting !== undefined) {
+      if (!deps.meetingEvents) return
+      if (meeting === null) {
+        process.stderr.write('teams channel: drop — meeting event without a value object\n')
+        return
+      }
+      // Both places can name the tenant. Only a non-empty string counts, and any one of them that disagrees with the
+      // pinned tenant drops the event (an empty conversation.tenantId must not hide a foreign channelData tenant).
+      const rawConvTenant: unknown = a.conversation?.tenantId
+      const convTenant = typeof rawConvTenant === 'string' && rawConvTenant !== '' ? rawConvTenant : undefined
+      const dataTenant = isPlainObject(a.channelData) && isPlainObject(a.channelData.tenant)
+        && typeof a.channelData.tenant.id === 'string' && a.channelData.tenant.id !== '' ? a.channelData.tenant.id : undefined
+      const pinned = deps.config.tenantId ? deps.config.tenantId.toLowerCase() : undefined
+      if (pinned && [convTenant, dataTenant].some(t => t !== undefined && t.toLowerCase() !== pinned)) {
+        process.stderr.write('teams channel: drop — meeting event from another tenant\n')
+        return
+      }
+      const evTenant = convTenant ?? dataTenant
+      const rawConversation: unknown = a.conversation?.id
+      if (typeof rawConversation !== 'string' || rawConversation === '') {
+        process.stderr.write('teams channel: drop — meeting event without conversation.id\n')
+        return
+      }
+      const evConversation = rawConversation
+      // No sender to allowlist: the conversation itself must be opted in (TEAMS_MEETING_CONVERSATIONS, no wildcard).
+      // A '*' entry matches nothing, not even a conversation whose id is literally '*'.
+      const evBase = baseConversationId(evConversation)
+      if (evBase === '*' || deps.config.meetingConversations?.has(evBase) !== true) {
+        process.stderr.write('teams channel: drop — meeting event from a conversation not in TEAMS_MEETING_CONVERSATIONS\n')
+        return
+      }
+      const title = metaText(meeting.title)
+      const meetingType = metaText(meeting.meetingType, 40)
+      const meetingId = metaText(meeting.meetingId, 300)
+      // A malformed timestamp must not throw in the turn handler: the event is delivered without ts.
+      const when = a.timestamp ? new Date(a.timestamp) : undefined
+      deps.onEvent({
+        text: meetingEventText({ kind: meeting.kind, title }),
+        conversationId: evConversation,
+        // Empty on purpose: elsewhere aad_object_id is an allowlisted sender, and a meeting event has none.
+        aadObjectId: '',
+        tenantId: evTenant ?? deps.config.tenantId,
+        fromName: '',
+        ts: when && !Number.isNaN(when.getTime()) ? when.toISOString() : undefined,
+        meetingEvent: {
+          kind: meeting.kind,
+          ...(title !== undefined ? { title } : {}),
+          ...(meetingType !== undefined ? { meetingType } : {}),
+          ...(meetingId !== undefined ? { meetingId } : {}),
+          ...(meeting.time !== undefined ? { time: meeting.time } : {}),
+        },
+      })
+      // Remember the meeting's Graph id and organizer so get_meeting_transcript can find its transcript later. A failed
+      // lookup must not affect the delivered event, and a hanging one must not hold the turn open.
+      // makeEarlyAckTurn queues only message turns, so a meeting event keeps its whole context; this narrows the type.
+      const fullCtx = 'sendActivity' in ctx ? ctx : undefined
+      if (deps.meetingStore && meetingId !== undefined && meeting.meetingId !== undefined && fullCtx) {
+        let timedOut = false
+        let stopTimer = (): void => {}
+        try {
+          // Inside the try, so a lookup that throws synchronously is a failed lookup too.
+          const lookup = (deps.getMeetingInfo ?? ((c: TurnContext, id: string) => TeamsInfo.getMeetingInfo(c, id)))(fullCtx, meeting.meetingId)
+          const info = await new Promise<unknown>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              timedOut = true
+              process.stderr.write('teams channel: meeting info lookup timed out\n')
+              resolve(undefined)
+            }, deps.meetingInfoTimeoutMs ?? 5000)
+            stopTimer = () => clearTimeout(timer)
+            lookup.then(resolve, reject)
+          })
+          stopTimer()
+          // A result (or a rejection) that arrives after the timeout is ignored.
+          if (!timedOut) {
+            const m = meetingFromInfo(info)
+            if (m) deps.meetingStore.put(meetingId, { ...m, conversationId: evConversation, ...(evTenant ? { tenantId: evTenant } : {}) })
+            else process.stderr.write('teams channel: meeting info without a usable Graph id or organizer\n')
+          }
+        } catch {
+          stopTimer()
+          process.stderr.write('teams channel: meeting info lookup failed\n')
+        }
+      }
+      return
+    }
+    if (isFeedbackInvoke(a)) {
+      // Teams waits for an answer to every feedback click, also one we do not deliver.
+      const reply = invokeContext(ctx)
+      if (reply) await reply.sendActivity({ type: 'invokeResponse', value: { status: 200 } } as Partial<Activity>)
+      else process.stderr.write('teams channel: feedback click without an invoke context, not answered\n')
+      if (!deps.feedback) return
+      const fbAad = a.from?.aadObjectId?.toLowerCase()
+      const fbTenant = a.conversation?.tenantId
+      const fbConversation = a.conversation?.id
+      // A click is about one bot message: without it there is nothing to rate.
+      const fbMessageId = typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : undefined
+      if (!fbAad || !fbConversation || !fbMessageId) return
+      if (deps.config.tenantId && fbTenant && fbTenant.toLowerCase() !== deps.config.tenantId.toLowerCase()) return
+      if (!deps.allowlist.isAllowed(fbAad)) {
+        process.stderr.write(`teams channel: drop feedback from a sender not on the allowlist (${fbAad})\n`)
+        return
+      }
+      const parsed = parseFeedback(a.value)
+      if (!parsed) return
+      deps.onEvent({
+        text: feedbackEventText(parsed),
+        conversationId: fbConversation,
+        aadObjectId: fbAad,
+        tenantId: fbTenant ?? deps.config.tenantId,
+        fromName: a.from?.name ?? '',
+        messageId: fbMessageId,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        feedback: parsed.reaction,
+      })
+      return
+    }
+    const action = messageActionFrom(a)
+    if (action && !deps.config.messageActions) {
+      process.stderr.write('teams channel: drop message action: TEAMS_MESSAGE_ACTIONS is not on\n')
+      await answer(invoke, respondEmptyInvoke)
+      return
+    }
+    if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card && !dialog && !action) return
+    const answerInvoke = (message: string) => answer(invoke, c => respondToCardInvoke(c, message))
 
     const aadObjectIdRaw = a.from?.aadObjectId
     if (!aadObjectIdRaw) {
@@ -258,12 +699,318 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     }
     const fromName = a.from?.name ?? ''
 
+    // User reactions: allowlisted senders only, no pairing, no @mention needed.
+    if (a.type === 'messageReaction') {
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        if (!rejectedSeen.has(aadObjectId)) {
+          rejectedSeen.add(aadObjectId)
+          process.stderr.write(
+            `teams channel: drop reaction from a sender not on the allowlist (${aadObjectId})\n`,
+          )
+        }
+        return
+      }
+      const reactionText = reactionEventText(a as any)
+      if (reactionText === undefined) return
+      deps.onEvent({
+        text: reactionText,
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof a.replyToId === 'string' && a.replyToId.length > 0 ? a.replyToId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        messageEvent: 'reaction',
+      })
+      return
+    }
+
+    // A dialog (task module) opened from a card button, or its submit.
+    if (dialog) {
+      const answerTask = (body: unknown) => answer(invoke, c => respondToTaskInvoke(c, body))
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop dialog invoke from a sender not on the allowlist (${aadObjectId})\n`)
+        await answerTask({ task: { type: 'message', value: 'Not allowed.' } })
+        return
+      }
+      if (dialog.kind === 'fetch') {
+        const t = buildDialogTask(dialog.dialog)
+        await answerTask(
+          t.ok
+            ? { task: { type: 'continue', value: t.task } }
+            : { task: { type: 'message', value: 'This dialog cannot be opened.' } },
+        )
+        return
+      }
+      const ref = TurnContext.getConversationReference(a)
+      deps.refs.put(conversationId, ref, aadObjectId)
+      deps.onEvent({
+        text: dialogSubmitText(dialog.dataJson),
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        cardAction: { kind: 'dialog' },
+      })
+      await answerTask({ task: { type: 'message', value: 'Sent.' } })
+      return
+    }
+
+    // A click on a card button: no @mention is needed, no pairing, never a permission reply.
+    if (card) {
+      const view = userViewInvokeFrom(a)
+      if (view) {
+        // A user-specific view refresh: answered from the store, never an event to Claude.
+        // A caller no longer on the allowlist gets the base card, not their own (revocation, as reply re-checks).
+        const viewer = deps.allowlist.isAllowed(aadObjectId) ? aadObjectId : ''
+        const shown = view.viewId && deps.userViews ? deps.userViews.cardFor(view.viewId, viewer) : undefined
+        if (shown) {
+          await answer(invoke, c => respondWithCard(c, shown))
+        } else {
+          process.stderr.write('teams channel: user view refresh for an unknown view (restart or evicted)\n')
+          await answerInvoke('Ignored.')
+        }
+        return
+      }
+      if (card.kind === 'automatic') {
+        // A refresh the client fired by itself: not a click, so no event.
+        process.stderr.write('teams channel: ignore automatic card refresh invoke\n')
+        await answerInvoke('Ignored.')
+        return
+      }
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop card action from a sender not on the allowlist (${aadObjectId})\n`)
+        if (card.kind === 'execute') await answerInvoke('Not allowed.')
+        return
+      }
+      const ref = TurnContext.getConversationReference(a)
+      deps.refs.put(conversationId, ref, aadObjectId)
+      if (typeof a.from?.id === 'string' && a.from.id) deps.knownUsers?.set(aadObjectId, a.from.id)
+      deps.onEvent({
+        text: cardActionText(card),
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: typeof a.replyToId === 'string' && a.replyToId ? a.replyToId : a.id,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        cardAction: { kind: card.kind, ...(card.verb ? { verb: card.verb } : {}) },
+      })
+      if (card.kind === 'execute') await answerInvoke('Received.')
+      return
+    }
+
+    if (action) {
+      // Message action from a message's "..." menu: allowlisted senders only, never pairs, answered with no body.
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop message action from a sender not on the allowlist (${aadObjectId})\n`)
+        await answer(invoke, respondEmptyInvoke)
+        return
+      }
+      // Answer first (Teams allows five seconds), then hand the event over; a failing hand-over is logged, the
+      // invoke is already answered.
+      await answer(invoke, respondEmptyInvoke)
+      try {
+        deps.refs.put(conversationId, TurnContext.getConversationReference(a), aadObjectId)
+        const payloadId = (a.value as { messagePayload?: { id?: unknown } } | undefined)?.messagePayload?.id
+        deps.onEvent({
+          text: action.text,
+          conversationId,
+          aadObjectId,
+          tenantId: tenantId ?? deps.config.tenantId,
+          fromName,
+          messageId: typeof payloadId === 'string' && payloadId.length > 0 ? payloadId : a.id,
+          ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+          messageAction: action.command,
+        })
+      } catch (err) {
+        process.stderr.write(`teams channel: message action event failed: ${err instanceof Error ? err.message : 'error'}\n`)
+      }
+      return
+    }
+
+    // Channel / group-chat scope (manifest scopes 'team' + 'groupChat'). In a
+    // SHARED conversation the bot must act ONLY when explicitly @mentioned --
+    // otherwise it would react to every message (noise) and widen interaction
+    // beyond intent. 1:1 ('personal') conversations are unaffected: no mention
+    // is required and the text is used verbatim below, so the existing DM path
+    // cannot regress. NOTE: this gates WHICH messages are considered; WHO may
+    // interact is still the per-user aadObjectId allowlist below (unchanged) --
+    // a channel member is not implicitly allowed just because the bot is in the
+    // channel; each sender still pairs individually.
+    // Robust shared-conversation detection. `conversationType` ('channel' /
+    // 'groupChat') is the documented signal, but Teams does not always populate
+    // it the way we expect (observed live 2026-06-29: a real channel message --
+    // conversation id `19:...@thread.tacv2` -- arrived with conversationType not
+    // equal to 'channel', so the old single-signal check fell through to the
+    // personal path: surfaced verbatim, no @mention gate, no mention strip). So
+    // we OR in two reliable signals: `conversation.isGroup` (true for any shared
+    // conversation, false/undefined for a 1:1) and the `@thread.tacv2` team-channel
+    // conversation-id shape. 1:1-SAFE by construction: a personal chat has
+    // conversationType='personal' (not in the set), isGroup falsey, and a conv-id
+    // that is NOT `@thread.tacv2` (that suffix is channel-specific). We deliberately
+    // do NOT pattern-match `@thread.v2`/`@thread.skype` -- those are not needed
+    // (group chats set isGroup) and matching them risks a false-positive on a 1:1.
+    const conversationType = a.conversation?.conversationType
+    const isGroupConv = (a.conversation as { isGroup?: boolean } | undefined)?.isGroup === true
+    const threadConv = /@thread\.tacv2/.test(conversationId)
+    const isGroupContext =
+      conversationType === 'channel' ||
+      conversationType === 'groupChat' ||
+      isGroupConv ||
+      threadConv
+    if (messageEvent) {
+      // Update of an earlier message. Runs before the @mention gate, pairing and
+      // everything else: only a message we delivered, from the same still-allowed
+      // sender, is forwarded. Never pairs, never sends anything to Teams.
+      const targetId = a.id
+      if (typeof targetId !== 'string' || targetId.length === 0) {
+        process.stderr.write(`teams channel: drop — ${messageEvent} event without activity id\n`)
+        return
+      }
+      const entry = deps.deliveredMessages?.get(baseConversationId(conversationId), targetId)
+      if (!entry) {
+        process.stderr.write(`teams channel: drop — ${messageEvent} event for a message that was not delivered\n`)
+        return
+      }
+      if (entry.aadObjectId !== aadObjectId) {
+        process.stderr.write(`teams channel: drop — ${messageEvent} event from a different sender than the original\n`)
+        return
+      }
+      if (!deps.allowlist.isAllowed(aadObjectId)) {
+        process.stderr.write(`teams channel: drop — ${messageEvent} event from a sender no longer in allowlist\n`)
+        return
+      }
+      let eventText: string
+      if (messageEvent === 'deleted') {
+        eventText = '[Message deleted]'
+      } else {
+        const body = isGroupContext
+          ? (TurnContext.removeRecipientMention(a) ?? '').trim()
+          : (typeof a.text === 'string' ? a.text.trim() : '')
+        const label = messageEvent === 'edited' ? '[Message edited]' : '[Message restored]'
+        eventText = `${label} ${body.length > 0 ? body : '(the new text was not included)'}`
+      }
+      deps.onEvent({
+        text: eventText,
+        conversationId,
+        aadObjectId,
+        tenantId: tenantId ?? deps.config.tenantId,
+        fromName,
+        messageId: targetId,
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        messageEvent,
+      })
+      return
+    }
+    // Diagnostic: the context signals on every inbound -- cheap, and the only way
+    // to tell a mis-detected channel from a 1:1 after the fact (no other log has it).
+    const mentionIds = (a.entities ?? [])
+      .filter((e) => (e as { type?: string }).type === 'mention')
+      .map((e) => (e as { mentioned?: { id?: string } }).mentioned?.id)
+    process.stderr.write(
+      `teams channel: ctx convType=${conversationType ?? '<none>'} isGroup=${isGroupConv} thread=${threadConv} -> group=${isGroupContext} recipient=${a.recipient?.id ?? '<none>'} mentions=${JSON.stringify(mentionIds)} convId=${conversationId.slice(0, 32)}\n`,
+    )
+    // One allowlist decision per turn: the unmentioned path and the gate below
+    // must not disagree because the allowlist changed between two reads.
+    const senderAllowed = deps.allowlist.isAllowed(aadObjectId)
+    let mentioned: boolean | undefined
+    if (isGroupContext) {
+      const botId = a.recipient?.id
+      mentioned = botId
+        ? (a.entities ?? []).some(
+            (e) =>
+              (e as { type?: string }).type === 'mention' &&
+              (e as { mentioned?: { id?: string } }).mentioned?.id === botId,
+          )
+        : false
+      if (mentioned && deps.unmentionedFilter && deps.heldMessages) {
+        const pendingDecision = filterTails.get(conversationId)
+        if (pendingDecision) await pendingDecision
+      }
+      if (!mentioned) {
+        const optOut = deps.config.unmentionedConversations
+        const unmentionedOk = optOut !== undefined && (optOut.has('*') || optOut.has(baseConversationId(conversationId)))
+        if (!unmentionedOk) {
+          process.stderr.write(
+            `teams channel: ignore: ${conversationType} message without bot @mention (convId=${conversationId.slice(0, 20)})\n`,
+          )
+          return
+        }
+        // Delivered without a mention: allowlisted senders only. A non-allowlisted
+        // sender's unmentioned message never starts the pairing flow -- otherwise
+        // every channel member who writes anything would get a pairing DM.
+        if (!senderAllowed) {
+          process.stderr.write(
+            `teams channel: ignore: unmentioned ${conversationType ?? 'group'} message from a non-allowlisted sender (convId=${conversationId.slice(0, 20)})\n`,
+          )
+          return
+        }
+        if (deps.unmentionedFilter && deps.heldMessages) {
+          const filter = deps.unmentionedFilter
+          const unmentionedText = typeof a.text === 'string' ? a.text.trim() : ''
+          const previous = filterTails.get(conversationId) ?? Promise.resolve<FilterDecision>({ verdict: 'deliver' })
+          const mine = previous
+            .then(() =>
+              filter({ text: unmentionedText, fromName, conversationId, conversationType, botName: a.recipient?.name }),
+            )
+            .catch((err): FilterDecision => ({
+              verdict: 'deliver',
+              reason: `filter threw: ${err instanceof Error ? err.message : String(err)}`,
+            }))
+          filterTails.set(conversationId, mine)
+          let decision: FilterDecision
+          try {
+            decision = await mine
+          } finally {
+            if (filterTails.get(conversationId) === mine) filterTails.delete(conversationId)
+          }
+          if (decision.reason) {
+            process.stderr.write(`teams channel: unmentioned filter failed (${decision.reason}); delivering\n`)
+          }
+          if (decision.verdict === 'hold') {
+            const attachmentCount = Array.isArray(a.attachments) ? a.attachments.length : 0
+            deps.heldMessages.hold(conversationId, fromName, unmentionedText, attachmentCount)
+            process.stderr.write(
+              `teams channel: held: the filter judged an unmentioned message not for the bot (convId=${conversationId.slice(0, 20)})\n`,
+            )
+            return
+          }
+        }
+      }
+    }
+
+    // Messages held after this point arrived after this one; they wait for the next message.
+    const heldUpTo = deps.heldMessages?.mark()
+
     // Allowlist gate — the single most important application-level check.
     // A non-allowlisted sender enters the pairing path (Phase 3) if a
     // pending store is wired; otherwise it's dropped silently.
-    if (!deps.allowlist.isAllowed(aadObjectId)) {
+    if (!senderAllowed) {
       if (deps.pending && deps.sendPairingDm) {
         const ref = TurnContext.getConversationReference(a)
+        // Shared by the adapter's own detection, or by the relay's rule (isPersonalReference: an untyped
+        // '@thread.' id is a group chat). An explicit 'personal' type stays 1:1. The @mention gate is not changed.
+        if (isGroupContext || !isPersonalReference(ref)) {
+          // Never put a pairing code in a conversation other people read.
+          if (!groupPairingHinted.has(aadObjectId)) {
+            groupPairingHinted.add(aadObjectId)
+            process.stderr.write(
+              `teams channel: pairing not offered in a shared conversation (aad=${aadObjectId})\n`,
+            )
+            deps.sendPairingDm(
+              ref,
+              'This bot is gated. To pair, send me a direct (1:1) message.',
+            ).catch(err => {
+              process.stderr.write(
+                `teams channel: pairing DM send failed: ${err}\n`,
+              )
+            })
+          }
+          return
+        }
         const decision = deps.pending.recordIncoming({
           aadObjectId,
           tenantId: tenantId ?? deps.config.tenantId,
@@ -311,13 +1058,61 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // before pushing to Claude so a fast reply can always find its way back.
     const ref = TurnContext.getConversationReference(a)
     deps.refs.put(conversationId, ref, aadObjectId)
+    // Remember one reference per proactive-enabled channel (persisted), so the
+    // post_to_channel tool can open a new post there later, even after a restart.
+    if (isGroupContext && deps.channelRefs) {
+      const channelId = conversationId.split(';')[0]!
+      if (deps.config.proactiveChannels?.has(channelId)) deps.channelRefs.put(channelId, ref, aadObjectId)
+    }
+    if (typeof a.from?.id === 'string' && a.from.id) deps.knownUsers?.set(aadObjectId, a.from.id)
+
+    // Learn the team's AAD group id for this channel (thread history tool).
+    // Best effort and never awaited: a slow or failing lookup must not delay
+    // or fail the delivery below.
+    if (deps.teamGroups && (conversationType === 'channel' || threadConv)) {
+      const groups = deps.teamGroups
+      const channelKey = baseConversationId(conversationId)
+      try {
+        const team = (a.channelData as { team?: { aadGroupId?: unknown; id?: unknown } } | undefined)?.team
+        if (typeof team?.aadGroupId === 'string' && team.aadGroupId) {
+          groups.set(channelKey, team.aadGroupId)
+        } else if (typeof team?.id === 'string' && team.id && !groups.get(channelKey)) {
+          // A queued message turn carries only its activity (makeEarlyAckTurn), so the lookup goes through a
+          // proactive context, like every send outside the turn.
+          const teamId = team.id
+          const lookup = new Promise<Awaited<ReturnType<typeof TeamsInfo.getTeamDetails>>>((resolve, reject) => {
+            deps.adapter
+              .continueConversationAsync(deps.config.appId, ref, async c => resolve(await TeamsInfo.getTeamDetails(c, teamId)))
+              .catch(reject)
+          })
+          lookup.then(
+            details => {
+              // An id that arrived directly in the meantime wins over this late answer.
+              if (typeof details?.aadGroupId === 'string' && details.aadGroupId && !groups.get(channelKey)) {
+                groups.set(channelKey, details.aadGroupId)
+              }
+            },
+            err => {
+              process.stderr.write(`teams channel: team details lookup failed: ${err instanceof Error ? err.message : 'error'}\n`)
+            },
+          )
+        }
+      } catch (err) {
+        process.stderr.write(`teams channel: team group store failed: ${err instanceof Error ? err.message : 'error'}\n`)
+      }
+    }
 
     // Start the typing-indicator pump as early as possible — the user sees
     // "is typing…" while attachments are processed and Claude is notified.
     // The reply tool stops it when the response lands.
     deps.typingPump?.start(conversationId, ref)
 
-    const rawText = typeof a.text === 'string' ? a.text : ''
+    // In a channel/group, strip the bot's own <at>…</at> mention so Claude sees
+    // the actual instruction ("@Bot summarize this" -> "summarize this"). For
+    // personal chats there is no recipient mention, so use the text verbatim.
+    const rawText = isGroupContext
+      ? (TurnContext.removeRecipientMention(a) ?? '').trim()
+      : (typeof a.text === 'string' ? a.text : '')
     const messageId = a.id
     const ts = a.timestamp ? new Date(a.timestamp).toISOString() : undefined
 
@@ -325,11 +1120,16 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // the allowlist gate). Failures degrade to annotation lines so the
     // message still gets through. We deliberately await here: Hermes needs
     // file paths in the inbound MCP event, not a follow-up notification.
-    let text = rawText
+    const quote = inboundQuote(a.entities)
+    let text = stripQuotePlaceholders(rawText)
+    if (quote) {
+      const line = `[Quote] ${quote.senderName ?? 'someone'}: ${quote.deleted ? '(deleted message)' : (quote.preview ?? '')}`
+      text = text.length > 0 ? `${line}\n${text}` : line
+    }
     const rawAttachments = Array.isArray(a.attachments) ? (a.attachments as Attachment[]) : []
     if (deps.attachments && rawAttachments.length > 0) {
       try {
-        const { annotations } = await deps.attachments(rawAttachments, fromName)
+        const { annotations } = await deps.attachments(rawAttachments, fromName, rawText)
         if (annotations.length > 0) {
           text = text.length > 0 ? `${text}\n\n${annotations.join('\n')}` : annotations.join('\n')
         }
@@ -349,7 +1149,9 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
     // a bare "yes" or chatty prefix falls through to the regular channel
     // event. If the id doesn't match a pending request, treat the text as a
     // normal message — better than swallowing it silently.
-    if (deps.permission) {
+    // A tool-approval verdict must be addressed to the bot: in a shared
+    // conversation an unmentioned "yes <id>" is overheard text, not an answer.
+    if (deps.permission && mentioned !== false) {
       // Match against the raw text — annotations appended for attachments
       // would otherwise break the anchored regex.
       const match = PERMISSION_REPLY_RE.exec(rawText)
@@ -368,6 +1170,32 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       }
     }
 
+    if (typeof messageId === 'string' && messageId.length > 0) {
+      deps.deliveredMessages?.remember(baseConversationId(conversationId), messageId, aadObjectId)
+    }
+    if (typeof messageId === 'string' && messageId.length > 0) deps.seenMessages?.remember(conversationId, messageId)
+    // Team, channel, thread, reply and mention context only in a team channel or group chat.
+    const cd: any = isGroupContext ? a.channelData : undefined
+    const obj = (v: unknown): any => (v !== null && typeof v === 'object' ? v : undefined)
+    const team = obj(obj(cd)?.team)
+    const chan = obj(obj(cd)?.channel)
+    const mentionNames: string[] = []
+    // At most 20 names, and the joined value (", ") stays within 200 characters: whole names only.
+    let mentionsLen = 0
+    for (const e of isGroupContext ? (a.entities ?? []) : []) {
+      if ((e as { type?: string }).type !== 'mention') continue
+      const m = obj((e as { mentioned?: unknown }).mentioned)
+      if (!m || m.id === a.recipient?.id) continue
+      const n = metaText(m.name) ?? metaText(m.id)
+      if (n === undefined || mentionNames.includes(n)) continue
+      const len = mentionNames.length === 0 ? n.length : mentionsLen + 2 + n.length
+      if (len > MAX_MENTIONS_CHARS) break
+      mentionNames.push(n)
+      mentionsLen = len
+      if (mentionNames.length >= MAX_MENTION_NAMES) break
+    }
+
+    if (deps.heldMessages) text = withHeldContext(text, deps.heldMessages.take(conversationId, heldUpTo))
     deps.onEvent({
       text,
       conversationId,
@@ -375,8 +1203,39 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: TurnContext) => Promis
       tenantId: tenantId ?? deps.config.tenantId,
       fromName,
       messageId,
+      ...(quote ? { quotedMessageId: quote.messageId } : {}),
       ts,
+      ...(rawAttachments.length > 0 ? { hasAttachments: true } : {}),
+      ...(mentioned !== undefined ? { mentioned } : {}),
+      isGroup: isGroupContext,
+      teamId: metaText(team?.id),
+      teamName: metaText(team?.name),
+      teamsChannelId: metaText(chan?.id),
+      teamsChannelName: metaText(chan?.name),
+      threadId: isGroupContext ? threadIdFromConversationId(conversationId) : undefined,
+      replyToId: isGroupContext ? metaText(a.replyToId) : undefined,
+      mentions: mentionNames.length > 0 ? mentionNames : undefined,
     })
+  }
+
+  return async function dedupedTurn(ctx: Pick<TurnContext, 'activity'>) {
+    const a = ctx.activity
+    const conversation = a.conversation?.id
+    const id = a.id
+    const seen =
+      deps.inboundIds && a.type === 'message' && typeof conversation === 'string' && conversation.length > 0 && typeof id === 'string' && id.length > 0
+        ? { store: deps.inboundIds, key: baseConversationId(conversation), id }
+        : undefined
+    if (seen && !seen.store.firstSeen(seen.key, seen.id)) {
+      process.stderr.write(`teams channel: drop — repeated delivery of message id=${seen.id.slice(0, 24)} conv=${seen.key.slice(0, 20)}\n`)
+      return
+    }
+    try {
+      await handle(ctx)
+    } catch (err) {
+      if (seen) seen.store.forget(seen.key, seen.id)
+      throw err
+    }
   }
 }
 
@@ -396,7 +1255,7 @@ export interface RunningListener {
  */
 export function startListener(deps: AdapterDeps): RunningListener {
   const { config, adapter } = deps
-  const turn = makeTurnHandler(deps)
+  const turn = makeEarlyAckTurn(makeTurnHandler(deps))
 
   const server = Bun.serve({
     hostname: config.bindHost,

@@ -17,6 +17,7 @@ import { type CloudAdapter, type ConversationReference } from 'botbuilder'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { Outbox } from './outbox.js'
+import { withSendRetry } from './sendRetry.js'
 import { buildDownloadCardActivity } from './files.js'
 
 /** Max file size — matches the inbound cap. */
@@ -55,14 +56,33 @@ export class ConversationNotAllowedError extends Error {
   }
 }
 
+export class FilesBaseUrlMissingError extends Error {
+  constructor() {
+    super(
+      'send_file: no public download URL is configured for this install. ' +
+        'Set TEAMS_BOT_ENDPOINT_URL (the https tunnel endpoint registered in Azure) ' +
+        'or TEAMS_FILES_BASE_URL in the plugin .env, then restart the session.',
+    )
+    this.name = 'FilesBaseUrlMissingError'
+  }
+}
+
 export interface FileSenderDeps {
   config: { appId: string }
   adapter: CloudAdapter
   allowlist: Allowlist
   refs: ConversationRefStore
   outbox: Outbox
-  /** e.g. `"https://hermes.vcshosted.uk/files"`. The token gets appended. */
-  downloadBaseUrl: string
+  /**
+   * e.g. `"https://<host>.<tailnet>.ts.net/files"` (see `Config.filesBaseUrl`).
+   * The token gets appended. `null` = not configured: every send is refused
+   * before a token is minted.
+   */
+  downloadBaseUrl: string | null
+  /** Opt-in SharePoint uploader for shared conversations (see sharepoint.ts). */
+  sharePoint?: {
+    upload(filename: string, content: Buffer): Promise<{ webUrl: string; name: string }>
+  }
 }
 
 export interface SendFileInput {
@@ -76,9 +96,24 @@ export interface SendFileInput {
 }
 
 export interface SendFileResult {
-  token: string
+  token?: string
+  webUrl?: string
   filename: string
   sizeBytes: number
+  /** The SharePoint upload was tried and failed, so a download link went out instead. */
+  sharePointFallback?: true
+}
+
+/** The send_file tool's answer to Claude. A SharePoint upload that failed and fell back to a download link says so,
+ *  so the agent does not report a SharePoint file that is not there. */
+export function sendFileResultText(conversationId: string, result: SendFileResult): string {
+  if (result.webUrl) {
+    return `sent file to SharePoint (conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes})`
+  }
+  const sent = `conv=${conversationId}, filename=${result.filename}, size=${result.sizeBytes}, token=${(result.token ?? '').slice(0, 8)}…`
+  return result.sharePointFallback
+    ? `sent file as a download link because the SharePoint upload failed (${sent})`
+    : `sent file (${sent})`
 }
 
 function guessMime(filename: string): string {
@@ -98,6 +133,17 @@ function guessMime(filename: string): string {
     case 'xlsx': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     default: return 'application/octet-stream'
   }
+}
+
+export function isSharedConversationRef(ref: Partial<ConversationReference>): boolean {
+  const conv = ref.conversation as any
+  if (!conv) return false
+  return (
+    conv.conversationType === 'channel' ||
+    conv.conversationType === 'groupChat' ||
+    conv.isGroup === true ||
+    (typeof conv.id === 'string' && conv.id.includes('@thread.'))
+  )
 }
 
 export function createFileSender(deps: FileSenderDeps) {
@@ -149,6 +195,47 @@ export function createFileSender(deps: FileSenderDeps) {
     // shouldn't leave a token sitting on disk.
     const { ref } = assertAllowedConversation(input.conversationId)
 
+    let sharePointFailed = false
+    if (deps.sharePoint && isSharedConversationRef(ref)) {
+      // Only the upload falls back: a failure to post the card after a successful upload is a send error, not a reason
+      // to post a second card.
+      let uploaded: { webUrl: string; name: string } | undefined
+      try {
+        uploaded = await deps.sharePoint.upload(filename, content)
+      } catch (err) {
+        sharePointFailed = true
+        process.stderr.write(
+          `teams channel: SharePoint upload failed (${err instanceof Error ? err.message : String(err)}); sending a download link instead\n`,
+        )
+      }
+      if (uploaded) {
+        const spActivity = buildDownloadCardActivity({
+          filename: uploaded.name,
+          sizeBytes: content.length,
+          mime,
+          downloadUrl: uploaded.webUrl,
+          caption: input.caption,
+        })
+        await deps.adapter.continueConversationAsync(
+          deps.config.appId,
+          ref,
+          async turnContext => {
+            await turnContext.sendActivity(spActivity as any)
+          },
+        )
+        process.stderr.write(
+          `teams channel: send_file uploaded to SharePoint conv=${input.conversationId} ` +
+            `filename=${uploaded.name} size=${content.length}\n`,
+        )
+        return {
+          webUrl: uploaded.webUrl,
+          filename: uploaded.name,
+          sizeBytes: content.length,
+        }
+      }
+    }
+
+    if (!deps.downloadBaseUrl) throw new FilesBaseUrlMissingError()
     const minted = await deps.outbox.mint({ content, filename, mime })
 
     const downloadUrl = `${deps.downloadBaseUrl.replace(/\/+$/, '')}/${minted.token}`
@@ -164,7 +251,7 @@ export function createFileSender(deps: FileSenderDeps) {
       deps.config.appId,
       ref,
       async turnContext => {
-        await turnContext.sendActivity(activity as any)
+        await withSendRetry('send_file', () => turnContext.sendActivity(activity as any))
       },
     )
 
@@ -177,6 +264,7 @@ export function createFileSender(deps: FileSenderDeps) {
       token: minted.token,
       filename: minted.filename,
       sizeBytes: minted.sizeBytes,
+      ...(sharePointFailed ? { sharePointFallback: true as const } : {}),
     }
   }
 
