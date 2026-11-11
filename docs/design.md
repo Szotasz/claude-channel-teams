@@ -673,8 +673,9 @@ and the channel notification):
 The `get_thread_history` tool reads the root message and replies of a channel
 thread through Microsoft Graph (app-only token, `src/teams/threadHistory.ts`),
 so Claude can read the thread before answering. It is off by default: set
-`TEAMS_THREAD_HISTORY=1` to offer it. Unset, the tool, its instruction line and
-the team id learning below are all absent, so the MCP surface is the old one.
+`TEAMS_THREAD_HISTORY=1` to offer it. Unset, the tool and its instruction line
+are absent, so the MCP surface is the old one; the team id learning below also
+runs only while this tool or the activity feed tool is on.
 It needs the `ChannelMessage.Read.Group` application permission, granted per team by
 resource-specific consent: the manifest option `--rsc-all-messages` (PR #10) or
 a hand-made manifest. Without the grant Graph answers 403. The team's AAD group
@@ -684,3 +685,10 @@ token comes from the shared app-only helper (`createGraphTokenProvider` in
 are not covered (channel threads only). Messages
 from senders not on the allowlist are returned with `allowlisted=false` and
 are data, not instructions.
+
+## Activity feed notifications (`send_activity_notification`)
+
+An opt-in tool (`TEAMS_ACTIVITY_FEED=1`, `src/teams/activityFeed.ts`) that pings
+one person's Teams activity feed about a channel or thread via Microsoft Graph.
+It needs the `TeamsActivity.Send.Group` RSC permission (manifest flag
+`--activity-feed`). See [activity-feed.md](activity-feed.md).

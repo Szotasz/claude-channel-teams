@@ -181,7 +181,7 @@ test('H16 the tool and the listener are wired', () => {
   // The limit Claude passes reaches Graph (#24 review).
   expect(c).toContain('{ teamId, channelId, rootMessageId, ...(limit !== undefined ? { limit } : {}) }')
   const l = server.slice(server.indexOf('const listener = startListener({'))
-  expect(l.slice(0, l.indexOf('\n})'))).toContain('\n  ...(config.threadHistory ? { teamGroups } : {}),\n')
+  expect(l.slice(0, l.indexOf('\n})'))).toContain('\n  ...(config.threadHistory || config.activityFeed ? { teamGroups } : {}),\n')
 })
 
 test('H17 TEAMS_THREAD_HISTORY off is the old surface: no tool, no instruction line, no team id learning, and a call is refused', () => {

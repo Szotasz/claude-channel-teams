@@ -61,6 +61,7 @@ import {
   fetchThreadHistory,
   parseChannelThread,
 } from './teams/threadHistory.js'
+import { activityTools, createActivityRateLimiter, handleSendActivity } from './teams/activityFeed.js'
 import { createFileSender, sendFileResultText } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createInboundIds } from './teams/inboundIds.js'
@@ -205,6 +206,12 @@ const mcp = new Server(
             '',
           ]
         : []),
+      ...(config.activityFeed
+        ? [
+            "send_activity_notification pings one person's Teams activity feed about a channel or thread; use it only when someone asks for it or clearly needs to be alerted. The recipient must be on the allowlist.",
+            '',
+          ]
+        : []),
       'Tool-approval prompts may be relayed to Teams. If the operator replies "yes <id>" or "no <id>" from there, this server resolves the prompt and tells you the verdict — you do not call any tool to handle that.',
     ].join('\n'),
   },
@@ -261,6 +268,7 @@ const replier = createReplySender({ config, adapter, allowlist, refs, typingPump
 const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
 const directMessenger = createDirectMessenger({ config, adapter, allowlist, refs, replier })
 const teamGroups = createTeamGroupStore()
+const activityLimiter = createActivityRateLimiter()
 
 const sendFile = createFileSender({
   config,
@@ -645,6 +653,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       : []),
     ...statusTools(config.statusUpdates),
     ...channelTools(config.channelCreateTeams),
+    ...activityTools(config.activityFeed),
   ],
 }))
 
@@ -672,6 +681,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         )
         // Other people's messages: the model must not see invisible characters in them (as on the inbound path).
         return { content: [{ type: 'text', text: withInvisibleStripped({ text: JSON.stringify(list, null, 2) }).text }] }
+      }
+
+      case 'send_activity_notification': {
+        const result = await handleSendActivity(args, {
+          enabled: config.activityFeed,
+          assertAllowedConversation: id => replier.assertAllowedConversation(id),
+          teamIdFor: id => teamGroups.get(id),
+          isAllowed: id => allowlist.isAllowed(id),
+          limiter: activityLimiter,
+          getToken: () => graphToken.getToken(),
+        })
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] }
       }
 
       case 'reply': {
@@ -1044,8 +1065,9 @@ const listener = startListener({
   inboundIds,
   meetingEvents: config.meetingEvents,
   ...(transcriptsOn ? { meetingStore } : {}),
-  // Only the thread history tool needs the team ids: off, no team details lookup runs on inbound messages.
-  ...(config.threadHistory ? { teamGroups } : {}),
+  // The thread history and the activity feed tools need the team ids: with both off, no team details lookup
+  // runs on inbound messages.
+  ...(config.threadHistory || config.activityFeed ? { teamGroups } : {}),
   sendPairingDm: async (ref, text) => {
     await sendActivityRaw(ref, text)
   },
