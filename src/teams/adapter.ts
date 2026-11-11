@@ -1234,7 +1234,8 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     if (typeof messageId === 'string' && messageId.length > 0) {
       deps.deliveredMessages?.remember(baseConversationId(conversationId), messageId, aadObjectId)
     }
-    if (typeof messageId === 'string' && messageId.length > 0) deps.seenMessages?.remember(conversationId, messageId)
+    // A private message must not be quotable in a public reply.
+    if (typeof messageId === 'string' && messageId.length > 0 && !targeted) deps.seenMessages?.remember(conversationId, messageId)
     // Only an addressed message (an @mention or a targeted one) moves the private marker: unaddressed chatter in a
     // conversation opted in with TEAMS_UNMENTIONED_CONVERSATIONS must not clear it.
     if (isGroupContext && mentioned === true) deps.targetedInbound?.noteDelivered(conversationId, targeted, Date.now())
