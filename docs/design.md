@@ -692,3 +692,7 @@ An opt-in tool (`TEAMS_ACTIVITY_FEED=1`, `src/teams/activityFeed.ts`) that pings
 one person's Teams activity feed about a channel or thread via Microsoft Graph.
 It needs the `TeamsActivity.Send.Group` RSC permission (manifest flag
 `--activity-feed`). See [activity-feed.md](activity-feed.md).
+
+## Quoted replies
+
+Inbound quotes (the `quotedReply` entity) become a `[Quote] <author>: <preview>` line at the top of the text plus a `quoted_message_id` meta key; the `<quoted messageId="..."/>` placeholder is stripped from the text. The `reply` tool can quote a message with `quote_message_id`: it sends a `quotedReply` entity and prefixes the text with the `<quoted messageId="..."/>` placeholder, as the Teams SDK does. An outbound quote must point to a message the bot saw in the same conversation since it started (kept in memory, at most 500 ids per conversation), so a quote cannot pull a message from another conversation into this one; after a restart older messages cannot be quoted.
