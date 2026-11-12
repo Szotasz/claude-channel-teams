@@ -122,6 +122,21 @@ export function parseTeamIds(raw: string | undefined): ReadonlySet<string> | nul
   return out
 }
 
+/** The one startup warning about the channel-event settings, or undefined when there is nothing to say. */
+export function channelEventsWarning(c: {
+  channelEvents?: boolean
+  channelEventTeams?: ReadonlySet<string>
+}): string | undefined {
+  if (!c.channelEvents) return undefined
+  if (c.channelEventTeams?.has('*')) {
+    return "teams channel: TEAMS_CHANNEL_EVENT_TEAMS takes no wildcard; '*' matches no team"
+  }
+  if (c.channelEventTeams === undefined || c.channelEventTeams.size === 0) {
+    return 'teams channel: TEAMS_CHANNEL_EVENTS is on but TEAMS_CHANNEL_EVENT_TEAMS is empty; no channel event will be delivered'
+  }
+  return undefined
+}
+
 export interface Config {
   /**
    * Deliver message actions (the "..." menu, `composeExtension/submitAction`). Off by default; env
@@ -289,6 +304,17 @@ export interface Config {
    * delivered. From TEAMS_FEEDBACK ('1' or 'true'); see docs/feedback.md.
    */
   feedback: boolean
+  /**
+   * Whether channel created / renamed / deleted / restored events are delivered to Claude.
+   * From TEAMS_CHANNEL_EVENTS ('1' or 'true'); see docs/channel-events.md.
+   */
+  channelEvents: boolean
+  /**
+   * Teams (team ids, as in channelData.team.id) whose channel events are delivered. Empty (the default) delivers
+   * none, even with TEAMS_CHANNEL_EVENTS on. No wildcard: '*' matches no team.
+   * From TEAMS_CHANNEL_EVENT_TEAMS (comma-separated); see docs/channel-events.md.
+   */
+  channelEventTeams?: ReadonlySet<string>
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -586,5 +612,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     timeZone: resolveTimeZone(env),
     activityFeed: env.TEAMS_ACTIVITY_FEED === '1',
     feedback: parseFlag(env.TEAMS_FEEDBACK),
+    channelEvents: parseFlag(env.TEAMS_CHANNEL_EVENTS),
+    channelEventTeams: parseIdList(env.TEAMS_CHANNEL_EVENT_TEAMS),
   })
 }

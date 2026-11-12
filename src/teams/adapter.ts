@@ -44,6 +44,7 @@ import type { PermissionRelay } from '../permission/relay.js'
 import { PERMISSION_REPLY_RE } from '../permission/relay.js'
 import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
 import type { ChannelRefStore } from './channelRefs.js'
+import { channelEventFrom, channelEventText } from './channelEvents.js'
 import type { TypingPump } from './typingPump.js'
 import type { Outbox } from './outbox.js'
 import type { SeenMessages } from './seenMessages.js'
@@ -146,6 +147,8 @@ export type ChannelEventSink = (event: {
   messageAction?: string
   /** Set when the event is a feedback click on an earlier bot message (message_id). */
   feedback?: 'like' | 'dislike'
+  /** Set when the event is a channel change in a team (not a message). */
+  channelEvent?: { kind: 'created' | 'renamed' | 'deleted' | 'restored'; channelId: string; channelName?: string; teamId?: string }
 }) => void
 
 // The most mention names one event carries.
@@ -214,6 +217,14 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.teamName !== undefined ? { team_name: event.teamName } : {}),
     ...(event.teamsChannelId !== undefined ? { channel_id: event.teamsChannelId } : {}),
     ...(event.teamsChannelName !== undefined ? { channel_name: event.teamsChannelName } : {}),
+    ...(event.channelEvent
+      ? {
+          channel_event: event.channelEvent.kind,
+          channel_id: event.channelEvent.channelId,
+          ...(event.channelEvent.channelName ? { channel_name: event.channelEvent.channelName } : {}),
+          ...(event.channelEvent.teamId ? { team_id: event.channelEvent.teamId } : {}),
+        }
+      : {}),
     ...(event.threadId !== undefined ? { thread_id: event.threadId } : {}),
     ...(event.replyToId !== undefined ? { reply_to_id: event.replyToId } : {}),
     ...(event.mentions !== undefined ? { mentions: event.mentions.join(', ') } : {}),
@@ -253,6 +264,8 @@ export interface AdapterDeps {
   /** Whether feedback clicks are delivered (TEAMS_FEEDBACK). Optional so existing tests still wire. */
   feedback?: boolean
   config: Config
+  /** Whether channel events are delivered (TEAMS_CHANNEL_EVENTS). Optional so existing tests still wire. */
+  channelEvents?: boolean
   adapter: CloudAdapter
   allowlist: Allowlist
   refs: ConversationRefStore
@@ -681,6 +694,46 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     if (action && !deps.config.messageActions) {
       process.stderr.write('teams channel: drop message action: TEAMS_MESSAGE_ACTIONS is not on\n')
       await answer(invoke, respondEmptyInvoke)
+      return
+    }
+    const channelEvent = channelEventFrom(a)
+    if (channelEvent) {
+      if (!deps.channelEvents) return
+      // As for meeting events: only a non-empty string counts, and either place that disagrees drops the event.
+      const rawConvTenant: unknown = a.conversation?.tenantId
+      const convTenant = typeof rawConvTenant === 'string' && rawConvTenant !== '' ? rawConvTenant : undefined
+      const dataTenant = isPlainObject(a.channelData) && isPlainObject(a.channelData.tenant)
+        && typeof a.channelData.tenant.id === 'string' && a.channelData.tenant.id !== '' ? a.channelData.tenant.id : undefined
+      const pinned = deps.config.tenantId ? deps.config.tenantId.toLowerCase() : undefined
+      if (pinned && [convTenant, dataTenant].some(t => t !== undefined && t.toLowerCase() !== pinned)) return
+      const evTenant = convTenant ?? dataTenant
+      const evConversation = a.conversation?.id
+      if (!evConversation) return
+      // No sender to allowlist: the team itself must be opted in (TEAMS_CHANNEL_EVENT_TEAMS, no wildcard).
+      // A '*' entry matches nothing, not even a team whose id is literally '*'; an event without a team id is dropped.
+      const evTeam = channelEvent.teamId
+      if (evTeam === undefined || evTeam === '*' || deps.config.channelEventTeams?.has(evTeam) !== true) {
+        process.stderr.write('teams channel: drop — channel event from a team not in TEAMS_CHANNEL_EVENT_TEAMS\n')
+        return
+      }
+      // Anyone who can edit the team's channels sets these names, so they pass the same cleaner as every other untrusted meta value.
+      const channelName = metaText(channelEvent.channelName)
+      const teamName = metaText(channelEvent.teamName)
+      deps.onEvent({
+        text: channelEventText({ kind: channelEvent.kind, channelId: channelEvent.channelId, ...(channelName ? { channelName } : {}), ...(teamName ? { teamName } : {}) }),
+        conversationId: evConversation,
+        // Empty on purpose: elsewhere aad_object_id is an allowlisted sender, and whoever changed the channel is not checked.
+        aadObjectId: '',
+        tenantId: evTenant ?? deps.config.tenantId,
+        fromName: '',
+        ts: a.timestamp ? new Date(a.timestamp).toISOString() : undefined,
+        channelEvent: {
+          kind: channelEvent.kind,
+          channelId: channelEvent.channelId,
+          ...(channelName ? { channelName } : {}),
+          ...(channelEvent.teamId ? { teamId: channelEvent.teamId } : {}),
+        },
+      })
       return
     }
     if (a.type !== 'message' && a.type !== 'messageReaction' && !messageEvent && !card && !dialog && !action) return
