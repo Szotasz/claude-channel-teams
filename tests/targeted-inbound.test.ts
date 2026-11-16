@@ -443,7 +443,7 @@ describe('targeted wiring', () => {
   test('B21 server.ts hands targetedInbound to the replier, the file sender and the listener, and passes the tool flags on', () => {
     const server = stripComments(readFileSync(join(import.meta.dir, '..', 'src', 'server.ts'), 'utf8'))
     const block = (start: string) => server.slice(server.indexOf(start), server.indexOf('\n})', server.indexOf(start)) + 1)
-    expect(server).toMatch(/const replier = createReplySender\(\{[^}]*\btargetedInbound \}\)/)
+    expect(server).toMatch(/const replier = createReplySender\(\{[^}]*\btargetedInbound\b[^}]*\}\)/)
     expect(block('const sendFile = createFileSender({')).toContain('\n  targetedInbound,\n')
     expect(block('const listener = startListener({')).toContain('\n  targetedInbound,\n')
     const reply = server.slice(server.indexOf("case 'reply': {"), server.indexOf("case 'send_file': {"))
