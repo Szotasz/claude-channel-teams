@@ -44,10 +44,17 @@ describe('typing pump', () => {
       maxDurationMs: 5000,
     })
     pump.start('conv-1', {} as never)
-    await wait(75)
-    // Expect immediate + at least 2 refreshes inside 75ms at 20ms interval.
-    expect(sent).toBeGreaterThanOrEqual(3)
-    pump.stop('conv-1')
+    try {
+      // At the 20 ms interval about 25 sends fit into 500 ms. Ask for at least 6, the immediate one and 5 refreshes,
+      // instead of 3 inside a fixed 75 ms: on a busy machine timers fire late, but only a delay of about 100 ms on
+      // every tick would miss 6, while a pump that refreshes 10 times more slowly, sends a burst once, or does not
+      // refresh at all still fails.
+      const deadline = performance.now() + 500
+      while (sent < 6 && performance.now() < deadline) await wait(5)
+      expect(sent).toBeGreaterThanOrEqual(6)
+    } finally {
+      pump.stop('conv-1')
+    }
   })
 
   test('stop() halts further activity sends', async () => {

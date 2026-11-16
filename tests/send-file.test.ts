@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, test, beforeEach } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -12,7 +12,12 @@ import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { createOutbox } from '../src/teams/outbox'
 import { buildDownloadCardActivity } from '../src/teams/files'
-import { createFileSender, FileTooLargeError, PathNotAllowedError } from '../src/teams/sendFile'
+import {
+  createFileSender,
+  FilesBaseUrlMissingError,
+  FileTooLargeError,
+  PathNotAllowedError,
+} from '../src/teams/sendFile'
 
 const FIXTURE_ID = '00000000-0000-4000-8000-000000000001'
 
@@ -31,7 +36,7 @@ describe('buildDownloadCardActivity', () => {
       filename: 'brief.pdf',
       sizeBytes: 1024 * 250, // 250 KB
       mime: 'application/pdf',
-      downloadUrl: 'https://hermes.vcshosted.uk/files/abc',
+      downloadUrl: 'https://bot.example.test/files/abc',
     })
     expect(act.type).toBe('message')
     expect(Array.isArray(act.attachments)).toBe(true)
@@ -42,7 +47,7 @@ describe('buildDownloadCardActivity', () => {
     expect(att.content?.version).toBe('1.4')
     // The Download action points at the supplied URL.
     expect(att.content?.actions?.[0]?.type).toBe('Action.OpenUrl')
-    expect(att.content?.actions?.[0]?.url).toBe('https://hermes.vcshosted.uk/files/abc')
+    expect(att.content?.actions?.[0]?.url).toBe('https://bot.example.test/files/abc')
     // Body shows the filename and a humanised size + MIME line.
     const body = att.content?.body ?? []
     const text = body.map((b: any) => b.text).join(' | ')
@@ -138,7 +143,7 @@ describe('send_file outbound sender', () => {
       allowlist,
       refs,
       outbox,
-      downloadBaseUrl: 'https://hermes.vcshosted.uk/files',
+      downloadBaseUrl: 'https://bot.example.test/files',
     })
 
     const result = await sendFile({
@@ -154,10 +159,46 @@ describe('send_file outbound sender', () => {
     expect(sentActivity.text).toBe('See attached.')
     expect(sentActivity.attachments?.length).toBe(1)
     expect(sentActivity.attachments[0].content?.actions?.[0]?.url).toBe(
-      `https://hermes.vcshosted.uk/files/${result.token}`,
+      `https://bot.example.test/files/${result.token}`,
     )
     // The outbox now has this token live.
     expect(outbox.lookup(result.token)?.filename).toBe('doc.txt')
+    rmSync(workdir, { recursive: true, force: true })
+  })
+
+  test('refuses when no download base URL is configured, before minting or sending', async () => {
+    const allowlist = createAllowlist(allowlistFile)
+    allowlist.addEntry(FIXTURE_ID)
+    const refs = createConversationRefStore()
+    refs.put('conv-abc', { conversation: { id: 'conv-abc' } } as any, FIXTURE_ID)
+    const outbox = createOutbox({ dir: outboxDir, ttlSeconds: 60, safetyRoot: workdir })
+    await outbox.initialise()
+
+    let adapterCalled = false
+    const adapter = {
+      async continueConversationAsync() {
+        adapterCalled = true
+      },
+    } as any
+
+    const filePath = join(workdir, 'doc.txt')
+    writeFileSync(filePath, 'document body')
+    const before = readdirSync(outboxDir).length
+
+    const sendFile = createFileSender({
+      config: makeConfig(),
+      adapter,
+      allowlist,
+      refs,
+      outbox,
+      downloadBaseUrl: null,
+    })
+
+    await expect(sendFile({ conversationId: 'conv-abc', path: filePath })).rejects.toThrow(
+      FilesBaseUrlMissingError,
+    )
+    expect(adapterCalled).toBe(false)
+    expect(readdirSync(outboxDir).length).toBe(before)
     rmSync(workdir, { recursive: true, force: true })
   })
 
@@ -186,7 +227,7 @@ describe('send_file outbound sender', () => {
       allowlist,
       refs,
       outbox,
-      downloadBaseUrl: 'https://hermes.vcshosted.uk/files',
+      downloadBaseUrl: 'https://bot.example.test/files',
     })
 
     await expect(
@@ -222,7 +263,7 @@ describe('send_file outbound sender', () => {
       allowlist,
       refs,
       outbox,
-      downloadBaseUrl: 'https://hermes.vcshosted.uk/files',
+      downloadBaseUrl: 'https://bot.example.test/files',
     })
 
     await expect(
@@ -254,7 +295,7 @@ describe('send_file outbound sender', () => {
       allowlist,
       refs,
       outbox,
-      downloadBaseUrl: 'https://hermes.vcshosted.uk/files',
+      downloadBaseUrl: 'https://bot.example.test/files',
     })
 
     await expect(
@@ -288,7 +329,7 @@ describe('send_file outbound sender', () => {
       allowlist,
       refs,
       outbox,
-      downloadBaseUrl: 'https://hermes.vcshosted.uk/files',
+      downloadBaseUrl: 'https://bot.example.test/files',
     })
 
     const result = await sendFile({

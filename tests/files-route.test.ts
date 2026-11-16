@@ -43,7 +43,7 @@ describe('/files/<token>', () => {
       },
       consumed,
     })
-    const req = new Request('https://hermes.vcshosted.uk/files/abc123', { method: 'GET' })
+    const req = new Request('https://bot.example.test/files/abc123', { method: 'GET' })
     const res = await handleFilesRequest(req, outbox)
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBe('application/pdf')
@@ -56,7 +56,7 @@ describe('/files/<token>', () => {
   test('returns 410 Gone for an unknown or expired token', async () => {
     const consumed: string[] = []
     const outbox = makeOutboxStub({ consumed })
-    const req = new Request('https://hermes.vcshosted.uk/files/never', { method: 'GET' })
+    const req = new Request('https://bot.example.test/files/never', { method: 'GET' })
     const res = await handleFilesRequest(req, outbox)
     expect(res.status).toBe(410)
     expect(consumed).toEqual(['never'])
@@ -65,7 +65,7 @@ describe('/files/<token>', () => {
   test('strips query string from the token segment', async () => {
     const consumed: string[] = []
     const outbox = makeOutboxStub({ consumed })
-    const req = new Request('https://hermes.vcshosted.uk/files/clean?download=true&v=1', {
+    const req = new Request('https://bot.example.test/files/clean?download=true&v=1', {
       method: 'GET',
     })
     await handleFilesRequest(req, outbox)
@@ -74,7 +74,7 @@ describe('/files/<token>', () => {
 
   test('returns 405 for non-GET/HEAD methods', async () => {
     const outbox = makeOutboxStub({ consumed: [] })
-    const req = new Request('https://hermes.vcshosted.uk/files/abc', { method: 'POST' })
+    const req = new Request('https://bot.example.test/files/abc', { method: 'POST' })
     const res = await handleFilesRequest(req, outbox)
     expect(res.status).toBe(405)
   })
@@ -90,7 +90,7 @@ describe('/files/<token>', () => {
       },
       consumed,
     })
-    const req = new Request('https://hermes.vcshosted.uk/files/abc', { method: 'HEAD' })
+    const req = new Request('https://bot.example.test/files/abc', { method: 'HEAD' })
     const res = await handleFilesRequest(req, outbox)
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBe('text/plain')
@@ -100,7 +100,7 @@ describe('/files/<token>', () => {
 
   test('rejects a malformed path with 404', async () => {
     const outbox = makeOutboxStub({ consumed: [] })
-    const req = new Request('https://hermes.vcshosted.uk/files/', { method: 'GET' })
+    const req = new Request('https://bot.example.test/files/', { method: 'GET' })
     const res = await handleFilesRequest(req, outbox)
     expect(res.status).toBe(404)
   })
@@ -108,7 +108,7 @@ describe('/files/<token>', () => {
   test('refuses tokens with path traversal characters', async () => {
     const consumed: string[] = []
     const outbox = makeOutboxStub({ consumed })
-    const req = new Request('https://hermes.vcshosted.uk/files/..%2Fetc%2Fpasswd', {
+    const req = new Request('https://bot.example.test/files/..%2Fetc%2Fpasswd', {
       method: 'GET',
     })
     const res = await handleFilesRequest(req, outbox)

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.29/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.29",
+  "version": "1.0.0",
+  "id": "11111111-2222-4333-8444-555555555555",
+  "developer": {
+    "name": "Test",
+    "websiteUrl": "https://example.com",
+    "privacyUrl": "https://example.com/privacy",
+    "termsOfUseUrl": "https://example.com/terms"
+  },
+  "name": { "short": "Test", "full": "Test assistant" },
+  "description": { "short": "Test assistant bot", "full": "Test - personal assistant bot bridged to Claude Code." },
+  "icons": { "color": "color.png", "outline": "outline.png" },
+  "accentColor": "#2A6DF4",
+  "bots": [
+    {
+      "botId": "11111111-2222-4333-8444-555555555555",
+      "scopes": ["personal", "team", "groupChat"],
+      "supportsFiles": true,
+      "isNotificationOnly": false,
+      "supportsTargetedMessages": true,
+      "commandLists": [
+        {
+          "scopes": ["personal", "team", "groupChat"],
+          "triggers": ["mention", "slash"],
+          "commands": [
+            { "title": "help", "description": "Show help" }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": []
+}

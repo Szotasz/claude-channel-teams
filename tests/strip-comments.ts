@@ -1,0 +1,37 @@
+/**
+ * The source with every line and block comment blanked out (each comment character becomes a space, line breaks
+ * kept), so a source-text check cannot be satisfied by a commented-out copy of the code it pins. String, template
+ * and regex literals are kept as written. The result has the same length and the same line breaks as the input, so
+ * offsets and line-anchored regexes still line up.
+ *
+ * The comment ranges come from the TypeScript parser, not from a scanner of our own: whether a '/' starts a regex,
+ * is a division or opens a comment depends on the grammar (a postfix '++' or '!', an `if (...)` header, a property
+ * named like a keyword), and only the parser knows it.
+ */
+import ts from 'typescript'
+
+export function stripComments(src: string): string {
+  const file = ts.createSourceFile('source.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  // A source that does not parse throws: the parser's error recovery can skip tokens, and with them a comment in
+  // front of them, which would then survive. A source-text check on a file that does not compile must fail anyway.
+  const { diagnostics = [] } = ts.transpileModule(src, { reportDiagnostics: true, compilerOptions: {} })
+  if (diagnostics.length > 0) {
+    const why = ts.flattenDiagnosticMessageText(diagnostics[0].messageText, ' ')
+    throw new Error(`stripComments: the source does not parse (${why})`)
+  }
+  const out = src.split('')
+  const blank = (ranges: ts.CommentRange[] | undefined): void => {
+    for (const r of ranges ?? []) for (let i = r.pos; i < r.end; i++) if (out[i] !== '\n') out[i] = ' '
+  }
+  // Every comment is trivia before or after some token, and getChildren reaches every token, punctuation and the
+  // end-of-file token included. A JSDoc node is not walked: it lies inside its own comment, so its positions would
+  // read the comment's text as code (a '//' in it would blank the code after the comment). The comment itself is
+  // leading trivia of the node it documents.
+  const visit = (node: ts.Node): void => {
+    blank(ts.getLeadingCommentRanges(src, node.pos))
+    blank(ts.getTrailingCommentRanges(src, node.end))
+    for (const child of node.getChildren(file)) if (!ts.isJSDoc(child)) visit(child)
+  }
+  visit(file)
+  return out.join('')
+}

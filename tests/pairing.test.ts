@@ -11,7 +11,7 @@
  *   - The pending file is mode 0600.
  */
 
-import { describe, expect, test, beforeEach } from 'bun:test'
+import { afterAll, describe, expect, test, beforeEach } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -25,6 +25,16 @@ import {
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { makeTurnHandler } from '../src/teams/adapter'
+// Every temp dir of this file, removed after the last test (they used to stay in the system temp dir).
+const tmpDirs: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tmpDirs.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+})
 
 const SENDER_ID = '00000000-0000-4000-8000-000000000001'
 const TENANT_ID = '00000000-0000-4000-8000-000000000002'
@@ -70,7 +80,7 @@ describe('pending store', () => {
   let file: string
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'cct-pending-'))
+    dir = tempDir('cct-pending-')
     file = join(dir, 'pending.json')
   })
 
@@ -199,7 +209,7 @@ describe('adapter pairing integration', () => {
   let pendingFile: string
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'cct-pairing-int-'))
+    dir = tempDir('cct-pairing-int-')
     allowlistFile = join(dir, 'allowlist.json')
     pendingFile = join(dir, 'pending.json')
   })

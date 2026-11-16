@@ -1,0 +1,292 @@
+import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+
+import { channelEventMeta, makeTurnHandler, metaText, threadIdFromConversationId } from '../src/teams/adapter'
+import { createAllowlist } from '../src/pairing/allowlist'
+import { createConversationRefStore } from '../src/teams/conversationRefs'
+
+const FIXTURE_ID = '00000000-0000-4000-8000-000000000001'
+const TENANT_ID = '00000000-0000-4000-8000-000000000002'
+
+class NoopAdapter extends BotAdapter {
+  async sendActivities(): Promise<any> { return [] }
+  async updateActivity(): Promise<void> {}
+  async deleteActivity(): Promise<void> {}
+  async continueConversation(): Promise<void> {}
+}
+
+function makeActivity(overrides: Partial<Activity> = {}): Activity {
+  return {
+    type: 'message',
+    text: 'hello',
+    id: 'msg-1',
+    timestamp: new Date('2026-05-18T19:43:00Z'),
+    from: { id: 'user-1', name: 'Adnan Khan', aadObjectId: FIXTURE_ID },
+    conversation: { id: 'conv-abc', tenantId: TENANT_ID },
+    recipient: { id: 'bot-1', name: 'Bot' },
+    channelId: 'msteams',
+    serviceUrl: 'https://smba.trafficmanager.net/uk/',
+    ...overrides,
+  } as unknown as Activity
+}
+
+async function run(overrides: Partial<Activity>): Promise<any> {
+  const dir = mkdtempSync(join(tmpdir(), 'cct-inbound-meta-'))
+  try {
+    const allowlist = createAllowlist(join(dir, 'allowlist.json'))
+    allowlist.addEntry(FIXTURE_ID)
+    const events: any[] = []
+    const turn = makeTurnHandler({
+      config: {
+        stateDir: '/tmp/unused', allowlistFile: '/tmp/unused', appId: 'a', appPassword: 'p',
+        appType: 'SingleTenant', tenantId: TENANT_ID, bindHost: '127.0.0.1', port: 0,
+        receivedFilesDir: '/tmp/unused',
+      } as any,
+      adapter: {} as any,
+      allowlist,
+      refs: createConversationRefStore(),
+      onEvent: e => events.push(e),
+    })
+    await turn(new TurnContext(new NoopAdapter() as any, makeActivity(overrides)))
+    expect(events.length).toBe(1)
+    return events[0]
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+}
+
+const channelConv = {
+  id: '19:chan@thread.tacv2;messageid=1716890000000',
+  conversationType: 'channel',
+  tenantId: TENANT_ID,
+}
+const botMention = { type: 'mention', mentioned: { id: 'bot-1', name: 'Bot' }, text: '<at>Bot</at>' }
+const mention = (id: string, name?: string) => ({ type: 'mention', mentioned: { id, name }, text: `<at>${name}</at>` })
+const channel = (overrides: Partial<Activity>) =>
+  run({ conversation: channelConv, text: '<at>Bot</at> hi', entities: [botMention], ...overrides } as any)
+
+describe('inbound meta', () => {
+  test('M1 personal chat', async () => {
+    const e = await run({})
+    expect(e.isGroup).toBe(false)
+    for (const k of ['teamId', 'teamName', 'teamsChannelId', 'teamsChannelName', 'threadId', 'replyToId', 'mentions']) {
+      expect(e[k]).toBeUndefined()
+    }
+  })
+
+  test('M2 team channel message', async () => {
+    const e = await run({
+      conversation: channelConv,
+      channelData: {
+        team: { id: '19:team@thread.tacv2', name: 'Tenders' },
+        channel: { id: '19:chan@thread.tacv2', name: 'Solar 2026' },
+      },
+      replyToId: '1716890000000',
+      text: '<at>Bot</at> summarize',
+      entities: [botMention, mention('u-2', 'Kiss Anna')],
+    } as any)
+    expect(e.isGroup).toBe(true)
+    expect(e.teamId).toBe('19:team@thread.tacv2')
+    expect(e.teamName).toBe('Tenders')
+    expect(e.teamsChannelId).toBe('19:chan@thread.tacv2')
+    expect(e.teamsChannelName).toBe('Solar 2026')
+    expect(e.threadId).toBe('1716890000000')
+    expect(e.replyToId).toBe('1716890000000')
+    expect(e.mentions).toEqual(['Kiss Anna'])
+  })
+
+  test('M8 the notification meta keys', async () => {
+    const base = {
+      aad_object_id: FIXTURE_ID, conversation_id: 'conv-abc', tenant_id: TENANT_ID, from_name: 'Adnan Khan',
+      message_id: 'msg-1', ts: '2026-05-18T19:43:00.000Z',
+    }
+    expect(channelEventMeta(await run({}))).toEqual({ ...base, is_group: 'false' })
+    const e = await channel({
+      channelData: { team: { id: 't-1', name: 'Tenders' }, channel: { id: 'c-1', name: 'Solar 2026' } },
+      replyToId: 'r-1',
+      entities: [botMention, mention('u-2', 'Kiss Anna'), mention('u-3', 'Nagy Bela')],
+    } as any)
+    expect(channelEventMeta(e)).toEqual({
+      ...base, conversation_id: channelConv.id, mentioned: 'true', is_group: 'true', team_id: 't-1', team_name: 'Tenders',
+      channel_id: 'c-1', channel_name: 'Solar 2026', thread_id: '1716890000000', reply_to_id: 'r-1',
+      mentions: 'Kiss Anna, Nagy Bela',
+    })
+  })
+
+  test('M3 names are sanitized', async () => {
+    const e = await channel({
+      channelData: { channel: { name: 'a"b<c>\nd' }, team: { name: 'x'.repeat(300) } },
+    } as any)
+    expect(e.teamsChannelName).toBe('a b c d')
+    expect(e.teamName).toBe('x'.repeat(200))
+    const f = await channel({ channelData: { team: { name: '   ' } } } as any)
+    expect(f.teamName).toBeUndefined()
+  })
+
+  test('M4 malformed channelData does not throw', async () => {
+    const e = await channel({ channelData: 'oops' } as any)
+    expect(e.teamId).toBeUndefined()
+    expect(e.teamsChannelName).toBeUndefined()
+    const f = await channel({ channelData: { team: 5, channel: 7 } } as any)
+    expect(f.teamId).toBeUndefined()
+    expect(f.teamsChannelId).toBeUndefined()
+  })
+
+  test('M5 mentions', async () => {
+    const dup = await channel({
+      entities: [botMention, mention('u-2', 'Kiss Anna'), mention('u-2', 'Kiss Anna')],
+    } as any)
+    expect(dup.mentions).toEqual(['Kiss Anna'])
+    const noName = await channel({ entities: [botMention, mention('u-3')] } as any)
+    expect(noName.mentions).toEqual(['u-3'])
+    const many = await channel({
+      entities: [botMention, ...Array.from({ length: 25 }, (_, i) => mention(`u-${i}`, `P${i}`))],
+    } as any)
+    expect(many.mentions.length).toBe(20)
+  })
+
+  test('M6 threadIdFromConversationId', () => {
+    expect(threadIdFromConversationId('19:abc@thread.tacv2;messageid=1716890000000')).toBe('1716890000000')
+    expect(threadIdFromConversationId('conv-abc')).toBeUndefined()
+    expect(threadIdFromConversationId('x;messageid=123;other=1')).toBe('123')
+    expect(threadIdFromConversationId('x;messageid=')).toBeUndefined()
+  })
+
+  test('M7 metaText', () => {
+    expect(metaText(42)).toBeUndefined()
+    expect(metaText('  a  b ')).toBe('a b')
+    expect(metaText('x'.repeat(250))!.length).toBe(200)
+  })
+
+  test('M9 a personal chat gets no team, channel, thread, reply or mention context', async () => {
+    const e = await run({
+      entities: [mention('u-2', 'Kiss Anna')],
+      replyToId: 'r-1',
+      channelData: { team: { id: 't-1', name: 'Tenders' }, channel: { id: 'c-1', name: 'Solar' } },
+      conversation: { id: 'a:1xyz;messageid=99', conversationType: 'personal', tenantId: TENANT_ID },
+    } as any)
+    expect(e.isGroup).toBe(false)
+    for (const k of ['teamId', 'teamName', 'teamsChannelId', 'teamsChannelName', 'threadId', 'replyToId', 'mentions']) {
+      expect(e[k]).toBeUndefined()
+    }
+  })
+
+  test('M10 C1 control characters and bidi controls are replaced', () => {
+    expect(metaText('Sales\u009b31m\u0085x\u202eAdmin\u2066y')).toBe('Sales 31m x Admin y')
+  })
+
+  test('M11 the joined mentions stay within 200 characters, whole names only', async () => {
+    const fit = await channel({
+      entities: [botMention, mention('u-1', 'a'.repeat(98)), mention('u-2', 'b'.repeat(98)), mention('u-3', 'c')],
+    } as any)
+    expect(fit.mentions).toEqual(['a'.repeat(98), 'b'.repeat(98)])
+    expect(channelEventMeta(fit).mentions!.length).toBe(198)
+    const long = await channel({
+      entities: [botMention, ...['x', 'y', 'z'].map((c, i) => mention(`u-${i}`, c.repeat(150)))],
+    } as any)
+    expect(long.mentions).toEqual(['x'.repeat(150)])
+  })
+
+  test('M12 invisible-character counts surface as meta keys only when set', () => {
+    const base = {
+      text: 'hello', conversationId: 'conv-abc', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID, fromName: 'Adnan Khan',
+    }
+    const meta = channelEventMeta({ ...base, invisible: { tag: 2, zwsp: 0, bidi: 1, bom: 0 } })
+    expect(meta.invisible_tag).toBe('2')
+    expect(meta.invisible_bidi).toBe('1')
+    expect(meta.invisible_zwsp).toBeUndefined()
+    expect(meta.invisible_bom).toBeUndefined()
+    const without = channelEventMeta(base)
+    for (const key of Object.keys(without)) expect(key.startsWith('invisible_')).toBe(false)
+  })
+
+  test('M13 metaText removes tag characters, zero-width spaces and BOM, keeps the RGI flags', () => {
+    expect(metaText('Sa\u{200B}les\u{FEFF} Desk\u{E0041}\u{E0042}')).toBe('Sales Desk')
+    const wales = 'Ops \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
+    expect(metaText(wales)).toBe(wales)
+    expect(metaText('x\u{202E}Admin')).toBe('x Admin')
+    expect(metaText('\u{200B}\u{E0041}')).toBeUndefined()
+    // removed before the whitespace collapse and the length bound: no double space, and invisible padding
+    // cannot push the visible name out of the bound
+    expect(metaText('a \u{200B} b')).toBe('a b')
+    expect(metaText('\u{200B}'.repeat(300) + 'Desk')).toBe('Desk')
+  })
+
+  test('M14 from_name is stripped of invisible characters', () => {
+    const base = {
+      text: 'hello', conversationId: 'conv-abc', aadObjectId: FIXTURE_ID, tenantId: TENANT_ID,
+    }
+    const meta = channelEventMeta({ ...base, fromName: 'Night\u{200B} Desk\u{E0041}\u{E007F}' })
+    expect(meta.from_name).toBe('Night Desk')
+    const wales = 'Desk \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
+    expect(channelEventMeta({ ...base, fromName: wales }).from_name).toBe(wales)
+  })
+
+  test('M15 the length bound never leaves part of an RGI flag or half a surrogate pair', () => {
+    const wales = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}'
+    // the flag is 14 UTF-16 units: with 186 letters before it, it fits the 200 bound whole
+    expect(metaText('a'.repeat(186) + wales)).toBe('a'.repeat(186) + wales)
+    // cut inside the flag: its tags go and the black flag stays; cut inside the black flag itself: nothing of it
+    for (let pad = 187; pad <= 198; pad++) expect(metaText('a'.repeat(pad) + wales)).toBe('a'.repeat(pad) + '\u{1F3F4}')
+    expect(metaText('a'.repeat(199) + wales)).toBe('a'.repeat(199))
+    // other bounds, a name that is only a flag, another astral character cut in half, and the final trim
+    expect(metaText(wales, 14)).toBe(wales)
+    expect(metaText(wales, 13)).toBe('\u{1F3F4}')
+    expect(metaText(wales, 1)).toBeUndefined()
+    expect(metaText('a'.repeat(199) + '\u{1F600}')).toBe('a'.repeat(199))
+    expect(metaText('a'.repeat(198) + ' ' + wales)).toBe('a'.repeat(198))
+  })
+
+  test('M16 a merged inbound message carries merged_count and merged_message_ids, after the other keys', () => {
+    const base = {
+      text: 'look at this\nhttps://example.test\nurgent', conversationId: 'conv-abc', aadObjectId: FIXTURE_ID,
+      tenantId: TENANT_ID, fromName: 'Adnan Khan', messageId: 'm3', ts: '2026-05-18T19:43:00.000Z',
+    }
+    const meta = channelEventMeta({ ...base, merged: { count: 3, messageIds: ['m1', 'm2'] } })
+    expect(meta.merged_count).toBe('3')
+    expect(meta.merged_message_ids).toBe('m1,m2')
+    // An id with characters the meta cannot carry comes out sanitised, not raw.
+    const dirty = channelEventMeta({ ...base, merged: { count: 2, messageIds: ['m"1', 'm<2'] } })
+    expect(dirty.merged_message_ids).toBe(metaText('m"1,m<2'))
+    expect(dirty.merged_message_ids).toBe('m 1,m 2')
+    expect(dirty.merged_message_ids).not.toContain('"')
+    // An id that sanitises to nothing is left out; when none is left, the key is omitted (never undefined or ',').
+    expect(channelEventMeta({ ...base, merged: { count: 2, messageIds: ['"', 'm2'] } }).merged_message_ids).toBe('m2')
+    const empty = channelEventMeta({ ...base, merged: { count: 2, messageIds: ['"', '<>'] } })
+    expect(empty.merged_count).toBe('2')
+    expect('merged_message_ids' in empty).toBe(false)
+    // Only whole ids fit the 1000-character cap: no half id, no trailing comma; one id is cut to 200 characters.
+    const long = channelEventMeta({ ...base, merged: { count: 6, messageIds: Array(6).fill('a'.repeat(199)) } })
+    expect(long.merged_message_ids).toBe(Array(5).fill('a'.repeat(199)).join(','))
+    // Exactly 1000 characters still fits (one 200-character id, four 199-character ids, four commas).
+    const exact = channelEventMeta({ ...base, merged: { count: 5, messageIds: ['c'.repeat(200), ...Array(4).fill('c'.repeat(199))] } })
+    expect(exact.merged_message_ids!.length).toBe(1000)
+    const huge = channelEventMeta({ ...base, merged: { count: 2, messageIds: ['b'.repeat(250), 'm2'] } })
+    expect(huge.merged_message_ids).toBe('b'.repeat(200) + ',m2')
+    // No merged message: neither key exists.
+    const plain = channelEventMeta(base)
+    expect(plain.merged_count).toBeUndefined()
+    expect(plain.merged_message_ids).toBeUndefined()
+    for (const key of Object.keys(plain)) expect(key.startsWith('merged_')).toBe(false)
+    // Key order is unchanged: the invisible_* keys still come last.
+    const withBoth = channelEventMeta({
+      ...base,
+      merged: { count: 3, messageIds: ['m1', 'm2'] },
+      invisible: { tag: 1, zwsp: 0, bidi: 0, bom: 0 },
+    })
+    const keys = Object.keys(withBoth)
+    const firstInvisible = keys.findIndex(key => key.startsWith('invisible_'))
+    expect(firstInvisible).toBeGreaterThan(-1)
+    expect(keys.slice(0, firstInvisible).every(key => !key.startsWith('invisible_'))).toBe(true)
+    expect(keys.slice(firstInvisible).every(key => key.startsWith('invisible_'))).toBe(true)
+    expect(keys.indexOf('merged_count')).toBeLessThan(firstInvisible)
+    expect(keys.indexOf('merged_message_ids')).toBeLessThan(firstInvisible)
+    // A merged event whose fragments carried no message ids reports the count only.
+    const noIds = channelEventMeta({ ...base, merged: { count: 2, messageIds: [] } })
+    expect(noIds.merged_count).toBe('2')
+    expect(noIds.merged_message_ids).toBeUndefined()
+  })
+})
