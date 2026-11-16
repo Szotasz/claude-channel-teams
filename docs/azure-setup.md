@@ -146,6 +146,10 @@ Upload an app for me or my teams*.
 
 ## Files shared in channels and group chats
 
+This feature is **OFF by default**. Set `TEAMS_CHANNEL_ATTACHMENTS=1` (or `true`)
+to enable channel- and group-chat shared-file downloads, including the Graph reads
+and download/skip lines described below. Without it, none of that runs.
+
 In a 1:1 chat Teams attaches the file to the message, and the plugin downloads
 it from the short-lived URL in the attachment. In a **team channel** or a
 **group chat** it does not — the message the bot receives only carries an

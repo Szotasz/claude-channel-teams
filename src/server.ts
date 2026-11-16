@@ -1159,7 +1159,7 @@ const listener = startListener({
       getBearerToken: () => inlineImageCredentials.getToken(),
       messageText,
     }),
-  sharedFiles: async (lookup, fromName) =>
+  ...(config.channelAttachments ? { sharedFiles: async (lookup, fromName) =>
     fetchSharedFiles(lookup, fromName, {
       getGraphToken: () => graphToken.getToken(),
       getBotToken: () => inlineImageCredentials.getToken(),
@@ -1169,6 +1169,7 @@ const listener = startListener({
       channelDriveCache: channelDriveIds,
       driveOwnerCache: driveOwners,
     }),
+  } : {}),
 })
 
 await mcp.connect(new StdioServerTransport())
