@@ -19,10 +19,11 @@ const channelRef: Ref = { conversation: { id: '19:chan1@thread.tacv2', conversat
 
 type Sent = { raw: Array<[Ref, string]>; dmTexts: string[]; createdWith: Ref[] }
 
-function harness(fail?: { create?: Error; send?: Error }) {
+function harness(fail?: { raw?: Error; create?: Error; send?: Error }) {
   const sent: Sent = { raw: [], dmTexts: [], createdWith: [] }
   const sender = makePairingDmSender({
     sendActivityRaw: async (ref, text) => {
+      if (fail?.raw) throw fail.raw
       sent.raw.push([ref as Ref, text])
     },
     isPersonal: ref => (ref as Ref).conversation.conversationType === 'personal',
@@ -70,5 +71,12 @@ describe('gated pairing hint delivery (owner decision: 1:1 only, never the chann
     const { sender, sent } = harness({ send: err })
     await expect(sender(channelRef, HINT)).rejects.toBe(err)
     expect(sent.raw).toEqual([])
+  })
+
+  test('a personal reference whose raw send fails: the same error object propagates, no 1:1 opener call', async () => {
+    const err = new Error('raw send failed')
+    const { sender, sent } = harness({ raw: err })
+    await expect(sender(personalRef, HINT)).rejects.toBe(err)
+    expect(sent.createdWith).toEqual([])
   })
 })
