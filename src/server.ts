@@ -93,6 +93,8 @@ import {
 } from './teams/planner.js'
 import { createMeetingStore, fetchTranscript, resolveTranscriptRequest, transcriptResultText, transcriptTools } from './teams/meetingTranscripts.js'
 import { channelTools, createChannel, validateCreateChannelArgs } from './teams/channels.js'
+import { makePairingDmSender } from './teams/pairing-dm.js'
+import { type ConversationParameters, type TurnContext } from 'botbuilder'
 import { MicrosoftAppCredentials } from 'botframework-connector'
 
 // Crash safety — without these the process can die silently on any
@@ -1224,9 +1226,52 @@ const listener = startListener({
   feedback: config.feedback,
   sendPairingTargeted: sendTargeted,
   channelEvents: config.channelEvents,
-  sendPairingDm: async (ref, text) => {
-    await sendActivityRaw(ref, text)
-  },
+  // Owner decision (Teams #21): the gated pairing hint reaches the triggering
+  // member as a 1:1 message only. A personal reference is answered in place;
+  // a shared one gets a bot-initiated 1:1 opened for the member — never a
+  // reply into the channel, not even as a fallback when the 1:1 fails.
+  sendPairingDm: makePairingDmSender({
+    sendActivityRaw,
+    isPersonal: isPersonalReference,
+    createConversation: (ref, logic) => {
+      // Prefer the Entra object id (aadObjectId); the 29:... Teams user id
+      // works too when the AAD id is missing from the activity.
+      const aadObjectId = ref.user?.aadObjectId
+      const memberId = typeof aadObjectId === 'string' && aadObjectId.length > 0
+        ? aadObjectId
+        : ref.user?.id
+      if (typeof memberId !== 'string' || memberId.length === 0) {
+        throw new Error('pairing DM: no member id on the conversation reference')
+      }
+      const serviceUrl = ref.serviceUrl
+      if (typeof serviceUrl !== 'string' || serviceUrl.length === 0) {
+        throw new Error('pairing DM: no service URL on the conversation reference')
+      }
+      // The tenant the conversation happened in, else the configured one.
+      const tenantId = ref.conversation?.tenantId ?? config.tenantId
+      return adapter.createConversationAsync(
+        config.appId,
+        'msteams',
+        serviceUrl,
+        // null/undefined audience = the connector's default Bot Framework scope
+        undefined as unknown as string,
+        {
+          isGroup: false,
+          bot: { id: config.appId },
+          // Teams accepts the Entra object id here, personal scope only
+          members: [{ id: memberId }],
+          tenantId,
+          channelData: { tenant: { id: tenantId } },
+        } as ConversationParameters,
+        // The new conversation reference is deliberately NOT stored: pairing
+        // continues when the member writes to the bot 1:1, and that inbound
+        // path stores its own reference.
+        async (turnContext: TurnContext) => {
+          await logic({ sendActivity: (text: string) => turnContext.sendActivity(text) })
+        },
+      )
+    },
+  }),
   attachments: async (atts, fromName, messageText) =>
     processAttachments(atts, fromName, {
       baseDir: config.receivedFilesDir,
