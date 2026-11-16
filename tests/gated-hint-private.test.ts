@@ -57,16 +57,18 @@ describe('gated pairing hint delivery (owner decision: 1:1 only, never the chann
     expect(sent.dmTexts).toEqual([HINT])
   })
 
-  test('a channel reference whose 1:1 conversation cannot be created: the error propagates, nothing goes public', async () => {
-    const { sender, sent } = harness({ create: new Error('cannot create conversation') })
-    await expect(sender(channelRef, HINT)).rejects.toThrow('cannot create conversation')
+  test('a channel reference whose 1:1 conversation cannot be created: the same error object propagates, nothing goes public', async () => {
+    const err = new Error('cannot create conversation')
+    const { sender, sent } = harness({ create: err })
+    await expect(sender(channelRef, HINT)).rejects.toBe(err)
     expect(sent.raw).toEqual([])
     expect(sent.dmTexts).toEqual([])
   })
 
-  test('a channel reference whose 1:1 send fails inside the conversation: the error propagates, nothing goes public', async () => {
-    const { sender, sent } = harness({ send: new Error('send failed') })
-    await expect(sender(channelRef, HINT)).rejects.toThrow('send failed')
+  test('a channel reference whose 1:1 send fails inside the conversation: the same error object propagates, nothing goes public', async () => {
+    const err = new Error('send failed')
+    const { sender, sent } = harness({ send: err })
+    await expect(sender(channelRef, HINT)).rejects.toBe(err)
     expect(sent.raw).toEqual([])
   })
 })
