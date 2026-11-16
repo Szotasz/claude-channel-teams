@@ -407,6 +407,11 @@ export interface Config {
    */
   channelEvents: boolean
   /**
+   * Enables shared-file downloads in channels and group chats. Default OFF.
+   * From TEAMS_CHANNEL_ATTACHMENTS ('1' or 'true'); see docs/azure-setup.md.
+   */
+  channelAttachments: boolean
+  /**
    * Teams (team ids, as in channelData.team.id) whose channel events are delivered. Empty (the default) delivers
    * none, even with TEAMS_CHANNEL_EVENTS on. No wildcard: '*' matches no team.
    * From TEAMS_CHANNEL_EVENT_TEAMS (comma-separated); see docs/channel-events.md.
@@ -742,6 +747,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     activityFeed: env.TEAMS_ACTIVITY_FEED === '1',
     feedback: parseFlag(env.TEAMS_FEEDBACK),
     channelEvents: parseFlag(env.TEAMS_CHANNEL_EVENTS),
+    channelAttachments: parseFlag(env.TEAMS_CHANNEL_ATTACHMENTS),
     channelEventTeams: parseIdList(env.TEAMS_CHANNEL_EVENT_TEAMS),
     mentionTags,
     backfill: parseFlag(env.TEAMS_BACKFILL),
