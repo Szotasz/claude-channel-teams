@@ -113,6 +113,7 @@ environment winning. `.env` is chmod-0600 on every load.
 | `TEAMS_PROACTIVE_CHANNELS` | No | empty | Comma-separated channel ids (no `;messageid=`, no wildcard) where the `post_to_channel` tool may open a new top-level post. The route is learned from an allowlisted user's message in the channel and kept in `channel-refs.json` (0600) in the state dir. |
 | `TEAMS_FILES_BASE_URL` | No | origin of `TEAMS_BOT_ENDPOINT_URL` + `/files` | Override for the `send_file` download-link base. https only. |
 | `TEAMS_UNMENTIONED_CONVERSATIONS` | No | empty | Comma-separated shared conversation ids (without `;messageid=`) or `*`, where allowlisted senders' messages are delivered without an @mention. Non-allowlisted senders are not paired from unmentioned messages. |
+| `TEAMS_CHANNEL_ATTACHMENTS` | No | off | `1` or `true` enables channel / group-chat shared-file downloads through Microsoft Graph — see [docs/azure-setup.md](azure-setup.md) for the permissions it needs. |
 | `TEAMS_MEETING_EVENTS` | No | off | `1` or `true` delivers meeting start / end events — see [docs/meeting-events.md](meeting-events.md). |
 | `TEAMS_MEETING_CONVERSATIONS` | No | empty | Comma-separated conversation ids (without `;messageid=`, no wildcard) whose meeting events are delivered. Empty delivers none. |
 | `TEAMS_INBOUND_DEBOUNCE_MS` | No | `0` (off) | Inbound debounce window in milliseconds (recommended `1500`) — see [Inbound debounce (opt-in)](#inbound-debounce-opt-in). A whole number, capped at 10000; anything else turns debouncing off with one stderr line. |

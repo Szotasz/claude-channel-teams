@@ -68,9 +68,9 @@ describe('adapter: shared files in channels and group chats', () => {
   })
 
   /** A turn handler with an allowlisted sender, shared conversations opted in for
-   *  unmentioned delivery, and a recording sharedFiles fake. */
+   *  unmentioned delivery, and an optional recording sharedFiles fake. */
   function setup(
-    sharedFiles: (lookup: SharedFileLookup, fromName: string) => Promise<{ annotations: string[] }>,
+    sharedFiles?: (lookup: SharedFileLookup, fromName: string) => Promise<{ annotations: string[] }>,
     unmentioned: Set<string> = new Set([CHAN, CHAT, SKYPE_CHAN, OTHER_CHAT]),
   ) {
     const allowlist = createAllowlist(allowlistFile)
@@ -95,11 +95,13 @@ describe('adapter: shared files in channels and group chats', () => {
       allowlist,
       refs: createConversationRefStore(),
       onEvent: e => events.push(e),
-      sharedFiles: async (lookup, fromName) => {
-        lookups.push(lookup)
-        names.push(fromName)
-        return sharedFiles(lookup, fromName)
-      },
+      ...(sharedFiles ? {
+        sharedFiles: async (lookup: SharedFileLookup, fromName: string) => {
+          lookups.push(lookup)
+          names.push(fromName)
+          return sharedFiles(lookup, fromName)
+        },
+      } : {}),
     })
     const run = (a: Activity) => turn(new TurnContext(new NoopAdapter() as any, a))
     return { run, events, lookups, names }
@@ -191,6 +193,16 @@ describe('adapter: shared files in channels and group chats', () => {
   test('A7 a channel message without team/channel data in channelData yields no lookup', async () => {
     const s = setup(async () => ({ annotations: [ANNOTATION] }))
     await s.run(makeActivity({ channelData: {} as any }))
+    expect(s.lookups.length).toBe(0)
+    expect(s.events.length).toBe(1)
+    expect(s.events[0].text).toBe('see this')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('A8 a channel message with sharedFiles omitted still delivers without an annotation', async () => {
+    // TEAMS_CHANNEL_ATTACHMENTS off: the server omits the sharedFiles dep entirely.
+    const s = setup()
+    await s.run(makeActivity())
     expect(s.lookups.length).toBe(0)
     expect(s.events.length).toBe(1)
     expect(s.events[0].text).toBe('see this')
