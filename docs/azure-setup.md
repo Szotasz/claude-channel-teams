@@ -157,10 +157,12 @@ it from the short-lived URL in the attachment. In a **team channel** or a
 reads the message back through Microsoft Graph and then downloads the file from
 SharePoint / OneDrive, which needs two permissions on top of the ones above:
 
-- **Reading the message** — the resource-specific consent permissions already in
-  the manifest (the ones that let the bot receive channel and group-chat
-  messages at all): `ChannelMessage.Read.Group` for a team channel,
-  `ChatMessage.Read.Chat` for a group chat.
+- **Reading the message** — the resource-specific consent (RSC) permissions already
+  in the manifest: `ChannelMessage.Read.Group` for a team channel,
+  `ChatMessage.Read.Chat` for a group chat. RSC consent is granted per team / per
+  chat when the app is added there and authorizes only that team or chat, so Graph
+  read-back works in conversations the bot is already installed in, not across
+  the tenant.
 - **Downloading the file** — the Microsoft Graph **application** permission
   `Files.Read.All`, granted with admin consent on the bot's app registration
   (*App registrations* → *API permissions*). This is an application permission,
