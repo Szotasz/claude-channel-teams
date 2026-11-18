@@ -44,6 +44,7 @@ import { join } from 'path'
 
 import { channelEventsWarning, loadConfig, meetingEventsWarning } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
+import { createChannelTokenVerifier } from './teams/channelToken.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
 import { createReplySender, parseQuoteArg, parseReplyFormat } from './teams/reply.js'
@@ -1107,6 +1108,8 @@ if (config.targetedMessages) {
 const listener = startListener({
   config,
   adapter,
+  // TEAMSEMUTOKEN1118: only Bot Framework channel tokens reach the SDK (channelToken.ts).
+  inboundAuth: createChannelTokenVerifier(config.appId),
   allowlist,
   refs,
   channelRefs,
