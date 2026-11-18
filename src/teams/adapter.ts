@@ -62,7 +62,7 @@ import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
 import { withHeldContext, type FilterDecision, type HeldMessages, type UnmentionedFilter } from './unmentionedFilter.js'
 import { messageActionFrom } from './messageAction.js'
 import type { ChannelTokenVerifier } from './channelToken.js'
-import { isApprovalCardInvoke, type ApprovalForwarder } from './approvalCard.js'
+import { isApprovalCardInvoke, isApprovalCardSubmit, type ApprovalForwarder } from './approvalCard.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -1388,6 +1388,10 @@ export async function handleMessagesPost(
       status: 200,
       headers: { 'content-type': 'application/json' },
     })
+  }
+  if (isApprovalCardSubmit(botReq.body)) {
+    process.stderr.write('teams channel: an approval-card button sent as a message was dropped (it would carry the nonce to the session)\n')
+    return new Response(null, { status: 200 })
   }
   const { res, done } = makeResponseSink()
   // Hand the request to CloudAdapter. The SDK validates the JWT, parses

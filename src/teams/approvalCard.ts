@@ -41,6 +41,22 @@ export function isApprovalCardInvoke(activity: unknown): boolean {
 }
 
 /**
+ * Dani B1 (#57 review): a client that sends the approval button as an Action.Submit fallback would post a MESSAGE whose
+ * value is the button's data ({ approvalId, decision, nonce }), and cardAction.ts hands any message with an object value
+ * to the session as a submit, nonce included. Such a message is dropped before CloudAdapter: never forwarded (the
+ * dashboard takes only the Action.Execute invoke), never shown to the agent. A message answer cannot carry a card, so the
+ * clicker sees nothing here; the owner can still decide on the card's other path or on the dashboard.
+ */
+export function isApprovalCardSubmit(activity: unknown): boolean {
+  if (!activity || typeof activity !== 'object') return false
+  const a = activity as { type?: unknown; value?: unknown }
+  if (a.type !== 'message' || !a.value || typeof a.value !== 'object' || Array.isArray(a.value)) return false
+  const v = a.value as { verb?: unknown; action?: { verb?: unknown }; approvalId?: unknown; nonce?: unknown }
+  if (v.verb === APPROVAL_CARD_VERB || v.action?.verb === APPROVAL_CARD_VERB) return true
+  return v.approvalId !== undefined && v.nonce !== undefined
+}
+
+/**
  * MARVEEN_APPROVAL_URL, only when it is an http(s) URL on the loopback interface (127.0.0.1, ::1, localhost). The click
  * carries a Bot Framework token that is valid for a while; it must not leave the host.
  */

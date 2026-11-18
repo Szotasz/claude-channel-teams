@@ -6,7 +6,7 @@ import { describe, expect, test, mock } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  APPROVAL_CARD_VERB, NOT_DECIDED_CARD, isApprovalCardInvoke, parseApprovalUrl, createApprovalForwarder,
+  APPROVAL_CARD_VERB, NOT_DECIDED_CARD, isApprovalCardInvoke, isApprovalCardSubmit, parseApprovalUrl, createApprovalForwarder,
 } from '../src/teams/approvalCard.ts'
 import { validateAdaptiveCard, ADAPTIVE_CARD_CONTENT_TYPE } from '../src/teams/cards.ts'
 import { handleMessagesPost } from '../src/teams/adapter.ts'
@@ -128,6 +128,33 @@ describe('POST /api/messages: an approval-card click never reaches CloudAdapter 
     await handleMessagesPost(req(click({}, 'my-own-verb')), { adapter: { process } as never, inboundAuth: accept, approvalCard }, async () => {})
     expect(process).toHaveBeenCalledTimes(1)
     expect(approvalCard).not.toHaveBeenCalled()
+  })
+})
+
+describe('Dani B1: an approval button sent as a message (Action.Submit fallback) never reaches the session', () => {
+  const msg = (value: unknown) => ({ type: 'message', channelId: 'msteams', serviceUrl: 'https://smba.trafficmanager.net/emea/', from: { id: '29:x', aadObjectId: OWNER }, conversation: { id: 'a:1owner', tenantId: TENANT }, value })
+  test('recognised by the button data (approvalId + nonce) or by the verb; an ordinary submit is not', () => {
+    expect(isApprovalCardSubmit(msg({ approvalId: 'appr-1', decision: 'approve', nonce: 'ab'.repeat(32) }))).toBe(true)
+    expect(isApprovalCardSubmit(msg({ verb: APPROVAL_CARD_VERB }))).toBe(true)
+    expect(isApprovalCardSubmit(msg({ action: { verb: APPROVAL_CARD_VERB } }))).toBe(true)
+    expect(isApprovalCardSubmit(msg({ choice: 'a' }))).toBe(false)
+    expect(isApprovalCardSubmit(msg({ approvalId: 'x' }))).toBe(false)
+    expect(isApprovalCardSubmit({ ...msg({ approvalId: 'x', nonce: 'y' }), type: 'invoke' })).toBe(false)
+  })
+  test('dropped before CloudAdapter: no adapter call, no forward', async () => {
+    const process = mock(async () => {})
+    const approvalCard = mock(async () => RESULT_CARD)
+    const r = new Request('http://127.0.0.1:3979/api/messages', { method: 'POST', body: JSON.stringify(msg({ approvalId: 'appr-1', decision: 'approve', nonce: 'ab'.repeat(32) })), headers: { 'content-type': 'application/json', authorization: 'Bearer t' } })
+    const res = await handleMessagesPost(r, { adapter: { process } as never, inboundAuth: async () => ({ ok: true as const, claims: {} }), approvalCard }, async () => {})
+    expect(res.status).toBe(200)
+    expect(process).not.toHaveBeenCalled()
+    expect(approvalCard).not.toHaveBeenCalled()
+  })
+  test('an ordinary submit message still goes to the adapter', async () => {
+    const process = mock(async (_r: unknown, res: { status(n: number): void; end(b?: string): void }) => { res.status(200); res.end() })
+    const r = new Request('http://127.0.0.1:3979/api/messages', { method: 'POST', body: JSON.stringify(msg({ choice: 'a' })), headers: { 'content-type': 'application/json', authorization: 'Bearer t' } })
+    await handleMessagesPost(r, { adapter: { process } as never, inboundAuth: async () => ({ ok: true as const, claims: {} }), approvalCard: mock(async () => RESULT_CARD) }, async () => {})
+    expect(process).toHaveBeenCalledTimes(1)
   })
 })
 
