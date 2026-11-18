@@ -395,6 +395,8 @@ That refresh is the one the plugin adds itself, with a reserved verb: its invoke
 being ignored, and a card from Claude may not use that verb.
 Replies can also carry thumbs up / down buttons (`TEAMS_FEEDBACK`, opt-in); see docs/feedback.md.
 
+A click on a Marveen approval card (verb `marveen-approval`) is forwarded to the Marveen dashboard and never reaches the session (`MARVEEN_APPROVAL_URL`); see docs/approval-cards.md.
+
 `reply` can also mark a message as AI-generated (`ai_generated`) and attach
 numbered source citations (`citations`, at most 20; name ≤ 80, abstract ≤ 160
 characters, optional http(s) url, ≤ 3 keywords of ≤ 28 characters, optional
