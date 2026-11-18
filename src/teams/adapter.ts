@@ -53,7 +53,7 @@ import { handleFilesRequest } from './filesRoute.js'
 import type { DeliveredMessages } from './deliveredMessages.js'
 import type { InboundIds } from './inboundIds.js'
 import { invisibleMeta, stripInvisible } from './invisibleChars.js'
-import { makeEarlyAckTurn } from './earlyAck.js'
+import { makeEarlyAckTurn, type ActivityTurn } from './earlyAck.js'
 import { buildDialogTask, cardActionFrom, cardActionText, dialogInvokeFrom, dialogSubmitText } from './cardAction.js'
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './cards.js'
 import { userViewInvokeFrom } from './userViews.js'
@@ -61,6 +61,7 @@ import { meetingEventFrom, meetingEventText } from './meetingEvents.js'
 import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
 import { withHeldContext, type FilterDecision, type HeldMessages, type UnmentionedFilter } from './unmentionedFilter.js'
 import { messageActionFrom } from './messageAction.js'
+import type { ChannelTokenVerifier } from './channelToken.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -1340,6 +1341,61 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
   }
 }
 
+/**
+ * POST /api/messages (TEAMSEMUTOKEN1118): the body is parsed, then the Bot Framework token is checked by the
+ * channel-token-only verifier (channelToken.ts) BEFORE CloudAdapter sees it, so an emulator- or skill-shaped token
+ * never reaches the SDK's own branch selection. A refusal is a 401 and goes nowhere else: no turn, no agent event.
+ */
+export async function handleMessagesPost(
+  req: Request,
+  deps: { adapter: CloudAdapter; inboundAuth: ChannelTokenVerifier },
+  turn: ActivityTurn,
+): Promise<Response> {
+  const { adapter } = deps
+  // Parse the body first so we can distinguish a malformed payload
+  // from a real downstream error. Random scanners poking the public
+  // endpoint shouldn't produce 500-stack-traces in the audit log.
+  let botReq: { body: unknown; headers: Record<string, string>; method: string }
+  try {
+    botReq = await toBotRequest(req)
+  } catch (err) {
+    if (err instanceof MalformedBodyError) {
+      // Info-level log only — these are noise, not incidents.
+      process.stderr.write(
+        `teams channel: 400 malformed /api/messages — ${err.message}\n`,
+      )
+      return new Response(err.message, {
+        status: 400,
+        headers: { 'content-type': 'text/plain' },
+      })
+    }
+    process.stderr.write(`teams channel: body read failed: ${err}\n`)
+    return new Response('bad request', { status: 400 })
+  }
+  const auth = await deps.inboundAuth(botReq.headers['authorization'], botReq.body)
+  if (!auth.ok) {
+    process.stderr.write(`teams channel: 401 inbound request refused before the SDK (${auth.reason})\n`)
+    return new Response('unauthorized', { status: 401, headers: { 'content-type': 'text/plain' } })
+  }
+  const { res, done } = makeResponseSink()
+  // Hand the request to CloudAdapter. The SDK validates the JWT, parses
+  // the activity, calls our turn handler. If the turn handler throws,
+  // it's surfaced as a 500. If JWT validation fails, 401.
+  try {
+    // The SDK's Request type is structurally compatible with botReq.
+    // Cast at the boundary so the type-check stays honest elsewhere.
+    await adapter.process(botReq as never, res as never, turn)
+  } catch (err) {
+    process.stderr.write(`teams channel: adapter.process threw: ${err}\n`)
+    // adapter.process already wrote its own response on most errors;
+    // if not, give the connector a 500 so it retries.
+    // (The done promise hasn't resolved yet → we resolve manually.)
+    res.status(500)
+    res.end('internal error')
+  }
+  return done
+}
+
 export interface RunningListener {
   port: number
   url: string
@@ -1354,7 +1410,7 @@ export interface RunningListener {
  *                         (Caddy / nginx / Cloudflare Tunnel) forwards here.
  *   GET  /health        — Unauthenticated liveness. Returns "ok".
  */
-export function startListener(deps: AdapterDeps): RunningListener {
+export function startListener(deps: AdapterDeps & { inboundAuth: ChannelTokenVerifier }): RunningListener {
   const { config, adapter } = deps
   const turn = makeEarlyAckTurn(makeTurnHandler(deps))
 
@@ -1387,43 +1443,7 @@ export function startListener(deps: AdapterDeps): RunningListener {
         if (req.method !== 'POST') {
           return new Response('method not allowed', { status: 405 })
         }
-        // Parse the body first so we can distinguish a malformed payload
-        // from a real downstream error. Random scanners poking the public
-        // endpoint shouldn't produce 500-stack-traces in the audit log.
-        let botReq: { body: unknown; headers: Record<string, string>; method: string }
-        try {
-          botReq = await toBotRequest(req)
-        } catch (err) {
-          if (err instanceof MalformedBodyError) {
-            // Info-level log only — these are noise, not incidents.
-            process.stderr.write(
-              `teams channel: 400 malformed /api/messages — ${err.message}\n`,
-            )
-            return new Response(err.message, {
-              status: 400,
-              headers: { 'content-type': 'text/plain' },
-            })
-          }
-          process.stderr.write(`teams channel: body read failed: ${err}\n`)
-          return new Response('bad request', { status: 400 })
-        }
-        const { res, done } = makeResponseSink()
-        // Hand the request to CloudAdapter. The SDK validates the JWT, parses
-        // the activity, calls our turn handler. If the turn handler throws,
-        // it's surfaced as a 500. If JWT validation fails, 401.
-        try {
-          // The SDK's Request type is structurally compatible with botReq.
-          // Cast at the boundary so the type-check stays honest elsewhere.
-          await adapter.process(botReq as never, res as never, turn)
-        } catch (err) {
-          process.stderr.write(`teams channel: adapter.process threw: ${err}\n`)
-          // adapter.process already wrote its own response on most errors;
-          // if not, give the connector a 500 so it retries.
-          // (The done promise hasn't resolved yet → we resolve manually.)
-          res.status(500)
-          res.end('internal error')
-        }
-        return done
+        return handleMessagesPost(req, deps, turn)
       }
       return new Response('not found', { status: 404 })
     },

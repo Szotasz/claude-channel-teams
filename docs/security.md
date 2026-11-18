@@ -24,16 +24,27 @@ model, this file is the operator-facing companion.
 
 ## Inbound trust chain
 
-Each inbound POST passes four checks before any tool runs:
+Each inbound POST passes five checks before any tool runs:
 
 1. **TLS termination** at the operator's reverse proxy, the bot connector
    must talk to a real HTTPS endpoint with a public cert.
-2. **Bot Framework JWT validation** in the plugin's CloudAdapter, proves
+2. **Inbound tokens: channel tokens only** (`src/teams/channelToken.ts`),
+   before CloudAdapter sees the request. The token must be RS256, issued by
+   `https://api.botframework.com`, with `aud` = this bot's app id, inside its
+   validity window (5 minutes of clock skew), its `serviceurl` claim equal to
+   the activity's `serviceUrl`, signed by a key from the Bot Framework OpenID
+   metadata that is endorsed for `msteams`, and the activity's channel must be
+   `msteams`. Otherwise the answer is a 401 and nothing else happens.
+   Why: the SDK on its own also accepts an "emulator" token, an Azure AD
+   token whose `appid`/`azp` is the bot's own app id. Anyone who can read
+   `TEAMS_BOT_APP_PASSWORD` can request one, so on a shared host that
+   would let a local process post activities in a paired user's name.
+3. **Bot Framework JWT validation** in the plugin's CloudAdapter, proves
    the request came from Microsoft, signed against their JWKS.
-3. **Tenant pinning**: when `TEAMS_BOT_APP_TYPE=SingleTenant`, the gate
+4. **Tenant pinning**: when `TEAMS_BOT_APP_TYPE=SingleTenant`, the gate
    refuses any activity whose `conversation.tenantId` differs from
    `TEAMS_BOT_TENANT_ID`. Belt-and-braces on top of the framework's check.
-4. **Allowlist gate**: `aadObjectId` must be in `allowFrom`, or the
+5. **Allowlist gate**: `aadObjectId` must be in `allowFrom`, or the
    activity is dropped (or replied to with a pairing code, in `pairing`
    policy).
 
@@ -237,8 +248,9 @@ phrases stay present so a future edit can't silently weaken the fence.
 | Symptom | Likely cause |
 | --- | --- |
 | Bot replies are never received by you | Pairing didn't complete, check `allowlist.json` for an entry, and `pending.json` for a row that's still awaiting `approve_pair`. |
-| Pairing-code reply never arrives | The plugin isn't reachable. Check the reverse proxy logs and the Bot Framework "Test in Web Chat" feature on the Azure Bot resource. |
+| Pairing-code reply never arrives | The plugin isn't reachable. Check the reverse proxy logs. The Bot Framework "Test in Web Chat" feature no longer reaches the turn handler: only Microsoft Teams (`msteams`) channel tokens are admitted, so a Web Chat message gets a 401 that only shows the endpoint is reachable. |
 | 401 from the plugin | `TEAMS_BOT_APP_PASSWORD` is wrong, the app secret expired, or `TEAMS_BOT_TENANT_ID` is wrong. |
+| `401 inbound request refused before the SDK (...)` in stderr | The request did not carry a Bot Framework channel token for this bot from the `msteams` channel (see "Inbound tokens" below). The reason in brackets says which rule refused it. |
 | `tenant mismatch, dropping` in stderr | An activity arrived with a different `conversation.tenantId` than the configured pin. Expected in MultiTenant mode if mis-configured; investigate in SingleTenant mode. |
 | Bot says "Pairing required" repeatedly | After the initial DM + one reminder, the bot stops. The operator must run `/teams:access` and approve via `approve_pair <pair_id> <code>`. If the user never got a "Paired" confirm DM, ask them to send a fresh DM, that re-seeds the conversation reference. |
 | Stderr is silent | Look at `~/.claude/debug/<session-id>.txt`. Channel plugins inherit stderr to Claude Code's debug log. |
