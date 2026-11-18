@@ -152,23 +152,25 @@ and download/skip lines described below. Without it, none of that runs.
 
 In a 1:1 chat Teams attaches the file to the message, and the plugin downloads
 it from the short-lived URL in the attachment. In a **team channel** or a
-**group chat** it does not — the message the bot receives only carries an
+**group chat** it does not: the message the bot receives only carries an
 `<attachment id="…">` placeholder in an HTML part. To get the file the plugin
 reads the message back through Microsoft Graph and then downloads the file from
 SharePoint / OneDrive, which needs two permissions on top of the ones above:
 
-- **Reading the message** — the resource-specific consent (RSC) permissions already
-  in the manifest: `ChannelMessage.Read.Group` for a team channel,
-  `ChatMessage.Read.Chat` for a group chat. RSC consent is granted per team / per
+- **Reading the message**: the resource-specific consent (RSC) permissions
+  `ChannelMessage.Read.Group` for a team channel and `ChatMessage.Read.Chat` for a
+  group chat. They are **not** in the base manifest: only the manifest option
+  `--rsc-all-messages` of `scripts/make-teams-manifest.sh` adds them, so build the
+  app package with that option. RSC consent is granted per team / per
   chat when the app is added there and authorizes only that team or chat, so Graph
   read-back works in conversations the bot is already installed in, not across
   the tenant.
-- **Downloading the file** — the Microsoft Graph **application** permission
+- **Downloading the file**: the Microsoft Graph **application** permission
   `Files.Read.All`, granted with admin consent on the bot's app registration
   (*App registrations* → *API permissions*). This is an application permission,
   so it lets the app read files across the tenant, not just files in
   conversations the bot is in. Grant it only if that is acceptable for your
-  tenant — without it everything else keeps working.
+  tenant: without it, everything else keeps working.
 
 Without `Files.Read.All` the agent still sees the message, with a line like:
 
@@ -178,7 +180,7 @@ Without `Files.Read.All` the agent still sees the message, with a line like:
 
 Because `Files.Read.All` is an application permission that reads files across the
 whole tenant, the plugin does **not** download any file the Graph share link
-points at — only a file the conversation already shares:
+points at, only a file the conversation already shares:
 
 - in a **team channel**, the file has to be inside that channel's files folder
   (the folder behind the *Files* tab), sub-folders included up to 8 levels
@@ -191,8 +193,8 @@ A sub-folder inside the channel folder that has its own, narrower permissions is
 still readable by the app (it is an application permission), so do not keep
 restricted files under a channel folder that a team member could reference.
 
-Any other SharePoint link — pasted from another team's channel, from someone
-else's OneDrive, from anywhere in the tenant — is not fetched. Without that
+Any other SharePoint link, pasted from another team's channel, from someone
+else's OneDrive or from anywhere in the tenant, is not fetched. Without that
 check a sender could paste a link and have the bot read out any tenant file the
 bot's app registration can reach. The agent still sees the message, with a line
 saying why the file was left alone:
