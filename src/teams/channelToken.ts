@@ -29,7 +29,7 @@ export const CHANNEL_TOKEN_ISSUER = 'https://api.botframework.com'
 export const CHANNEL_OPENID_METADATA_URL = 'https://login.botframework.com/v1/.well-known/openidconfiguration'
 export const REQUIRED_CHANNEL = 'msteams'
 export const CLOCK_SKEW_S = 300
-/** Keys are kept this long; an unknown kid refetches at most once per REFETCH_MIN_MS. */
+/** Keys are kept this long; an unknown kid, and a fetch after a failed one, refetch at most once per REFETCH_MIN_MS. */
 export const KEYS_TTL_MS = 24 * 60 * 60 * 1000
 export const REFETCH_MIN_MS = 5 * 60 * 1000
 
@@ -64,6 +64,9 @@ export function createChannelTokenVerifier(appId: string, deps: ChannelTokenDeps
   const metadataUrl = deps.metadataUrl ?? CHANNEL_OPENID_METADATA_URL
   let keys = new Map<string, CachedKey>()
   let fetchedAt = -Infinity
+  // R1 (Dani, #55 review): the time of the last FAILED fetch. Without it, every request that passes the cheap claims
+  // during an outage would start a new outbound fetch.
+  let failedAt = -Infinity
 
   async function loadKeys(): Promise<void> {
     const metaRes = await doFetch(metadataUrl)
@@ -90,7 +93,19 @@ export function createChannelTokenVerifier(appId: string, deps: ChannelTokenDeps
 
   async function keyFor(kid: string): Promise<CachedKey | undefined> {
     const age = now() - fetchedAt
-    if (age > KEYS_TTL_MS || (!keys.has(kid) && age > REFETCH_MIN_MS)) await loadKeys()
+    const stale = age > KEYS_TTL_MS
+    if (stale || (!keys.has(kid) && age > REFETCH_MIN_MS)) {
+      if (now() - failedAt < REFETCH_MIN_MS) {
+        if (stale) throw new Error('signing keys unavailable (a recent fetch failed)')
+        return keys.get(kid)
+      }
+      try {
+        await loadKeys()
+      } catch (err) {
+        failedAt = now()
+        throw err
+      }
+    }
     return keys.get(kid)
   }
 

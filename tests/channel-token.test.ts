@@ -152,6 +152,36 @@ describe('channel-token-only verifier', () => {
   })
 })
 
+describe('a failed key fetch is not retried on every request (R1, Dani on #55)', () => {
+  test('after a failure, no new fetch inside REFETCH_MIN_MS; after it, one', async () => {
+    let now = NOW
+    let calls = 0
+    const down = (async () => { calls++; return new Response('x', { status: 503 }) }) as unknown as typeof fetch
+    const verify = createChannelTokenVerifier(APP, { fetch: down, now: () => now })
+    expect(await verify(`Bearer ${token()}`, activity())).toEqual({ ok: false, reason: 'signing keys unavailable' })
+    expect(calls).toBe(1)
+    for (let i = 0; i < 5; i++) expect(await verify(`Bearer ${token()}`, activity())).toEqual({ ok: false, reason: 'signing keys unavailable' })
+    expect(calls).toBe(1)
+    now += REFETCH_MIN_MS + 1
+    await verify(`Bearer ${token({ exp: Math.floor(now / 1000) + 3600 })}`, activity())
+    expect(calls).toBe(2)
+  })
+  test('an unknown kid after a failed refresh keeps the cached keys and starts no fetch inside the window', async () => {
+    let now = NOW
+    let fail = false
+    const k = keysFetch()
+    const flaky = (async (u: unknown) => (fail ? new Response('x', { status: 503 }) : (k.f as unknown as (a: unknown) => Promise<Response>)(u))) as unknown as typeof fetch
+    const verify = createChannelTokenVerifier(APP, { fetch: flaky, now: () => now })
+    expect((await verify(`Bearer ${token()}`, activity())).ok).toBe(true)
+    fail = true
+    now += REFETCH_MIN_MS + 1
+    const later = { exp: Math.floor(now / 1000) + 3600 }
+    expect(await verify(`Bearer ${token(later, { kid: 'k9' })}`, activity())).toEqual({ ok: false, reason: 'signing keys unavailable' })
+    expect(await verify(`Bearer ${token(later, { kid: 'k9' })}`, activity())).toEqual({ ok: false, reason: 'unknown signing key' })
+    expect((await verify(`Bearer ${token(later)}`, activity())).ok).toBe(true)
+  })
+})
+
 describe('POST /api/messages: the verifier runs before CloudAdapter', () => {
   const body = JSON.stringify(activity())
   function req(auth?: string) {
