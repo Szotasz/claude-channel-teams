@@ -62,6 +62,7 @@ import { meetingFromInfo, type MeetingStore } from './meetingTranscripts.js'
 import { withHeldContext, type FilterDecision, type HeldMessages, type UnmentionedFilter } from './unmentionedFilter.js'
 import { messageActionFrom } from './messageAction.js'
 import type { ChannelTokenVerifier } from './channelToken.js'
+import { isApprovalCardInvoke, type ApprovalForwarder } from './approvalCard.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -1348,7 +1349,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
  */
 export async function handleMessagesPost(
   req: Request,
-  deps: { adapter: CloudAdapter; inboundAuth: ChannelTokenVerifier },
+  deps: { adapter: CloudAdapter; inboundAuth: ChannelTokenVerifier; approvalCard: ApprovalForwarder },
   turn: ActivityTurn,
 ): Promise<Response> {
   const { adapter } = deps
@@ -1376,6 +1377,17 @@ export async function handleMessagesPost(
   if (!auth.ok) {
     process.stderr.write(`teams channel: 401 inbound request refused before the SDK (${auth.reason})\n`)
     return new Response('unauthorized', { status: 401, headers: { 'content-type': 'text/plain' } })
+  }
+  // TEAMSAPPROVECARD1118: a click on a Marveen approval card is the dashboard's to decide, never the agent's. It is
+  // taken here, after the channel-token check and before CloudAdapter and the turn handler (so before onEvent), and
+  // answered with the card the dashboard returns (approvalCard.ts). The invoke response body is what the SDK would
+  // write for an invokeResponse: { statusCode, type, value }.
+  if (isApprovalCardInvoke(botReq.body)) {
+    const card = await deps.approvalCard(botReq.headers['authorization'], botReq.body)
+    return new Response(JSON.stringify({ statusCode: 200, type: ADAPTIVE_CARD_CONTENT_TYPE, value: card }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
   }
   const { res, done } = makeResponseSink()
   // Hand the request to CloudAdapter. The SDK validates the JWT, parses
@@ -1410,7 +1422,7 @@ export interface RunningListener {
  *                         (Caddy / nginx / Cloudflare Tunnel) forwards here.
  *   GET  /health        — Unauthenticated liveness. Returns "ok".
  */
-export function startListener(deps: AdapterDeps & { inboundAuth: ChannelTokenVerifier }): RunningListener {
+export function startListener(deps: AdapterDeps & { inboundAuth: ChannelTokenVerifier; approvalCard: ApprovalForwarder }): RunningListener {
   const { config, adapter } = deps
   const turn = makeEarlyAckTurn(makeTurnHandler(deps))
 

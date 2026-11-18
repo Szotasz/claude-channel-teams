@@ -7,6 +7,12 @@
  */
 
 export const ADAPTIVE_CARD_CONTENT_TYPE = 'application/vnd.microsoft.card.adaptive'
+/**
+ * The verb of the Marveen dashboard's approval-card buttons (TEAMSAPPROVECARD1118, approvalCard.ts). A click with it is
+ * forwarded to the dashboard and never reaches Claude, so a model-supplied card may not use it: such a button would be
+ * taken for an approval click, and an agent could make the owner click a card it wrote.
+ */
+export const APPROVAL_CARD_VERB = 'marveen-approval'
 export const MAX_CARD_CHARS = 28000
 
 const MAX_DEPTH = 32
@@ -31,6 +37,7 @@ function walk(value: unknown, path: string, depth: number): string | undefined {
   for (const [key, child] of Object.entries(value)) {
     const childPath = path ? `${path}.${key}` : key
     if (key === 'refresh') return `card.${childPath} is a refresh, which fires without a click`
+    if (key === 'verb' && child === APPROVAL_CARD_VERB) return `card.${childPath} uses the reserved verb ${APPROVAL_CARD_VERB}`
     if (key === 'msteams' && isPlainObject(child) && typeof child.type === 'string' && POSTBACK_MSTEAMS_TYPES.has(child.type)) {
       return `card.${childPath} is an msteams ${child.type} action, which would post text as the user`
     }

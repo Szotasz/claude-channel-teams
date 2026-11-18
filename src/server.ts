@@ -45,6 +45,7 @@ import { join } from 'path'
 import { channelEventsWarning, loadConfig, meetingEventsWarning } from './config.js'
 import { createCloudAdapter } from './teams/auth.js'
 import { createChannelTokenVerifier } from './teams/channelToken.js'
+import { createApprovalForwarder, parseApprovalUrl } from './teams/approvalCard.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
 import { createReplySender, parseQuoteArg, parseReplyFormat } from './teams/reply.js'
@@ -449,7 +450,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string', description: 'Message text. Teams renders this as markdown (bold, italic, headers, lists, links, inline code, code blocks, blockquotes).' },
           card: {
             type: 'object',
-            description: 'Optional Adaptive Card (type "AdaptiveCard", version 1.0 to 1.5, at most 28000 characters as JSON, https links and images only), sent below the text. Use it for structured content; keep text as a one-line summary. Action.Submit and Action.Execute buttons come back as a [Card action] message with card_action and action_verb attributes; msteams imBack / messageBack / signin actions are refused. A people picker is an Input.ChoiceSet with "choices.data": {"type": "Data.Query", "dataset": "graph.microsoft.com/users?scope=currentContext"} (the people in this conversation) and an id; the selected people\'s Entra ids come back in the card action data under that id, comma-separated when isMultiSelect is true. An Action.Submit button whose data has "msteams": {"type": "task/fetch"} and "dialog": {"card": <an Adaptive Card>, "title"?, "width"?, "height"?: small|medium|large} opens that card as a dialog; the submitted values come back as a [Dialog submit] message with card_action="dialog".',
+            description: 'Optional Adaptive Card (type "AdaptiveCard", version 1.0 to 1.5, at most 28000 characters as JSON, https links and images only), sent below the text. Use it for structured content; keep text as a one-line summary. Action.Submit and Action.Execute buttons come back as a [Card action] message with card_action and action_verb attributes; msteams imBack / messageBack / signin actions are refused, and so is the verb marveen-approval (reserved for the approval cards the Marveen dashboard sends itself). A people picker is an Input.ChoiceSet with "choices.data": {"type": "Data.Query", "dataset": "graph.microsoft.com/users?scope=currentContext"} (the people in this conversation) and an id; the selected people\'s Entra ids come back in the card action data under that id, comma-separated when isMultiSelect is true. An Action.Submit button whose data has "msteams": {"type": "task/fetch"} and "dialog": {"card": <an Adaptive Card>, "title"?, "width"?, "height"?: small|medium|large} opens that card as a dialog; the submitted values come back as a [Dialog submit] message with card_action="dialog".',
           },
           user_cards: {
             type: 'array',
@@ -1110,6 +1111,8 @@ const listener = startListener({
   adapter,
   // TEAMSEMUTOKEN1118: only Bot Framework channel tokens reach the SDK (channelToken.ts).
   inboundAuth: createChannelTokenVerifier(config.appId),
+  // TEAMSAPPROVECARD1118: Marveen approval-card clicks go to the dashboard, never to this session (approvalCard.ts).
+  approvalCard: createApprovalForwarder({ url: parseApprovalUrl(process.env.MARVEEN_APPROVAL_URL), tenantId: config.tenantId, isAllowed: (id) => allowlist.isAllowed(id) }),
   allowlist,
   refs,
   channelRefs,
