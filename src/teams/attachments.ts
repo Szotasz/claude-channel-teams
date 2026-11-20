@@ -31,6 +31,24 @@
  *      fetched; see richContent.ts. An HTML part that only repeats the
  *      message's own text is ignored.
  *
+ *   4. An HTML part that is ignored (it holds only images, or only repeats
+ *      the text) on a message WITHOUT an image/* attachment of its own: its
+ *      `<img src>` URLs (at most MAX_HTML_IMAGES) on a host that
+ *      isAllowedInlineImageHost allows go through shape 2, the inline-image
+ *      branch (which checks the host again before it asks for the token). A
+ *      foreign host is neither requested nor noted. When an image/*
+ *      attachment is present it already carries the image, so nothing is
+ *      fetched twice. (TEAMSIMGEMPTY1120: such a message used to reach the
+ *      agent as a 0-character event.)
+ *
+ * Manifest: the generated manifest (scripts/make-teams-manifest.sh) sets
+ * `supportsFiles: true` on the bot; the hand-written template in
+ * docs/azure-setup.md has `false`. Nothing in this repo (code, docs, tests)
+ * establishes whether a personal chat needs any permission or manifest field
+ * beyond `supportsFiles: true` for inbound files and images; Microsoft's
+ * Teams platform page on sending and receiving files with bots is the
+ * source to check.
+ *
  * Anything else is logged and skipped with an annotation so Hermes can tell
  * the user the bot ignored that bit.
  *
@@ -39,11 +57,11 @@
  * same — no MCP schema changes — Hermes reads the path out of the text.
  */
 
-import { mkdirSync, renameSync, statSync, writeFileSync, existsSync, copyFileSync, constants, unlinkSync } from 'fs'
+import { mkdirSync, renameSync, statSync, writeFileSync, existsSync, copyFileSync, constants, unlinkSync, openSync, readSync, closeSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import type { Attachment } from 'botframework-schema'
-import { CARD_CONTENT_TYPES, capInline, cardToText, comparableHtml, comparableMessage, htmlToText, neutralizeMarkup } from './richContent.js'
+import { CARD_CONTENT_TYPES, MAX_HTML_INPUT_CHARS, capInline, cardToText, comparableHtml, comparableMessage, decodeEntities, htmlToText, neutralizeMarkup } from './richContent.js'
 
 /** 50 MB cap per file. Anything larger is skipped with an annotation. */
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
@@ -53,6 +71,77 @@ export const DOWNLOAD_TIMEOUT_MS = 30_000
 
 const TEAMS_FILE_DOWNLOAD_CONTENT_TYPE =
   'application/vnd.microsoft.teams.file.download.info'
+
+/** At most this many `<img>` sources are taken from one HTML part (shape 4). */
+export const MAX_HTML_IMAGES = 10
+
+/** Content type given to an `<img>` taken from an HTML part: it declares none, the bytes decide (sniffImageType). */
+const HTML_IMAGE_CONTENT_TYPE = 'image/*'
+
+/**
+ * The `src` URLs of the `<img>` tags in an HTML part, entity-decoded, without duplicates, at most MAX_HTML_IMAGES.
+ * Forward-only scan (every search moves on from the last position), so the cost stays linear in the input.
+ */
+export function htmlImageSources(html: string): string[] {
+  const input = html.slice(0, MAX_HTML_INPUT_CHARS)
+  // ASCII-only case fold keeps offsets in `lower` valid on `input` (see richContent.ts render).
+  const lower = input.replace(/[A-Z]+/g, (u) => u.toLowerCase())
+  const out: string[] = []
+  let i = 0
+  while (out.length < MAX_HTML_IMAGES) {
+    const at = lower.indexOf('<img', i)
+    if (at < 0) break
+    const next = lower.charAt(at + 4)
+    if (next !== '>' && next !== '/' && !/\s/.test(next)) {
+      i = at + 4
+      continue
+    }
+    const gt = input.indexOf('>', at + 4)
+    if (gt < 0) break
+    const m = /(?:^|\s)src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(input.slice(at + 4, gt))
+    i = gt + 1
+    const src = m ? decodeEntities(m[1] ?? m[2] ?? m[3] ?? '').trim() : ''
+    if (src && !out.includes(src)) out.push(src)
+  }
+  return out
+}
+
+/** Image type from a file's first bytes (PNG, JPEG, GIF, WebP), or undefined. */
+function sniffImageType(path: string): string | undefined {
+  const b = Buffer.alloc(12)
+  const fd = openSync(path, 'r')
+  let n: number
+  try {
+    n = readSync(fd, b, 0, 12, 0)
+  } finally {
+    closeSync(fd)
+  }
+  if (n >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png'
+  if (n >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg'
+  if (n >= 4 && b.toString('latin1', 0, 4) === 'GIF8') return 'image/gif'
+  if (n >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'image/webp'
+  return undefined
+}
+
+/**
+ * Attachment count and content types of an inbound activity, for the log line and the empty-message note. A type
+ * that does not look like a plain MIME type (it is sender-controlled, so it could carry a URL) becomes "other".
+ */
+export function attachmentSummary(attachments: unknown): { count: number; types: string[] } {
+  const list = Array.isArray(attachments) ? attachments : []
+  const types = list.slice(0, 20).map((a) => {
+    const t = (a as { contentType?: unknown } | null)?.contentType
+    return typeof t === 'string' && t.length <= 100 && /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9*][a-z0-9.+*-]*$/i.test(t) ? t : 'other'
+  })
+  return { count: list.length, types }
+}
+
+/** The text an inbound message carries when nothing in it could be read, so the event is never 0 characters. */
+export function emptyMessageNote(attachments: unknown): string {
+  const { count, types } = attachmentSummary(attachments)
+  if (count === 0) return '[Teams message with no text and no attachment]'
+  return `[Teams message with no text: ${count} attachment${count === 1 ? '' : 's'} arrived (${types.join(', ')}), none could be read]`
+}
 
 // The temp file lives under the OS temp directory, which can be another
 // filesystem than the state directory, and rename cannot cross filesystems.
@@ -392,9 +481,13 @@ export async function processOne(
         fetchImpl,
       )
       mkdirSync(dateDir, { recursive: true, mode: 0o700 })
+      // An <img> taken from an HTML part (shape 4) declares no type: the bytes decide, unknown ones stay .bin.
+      const contentType = att.contentType === HTML_IMAGE_CONTENT_TYPE
+        ? (sniffImageType(tempPath) ?? 'application/octet-stream')
+        : att.contentType
       // Inline images often arrive without a friendly filename. Synthesise
       // one from the contentType if needed.
-      const ext = att.contentType.split('/')[1] ?? 'bin'
+      const ext = contentType === 'application/octet-stream' ? 'bin' : (contentType.split('/')[1] ?? 'bin')
       const fallback = `image.${ext}`
       const name = declaredName === 'file' ? fallback : declaredName
       const finalPath = pickPath(dateDir, prefix, name)
@@ -402,7 +495,7 @@ export async function processOne(
       return {
         kind: 'saved',
         path: finalPath,
-        contentType: att.contentType,
+        contentType,
         sizeBytes,
         originalName: name,
       }
@@ -460,8 +553,26 @@ export async function processAttachments(
   const dateDir = join(deps.baseDir, date)
 
   const results: AttachmentResult[] = []
+  // Shape 4: an image/* attachment already carries the picture, so the <img> in an HTML copy is not fetched again.
+  const hasImagePart = attachments.some((a) => typeof a.contentType === 'string' && a.contentType.startsWith('image/'))
   for (const att of attachments) {
     const result = await processOne(att, prefix, dateDir, deps)
+    report(result)
+    results.push(result)
+    if (result.kind === 'ignored' && att.contentType === 'text/html' && !hasImagePart) {
+      // Only allowlisted hosts: the bot token goes nowhere else (the inline-image branch checks again). A foreign
+      // host is neither requested nor noted, as before; an otherwise empty message still gets the empty-message note.
+      for (const src of htmlImageSources(typeof att.content === 'string' ? att.content : '').filter(isAllowedInlineImageHost)) {
+        const image = await processOne({ contentType: HTML_IMAGE_CONTENT_TYPE, contentUrl: src } as Attachment, prefix, dateDir, deps)
+        report(image)
+        results.push(image)
+      }
+    }
+  }
+  return { annotations: results.map(formatAnnotation).filter((a) => a.length > 0), results }
+}
+
+function report(result: AttachmentResult): void {
     if (result.kind === 'skipped' || result.kind === 'failed') {
       process.stderr.write(
         `teams channel: attachment ${result.kind} — ${result.originalName}: ${result.reason}\n`,
@@ -479,9 +590,6 @@ export async function processAttachments(
         `teams channel: attachment saved — ${result.path} (${formatBytes(result.sizeBytes)})\n`,
       )
     }
-    results.push(result)
-  }
-  return { annotations: results.map(formatAnnotation).filter((a) => a.length > 0), results }
 }
 
 /**
