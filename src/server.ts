@@ -48,7 +48,7 @@ import { createChannelTokenVerifier } from './teams/channelToken.js'
 import { createApprovalForwarder, parseApprovalUrl } from './teams/approvalCard.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
 import { channelEventMeta, startListener, type ChannelEventSink } from './teams/adapter.js'
-import { createReplySender, parseQuoteArg, parseReplyFormat } from './teams/reply.js'
+import { createReplySender, parseQuoteArg, parseReplyFormat, parseTargetedMessageId } from './teams/reply.js'
 import { createConversationRefStore, isPersonalReference } from './teams/conversationRefs.js'
 import { createChannelRefStore } from './teams/channelRefs.js'
 import { createChannelPoster } from './teams/channelPost.js'
@@ -62,6 +62,7 @@ import {
   selectPromptConversation,
   type PromptDelivery,
 } from './teams/targeted.js'
+import { createTargetedInbound } from './teams/targetedInbound.js'
 import { createTypingPump } from './teams/typingPump.js'
 import { createOutbox } from './teams/outbox.js'
 import { withSendRetry, sendTracker, SHUTDOWN_SEND_WAIT_MS } from './teams/sendRetry.js'
@@ -90,6 +91,8 @@ import {
 } from './teams/planner.js'
 import { createMeetingStore, fetchTranscript, resolveTranscriptRequest, transcriptResultText, transcriptTools } from './teams/meetingTranscripts.js'
 import { channelTools, createChannel, validateCreateChannelArgs } from './teams/channels.js'
+import { makePairingDmSender } from './teams/pairing-dm.js'
+import { type ConversationParameters, type TurnContext } from 'botbuilder'
 import { MicrosoftAppCredentials } from 'botframework-connector'
 
 // Crash safety — without these the process can die silently on any
@@ -199,6 +202,9 @@ const mcp = new Server(
       'In a channel or group chat the tag also carries mentioned="true" or "false". mentioned="false" means the message was NOT addressed to you (the operator opted that conversation in so you can follow it): reply only when you are clearly expected to.',
       '',
       'A tag with message_event="edited", "restored" or "deleted" is about an earlier message (message_id); edited/restored carry its new text. message_event="reaction" is a user\'s emoji reaction to that message. Neither is a new request.',
+      config.targetedMessages
+        ? 'A tag with targeted="true" is a private message only you and the sender see (for example a slash command). Answer it with the reply tool and pass its message_id as targeted_message_id, so the answer is private too.'
+        : 'A tag with targeted="true" is a private message only you and the sender see (for example a slash command). This bot cannot answer privately (TEAMS_TARGETED_MESSAGES is off): reply publicly with public: true only when the sender would clearly be fine with everyone seeing the answer.',
       '',
       ...(config.meetingEvents
         ? [
@@ -299,7 +305,8 @@ const acks = config.ackText
 const knownUsers = createKnownUsers()
 const userViews = createUserViewStore()
 const seenMessages = createSeenMessages()
-const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews, seenMessages, feedback: config.feedback })
+const targetedInbound = createTargetedInbound()
+const replier = createReplySender({ config, adapter, allowlist, refs, typingPump, statusStreams, acks, knownUsers, userViews, seenMessages, targetedInbound, feedback: config.feedback })
 const channelPoster = createChannelPoster({ config, adapter, allowlist, refs, channelRefs })
 const directMessenger = createDirectMessenger({ config, adapter, allowlist, refs, replier })
 const teamGroups = createTeamGroupStore()
@@ -321,6 +328,7 @@ const sendFile = createFileSender({
         folder: config.sharePoint.folder,
       })
     : undefined,
+  targetedInbound,
 })
 
 /**
@@ -492,6 +500,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'Optional. extendedmarkdown lets Teams render tables, task lists and block quotes; omitted or null means markdown.',
           },
           quote_message_id: { type: 'string', description: 'Optional. The message_id of a message in THIS conversation to quote above the reply (an inbound message_id, or a message this bot sent here since the plugin started); Teams shows it as a preview bubble. Other ids are refused.' },
+          targeted_message_id: {
+            type: 'string',
+            description: 'message_id of an inbound tag with targeted="true": the reply is then shown only to that sender',
+          },
+          public: {
+            type: 'boolean',
+            description: 'post publicly even though the latest message in this conversation was a private (targeted) one',
+          },
         },
         required: ['conversation_id', 'text'],
       },
@@ -552,6 +568,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Optional message text shown alongside the card.',
           },
+          public: {
+            type: 'boolean',
+            description: 'post publicly even though the latest message in this conversation was a private (targeted) one',
+          },
         },
         required: ['conversation_id'],
       },
@@ -578,6 +598,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             enum: ['markdown', 'extendedmarkdown'],
             description: 'Optional. extendedmarkdown lets Teams render tables, task lists and block quotes; omitted or null means markdown.',
+          },
+          public: {
+            type: 'boolean',
+            description: 'edit publicly even though the latest message in this conversation was a private (targeted) one',
           },
         },
         required: ['conversation_id', 'message_id', 'text'],
@@ -753,13 +777,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         const format = parseReplyFormat(args.format)
         const quoteMessageId = parseQuoteArg(args.quote_message_id)
-        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown' || quoteMessageId !== undefined
+        const targetedMessageId = parseTargetedMessageId(args.targeted_message_id)
+        const isPublic = args.public === true
+        const id = aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown' || quoteMessageId !== undefined || targetedMessageId !== undefined || isPublic
           ? await replier.sendReply(conversationId, text, card, {
               ...(aiGenerated ? { aiGenerated } : {}),
               ...(rawCitations !== undefined ? { citations: rawCitations } : {}),
               ...(rawUserCards !== undefined ? { userCards: rawUserCards } : {}),
               ...(format !== 'markdown' ? { format } : {}),
               ...(quoteMessageId !== undefined ? { quoteMessageId } : {}),
+              ...(targetedMessageId !== undefined ? { targetedMessageId } : {}),
+              ...(isPublic ? { public: true } : {}),
             })
           : card !== undefined
             ? await replier.sendReply(conversationId, text, card)
@@ -832,6 +860,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           filename,
           mime,
           caption,
+          ...(args.public === true ? { public: true } : {}),
         })
         return {
           content: [
@@ -857,7 +886,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           throw new Error('edit_message requires a non-empty text string')
         }
         const format = parseReplyFormat(args.format)
-        await replier.editReply(conversationId, messageId, text, format)
+        await replier.editReply(conversationId, messageId, text, format, args.public === true)
         return { content: [{ type: 'text', text: `edited (conv=${conversationId}, id=${messageId})` }] }
       }
 
@@ -1079,7 +1108,8 @@ const onEvent: ChannelEventSink = event => {
     .then(() => {
       process.stderr.write('teams channel: notify ok\n')
       // Only a message that reached Claude gets an acknowledgement; a meeting event, a feedback click, or a channel event is not one.
-      if (acks && !event.messageEvent && !event.meetingEvent && !event.feedback && !event.channelEvent && event.mentioned !== false) acks.arm(event.conversationId)
+      // A private (targeted) message gets none: the acknowledgement is a public post in the shared conversation.
+      if (acks && !event.messageEvent && !event.meetingEvent && !event.feedback && !event.channelEvent && event.mentioned !== false && !event.targeted) acks.arm(event.conversationId)
     })
     .catch(err => {
       // Notifications are fire-and-forget per the channels reference. We log
@@ -1118,6 +1148,7 @@ const listener = startListener({
   channelRefs,
   seenMessages,
   onEvent: inboundDebouncer.push,
+  targetedInbound,
   pending,
   permission,
   typingPump,
@@ -1135,9 +1166,52 @@ const listener = startListener({
   feedback: config.feedback,
   sendPairingTargeted: sendTargeted,
   channelEvents: config.channelEvents,
-  sendPairingDm: async (ref, text) => {
-    await sendActivityRaw(ref, text)
-  },
+  // Owner decision (Teams #21): the gated pairing hint reaches the triggering
+  // member as a 1:1 message only. A personal reference is answered in place;
+  // a shared one gets a bot-initiated 1:1 opened for the member — never a
+  // reply into the channel, not even as a fallback when the 1:1 fails.
+  sendPairingDm: makePairingDmSender({
+    sendActivityRaw,
+    isPersonal: isPersonalReference,
+    createConversation: (ref, logic) => {
+      // Prefer the Entra object id (aadObjectId); the 29:... Teams user id
+      // works too when the AAD id is missing from the activity.
+      const aadObjectId = ref.user?.aadObjectId
+      const memberId = typeof aadObjectId === 'string' && aadObjectId.length > 0
+        ? aadObjectId
+        : ref.user?.id
+      if (typeof memberId !== 'string' || memberId.length === 0) {
+        throw new Error('pairing DM: no member id on the conversation reference')
+      }
+      const serviceUrl = ref.serviceUrl
+      if (typeof serviceUrl !== 'string' || serviceUrl.length === 0) {
+        throw new Error('pairing DM: no service URL on the conversation reference')
+      }
+      // The tenant the conversation happened in, else the configured one.
+      const tenantId = ref.conversation?.tenantId ?? config.tenantId
+      return adapter.createConversationAsync(
+        config.appId,
+        'msteams',
+        serviceUrl,
+        // null/undefined audience = the connector's default Bot Framework scope
+        undefined as unknown as string,
+        {
+          isGroup: false,
+          bot: { id: config.appId },
+          // Teams accepts the Entra object id here, personal scope only
+          members: [{ id: memberId }],
+          tenantId,
+          channelData: { tenant: { id: tenantId } },
+        } as ConversationParameters,
+        // The new conversation reference is deliberately NOT stored: pairing
+        // continues when the member writes to the bot 1:1, and that inbound
+        // path stores its own reference.
+        async (turnContext: TurnContext) => {
+          await logic({ sendActivity: (text: string) => turnContext.sendActivity(text) })
+        },
+      )
+    },
+  }),
   attachments: async (atts, fromName, messageText) =>
     processAttachments(atts, fromName, {
       baseDir: config.receivedFilesDir,
