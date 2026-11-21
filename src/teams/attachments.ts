@@ -336,11 +336,11 @@ export function shown(s: string): string {
  *
  * Failed ones look like:
  *
- *   [Attachment failed: report.pdf — connection timeout]
+ *   [Attachment failed: report.pdf: connection timeout]
  *
  * Skipped (size cap, unsupported type) look like:
  *
- *   [Attachment skipped: report.pdf — exceeds 50 MB limit]
+ *   [Attachment skipped: report.pdf: exceeds 50 MB limit]
  */
 export function formatAnnotation(result: AttachmentResult): string {
   if (result.kind === 'inline') return `[${result.label}]\n${result.text}`
@@ -349,9 +349,9 @@ export function formatAnnotation(result: AttachmentResult): string {
     return `[Attached: ${result.path} (${result.contentType}, ${formatBytes(result.sizeBytes)})]`
   }
   if (result.kind === 'skipped') {
-    return `[Attachment skipped: ${shown(result.originalName)} — ${result.reason}]`
+    return `[Attachment skipped: ${shown(result.originalName)}: ${result.reason}]`
   }
-  return `[Attachment failed: ${shown(result.originalName)} — ${result.reason}]`
+  return `[Attachment failed: ${shown(result.originalName)}: ${result.reason}]`
 }
 
 /**
@@ -380,7 +380,7 @@ export function writeAll(
  * know the download succeeded).
  *
  * The body is streamed chunk by chunk so memory stays bounded whatever the
- * sender pushes at us, and the temp file is created 0600 — it is world-readable
+ * sender pushes at us, and the temp file is created 0600; it is world-readable
  * otherwise, and it holds a file that has not been through the filename checks
  * yet. A declared Content-Length over the cap is refused without reading a
  * single byte of the body.
@@ -445,7 +445,7 @@ export async function saveResponseToTemp(
 
 /**
  * Fetch with a timeout, then hand the response to saveResponseToTemp so memory
- * stays bounded — important if a sender pushes a near-50 MB binary.
+ * stays bounded, important if a sender pushes a near-50 MB binary.
  */
 export async function downloadToTemp(
   url: string,
@@ -626,19 +626,19 @@ export async function processOne(
 export function logAttachmentResult(result: AttachmentResult): void {
   if (result.kind === 'skipped' || result.kind === 'failed') {
     process.stderr.write(
-      `teams channel: attachment ${result.kind} — ${result.originalName}: ${result.reason}\n`,
+      `teams channel: attachment ${result.kind}: ${result.originalName}: ${result.reason}\n`,
     )
   } else if (result.kind === 'inline') {
     process.stderr.write(
-      `teams channel: attachment inlined — ${result.originalName} (${result.label}, ${result.text.length} chars)\n`,
+      `teams channel: attachment inlined: ${result.originalName} (${result.label}, ${result.text.length} chars)\n`,
     )
   } else if (result.kind === 'ignored') {
     process.stderr.write(
-      `teams channel: attachment ignored — ${result.originalName}: ${result.reason}\n`,
+      `teams channel: attachment ignored: ${result.originalName}: ${result.reason}\n`,
     )
   } else {
     process.stderr.write(
-      `teams channel: attachment saved — ${result.path} (${formatBytes(result.sizeBytes)})\n`,
+      `teams channel: attachment saved: ${result.path} (${formatBytes(result.sizeBytes)})\n`,
     )
   }
 }

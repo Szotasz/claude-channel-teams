@@ -175,7 +175,7 @@ SharePoint / OneDrive, which needs two permissions on top of the ones above:
 Without `Files.Read.All` the agent still sees the message, with a line like:
 
 ```text
-[Attachment skipped: report.xlsx — the Teams app has no Microsoft Graph permission to read this file (HTTP 403); it needs the Files.Read.All application permission]
+[Attachment skipped: report.xlsx: the Teams app has no Microsoft Graph permission to read this file (HTTP 403); it needs the Files.Read.All application permission]
 ```
 
 Because `Files.Read.All` is an application permission that reads files across the
@@ -200,8 +200,8 @@ bot's app registration can reach. The agent still sees the message, with a line
 saying why the file was left alone:
 
 ```text
-[Attachment skipped: budget.xlsx — the file is not stored in this channel's files folder, so it is not downloaded]
-[Attachment skipped: budget.xlsx — the file is not in the sender's OneDrive, so it is not downloaded]
+[Attachment skipped: budget.xlsx: the file is not stored in this channel's files folder, so it is not downloaded]
+[Attachment skipped: budget.xlsx: the file is not in the sender's OneDrive, so it is not downloaded]
 ```
 
 ## What goes into `.env`

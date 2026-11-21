@@ -440,7 +440,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(annotations.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
     expect(annotations[0]).toBe(
-      '[Attachment skipped: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP 403); ' +
+      '[Attachment skipped: 1 shared file(s): could not read the message from Microsoft Graph (HTTP 403); ' +
         'the Teams app needs the ChannelMessage.Read.Group consent for this team]',
     )
     expect(f.calls.some(c => c.url.startsWith(`${GRAPH_V1}/shares/`))).toBe(false)
@@ -493,7 +493,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('failed')
-    expect(annotations[0]).toBe('[Attachment failed: report.xlsx — download redirect target is not allowed]')
+    expect(annotations[0]).toBe('[Attachment failed: report.xlsx: download redirect target is not allowed]')
     expect(f.calls.some(c => c.url === 'http://contoso.sharepoint.com/x')).toBe(false)
     expect(f.calls.length).toBe(4)
   })
@@ -579,7 +579,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('failed')
-    expect(annotations).toEqual(['[Attachment failed: shared file — fetch failed]'])
+    expect(annotations).toEqual(['[Attachment failed: shared file: fetch failed]'])
   })
 
   test('X3 a drive other than the channel files folder is skipped, nothing is downloaded', async () => {
@@ -592,7 +592,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
-    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_IN_FOLDER}]`])
     expect(f.calls.some(c => c.url.includes('/items/'))).toBe(false)
     expect(f.calls.some(c => c.url === DOWNLOAD_URL)).toBe(false)
   })
@@ -622,7 +622,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
       deps(f.fn, dir, { channelDriveCache: cache }),
     )
     expect(f.calls.filter(c => c.url.includes('/filesFolder')).length).toBe(1)
-    // message, drive item, content, hop — and no files-folder read
+    // message, drive item, content, hop, and no files-folder read
     expect(f.calls.length).toBe(before + 4)
   })
 
@@ -644,7 +644,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(results[0].kind).toBe('failed')
     expect(results[0].originalName).toBe('2 shared file(s)')
     expect(annotations).toEqual([
-      `[Attachment failed: 2 shared file(s) — could not read the channel's files folder (HTTP 500)]`,
+      `[Attachment failed: 2 shared file(s): could not read the channel's files folder (HTTP 500)]`,
     ])
     // one drive-item read (for the first reference), and no content at all
     expect(f.calls.filter(c => c.url.startsWith(`${GRAPH_V1}/shares/`)).length).toBe(1)
@@ -661,7 +661,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('failed')
     expect(annotations).toEqual([
-      `[Attachment failed: report.xlsx — could not read the channel's files folder (no drive id or folder id)]`,
+      `[Attachment failed: report.xlsx: could not read the channel's files folder (no drive id or folder id)]`,
     ])
 
     // the drive id is there, the folder's own id is not (missing, empty, not a string)
@@ -676,7 +676,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
       expect(r.results.length).toBe(1)
       expect(r.results[0].kind).toBe('failed')
       expect(r.annotations).toEqual([
-        `[Attachment failed: report.xlsx — could not read the channel's files folder (no drive id or folder id)]`,
+        `[Attachment failed: report.xlsx: could not read the channel's files folder (no drive id or folder id)]`,
       ])
       expect(cache.size).toBe(0)
       expect(noFolder.calls.some(c => c.url === contentUrl())).toBe(false)
@@ -702,7 +702,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(skipped.results.length).toBe(1)
     expect(skipped.results[0].kind).toBe('skipped')
     expect(skipped.annotations).toEqual([
-      `[Attachment skipped: report.xlsx — the file is not in the sender's OneDrive, so it is not downloaded]`,
+      `[Attachment skipped: report.xlsx: the file is not in the sender's OneDrive, so it is not downloaded]`,
     ])
     expect(other.calls.some(c => c.url.includes('/items/'))).toBe(false)
 
@@ -712,7 +712,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(noSender.results.length).toBe(1)
     expect(noSender.results[0].kind).toBe('skipped')
     expect(noSender.annotations).toEqual([
-      `[Attachment skipped: report.xlsx — the file is not in the sender's OneDrive, so it is not downloaded]`,
+      `[Attachment skipped: report.xlsx: the file is not in the sender's OneDrive, so it is not downloaded]`,
     ])
     expect(none.calls.some(c => c.url.startsWith(`${GRAPH_V1}/drives/`))).toBe(false)
   })
@@ -726,13 +726,13 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
     expect(annotations).toEqual([
-      `[Attachment skipped: report.xlsx — the Teams app has no Microsoft Graph permission to read the file's drive owner (HTTP 403)]`,
+      `[Attachment skipped: report.xlsx: the Teams app has no Microsoft Graph permission to read the file's drive owner (HTTP 403)]`,
     ])
 
     const g = fakeFetch(standardRoutes({ driveOwner: () => jsonResponse({ owner: { user: {} } }) }))
     const noOwner = await fetchSharedFiles(chatLookup(), SENDER, deps(g.fn, dir))
     expect(noOwner.results[0].kind).toBe('skipped')
-    expect(noOwner.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_ONEDRIVE}]`])
+    expect(noOwner.annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_ONEDRIVE}]`])
   })
 
   test('X7 the drive-item status mapping', async () => {
@@ -761,7 +761,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
       )
       expect(results.length).toBe(1)
       expect(results[0].kind).toBe(expected.kind)
-      expect(annotations).toEqual([`[Attachment ${expected.kind === 'skipped' ? 'skipped' : 'failed'}: report.xlsx — ${expected.reason}]`])
+      expect(annotations).toEqual([`[Attachment ${expected.kind === 'skipped' ? 'skipped' : 'failed'}: report.xlsx: ${expected.reason}]`])
       expect(f.calls.some(c => c.url.includes('/filesFolder'))).toBe(false)
     }
 
@@ -774,7 +774,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('failed')
     expect(annotations).toEqual([
-      '[Attachment failed: report.xlsx — Microsoft Graph returned no drive item for this file]',
+      '[Attachment failed: report.xlsx: Microsoft Graph returned no drive item for this file]',
     ])
   })
 
@@ -788,7 +788,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
     expect(annotations).toEqual([
-      `[Attachment skipped: report.xlsx — exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit]`,
+      `[Attachment skipped: report.xlsx: exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit]`,
     ])
     expect(formatBytes(MAX_ATTACHMENT_BYTES)).toBe('50.0 MB')
     expect(f.calls.some(c => c.url.includes('/items/'))).toBe(false)
@@ -809,14 +809,14 @@ describe('sharedFiles: fetchSharedFiles', () => {
     }
 
     // a relative Location is resolved against the content URL's origin, which
-    // is Graph, not SharePoint — so it is refused and never fetched
+    // is Graph, not SharePoint, so it is refused and never fetched
     const relative = fakeFetch(
       standardRoutes({ content: () => new Response(null, { status: 302, headers: { location: '/sites/x/a.xlsx' } }) }),
     )
     const rel = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(relative.fn, dir))
     expect(rel.results[0].kind).toBe('failed')
     expect(rel.annotations).toEqual([
-      '[Attachment failed: report.xlsx — download redirect target is not allowed]',
+      '[Attachment failed: report.xlsx: download redirect target is not allowed]',
     ])
     expect(relative.calls.some(c => c.url === 'https://graph.microsoft.com/sites/x/a.xlsx')).toBe(false)
 
@@ -825,14 +825,14 @@ describe('sharedFiles: fetchSharedFiles', () => {
     )
     const cred = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(userinfo.fn, dir))
     expect(cred.annotations).toEqual([
-      '[Attachment failed: report.xlsx — download redirect target is not allowed]',
+      '[Attachment failed: report.xlsx: download redirect target is not allowed]',
     ])
     expect(userinfo.calls.some(c => c.url.includes('u:p@'))).toBe(false)
 
     const evil = fakeFetch(standardRoutes({ download: () => new Response(null, { status: 302, headers: { location: 'https://evil.example.com/x' } }) }))
     const ev = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(evil.fn, dir))
     expect(ev.annotations).toEqual([
-      '[Attachment failed: report.xlsx — download redirect target is not allowed]',
+      '[Attachment failed: report.xlsx: download redirect target is not allowed]',
     ])
     expect(evil.calls.some(c => c.url.includes('evil.example.com'))).toBe(false)
 
@@ -850,7 +850,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     const tooMany = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(many.fn, dir))
     expect(tooMany.results[0].kind).toBe('failed')
     expect(tooMany.annotations).toEqual([
-      '[Attachment failed: report.xlsx — too many download redirects]',
+      '[Attachment failed: report.xlsx: too many download redirects]',
     ])
     expect(many.calls.some(c => c.url === hops[3])).toBe(false)
 
@@ -860,7 +860,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     const noLocation = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(none.fn, dir))
     expect(noLocation.results[0].kind).toBe('failed')
     expect(noLocation.annotations).toEqual([
-      '[Attachment failed: report.xlsx — download redirect without a location]',
+      '[Attachment failed: report.xlsx: download redirect without a location]',
     ])
   })
 
@@ -869,14 +869,14 @@ describe('sharedFiles: fetchSharedFiles', () => {
     const c = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(f.fn, dir))
     expect(c.results[0].kind).toBe('failed')
     expect(c.annotations).toEqual([
-      '[Attachment failed: report.xlsx — file not found in SharePoint (HTTP 404)]',
+      '[Attachment failed: report.xlsx: file not found in SharePoint (HTTP 404)]',
     ])
 
     // a hop carries no token of ours, so its answer is just the status
     const g = fakeFetch(standardRoutes({ download: () => new Response('nope', { status: 404 }) }))
     const h = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(g.fn, dir))
     expect(h.results[0].kind).toBe('failed')
-    expect(h.annotations).toEqual(['[Attachment failed: report.xlsx — HTTP 404]'])
+    expect(h.annotations).toEqual(['[Attachment failed: report.xlsx: HTTP 404]'])
   })
 
   test('X11 a download whose body never ends is cut off by the timeout', async () => {
@@ -950,14 +950,14 @@ describe('sharedFiles: fetchSharedFiles', () => {
     const noGuid = await fetchSharedFiles(channelLookup(), SENDER, deps(bad.fn, dir))
     expect(noGuid.results[0].kind).toBe('failed')
     expect(noGuid.annotations).toEqual([
-      '[Attachment failed: 1 shared file(s) — could not resolve the team id (no aadGroupId)]',
+      '[Attachment failed: 1 shared file(s): could not resolve the team id (no aadGroupId)]',
     ])
 
     const err = fakeFetch(standardRoutes({ team: () => jsonResponse({ error: 'boom' }, 500) }))
     const http500 = await fetchSharedFiles(channelLookup(), SENDER, deps(err.fn, dir))
     expect(http500.results[0].kind).toBe('failed')
     expect(http500.annotations).toEqual([
-      '[Attachment failed: 1 shared file(s) — could not resolve the team id (HTTP 500)]',
+      '[Attachment failed: 1 shared file(s): could not resolve the team id (HTTP 500)]',
     ])
   })
 
@@ -967,14 +967,14 @@ describe('sharedFiles: fetchSharedFiles', () => {
     const chan = fakeFetch(standardRoutes({ message: () => jsonResponse({ error: 'x' }, 401) }))
     const c = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(chan.fn, dir))
     expect(c.annotations).toEqual([
-      '[Attachment skipped: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP 401); ' +
+      '[Attachment skipped: 1 shared file(s): could not read the message from Microsoft Graph (HTTP 401); ' +
         'the Teams app needs the ChannelMessage.Read.Group consent for this team]',
     ])
 
     const chat = fakeFetch(standardRoutes({ message: () => jsonResponse({ error: 'x' }, 401) }))
     const g = await fetchSharedFiles(chatLookup(), SENDER, deps(chat.fn, dir))
     expect(g.annotations).toEqual([
-      '[Attachment skipped: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP 401); ' +
+      '[Attachment skipped: 1 shared file(s): could not read the message from Microsoft Graph (HTTP 401); ' +
         'the Teams app needs the ChatMessage.Read.Chat consent for this chat]',
     ])
 
@@ -1025,7 +1025,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     expect(third.results.length).toBe(1)
     expect(third.results[0].kind).toBe('skipped')
     expect(third.annotations).toEqual([
-      `[Attachment skipped: report.xlsx — the file is not in the sender's OneDrive, so it is not downloaded]`,
+      `[Attachment skipped: report.xlsx: the file is not in the sender's OneDrive, so it is not downloaded]`,
     ])
     expect(f3.calls.some(c => c.url === driveUrl())).toBe(false)
     expect(f3.calls.some(c => c.url === contentUrl())).toBe(false)
@@ -1057,9 +1057,9 @@ describe('sharedFiles: fetchSharedFiles', () => {
       expect(results.length).toBe(1)
       expect(results[0].kind).toBe('failed')
       // the first hop, so the Graph status mapping leaves just the status
-      expect(annotations).toEqual([`[Attachment failed: report.xlsx — HTTP ${status}]`])
+      expect(annotations).toEqual([`[Attachment failed: report.xlsx: HTTP ${status}]`])
       expect(f.calls.some(c => c.url === contentUrl())).toBe(true)
-      // no dated directory contents either — nothing was written at all
+      // no dated directory contents either; nothing was written at all
       expect(filesUnder(dir)).toEqual([])
       expect(attachTemps().filter(n => !before.includes(n))).toEqual([])
     }
@@ -1087,7 +1087,7 @@ describe('sharedFiles: fetchSharedFiles', () => {
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('failed')
-    expect(annotations).toEqual([`[Attachment failed: report.xlsx — ${mkdirError}]`])
+    expect(annotations).toEqual([`[Attachment failed: report.xlsx: ${mkdirError}]`])
     // the bytes were fetched, so a temp file did exist and had to be removed
     expect(f.calls.some(c => c.url === DOWNLOAD_URL)).toBe(true)
     expect(attachTemps().filter(n => !before.includes(n))).toEqual([])
@@ -1216,7 +1216,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
       )
       expect(results.length).toBe(1)
       expect(results[0].kind).toBe('skipped')
-      expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+      expect(annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_IN_FOLDER}]`])
       expect(ancestryCalls(f.calls).map(c => c.url)).toEqual([ancestryUrl('sub-1')])
       expect(fetchedTheFile(f.calls)).toBe(false)
     }
@@ -1224,7 +1224,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     // a file whose drive item names no parent folder is outside without any request
     const bare = fakeFetch(standardRoutes({ metadata: () => inFolder(undefined) }))
     const r = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(bare.fn, dir))
-    expect(r.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(r.annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_IN_FOLDER}]`])
     expect(ancestryCalls(bare.calls)).toEqual([])
     expect(fetchedTheFile(bare.calls)).toBe(false)
   })
@@ -1242,7 +1242,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
-    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_IN_FOLDER}]`])
     expect(ancestryCalls(f.calls).length).toBe(MAX_FOLDER_DEPTH)
     expect(ancestryCalls(f.calls).map(c => c.url)).toEqual(
       Array.from({ length: MAX_FOLDER_DEPTH }, (_, i) => ancestryUrl(`p${i}`)),
@@ -1274,7 +1274,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
-    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NO_FILE_PERMISSION}]`])
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx: ${NO_FILE_PERMISSION}]`])
     expect(ancestryCalls(f.calls).length).toBe(1)
     expect(fetchedTheFile(f.calls)).toBe(false)
 
@@ -1285,7 +1285,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
       )
       const r = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(g.fn, dir))
       expect(r.results[0].kind).toBe('failed')
-      expect(r.annotations).toEqual([`[Attachment failed: report.xlsx — ${reason}]`])
+      expect(r.annotations).toEqual([`[Attachment failed: report.xlsx: ${reason}]`])
       expect(fetchedTheFile(g.calls)).toBe(false)
     }
 
@@ -1303,8 +1303,8 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
       deps(h.fn, dir),
     )
     expect(two.annotations).toEqual([
-      `[Attachment skipped: report.xlsx — ${NO_FILE_PERMISSION}]`,
-      `[Attachment skipped: notes.txt — ${NO_FILE_PERMISSION}]`,
+      `[Attachment skipped: report.xlsx: ${NO_FILE_PERMISSION}]`,
+      `[Attachment skipped: notes.txt: ${NO_FILE_PERMISSION}]`,
     ])
   })
 
@@ -1322,7 +1322,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
-    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_IN_FOLDER}]`])
     expect(ancestryCalls(f.calls).map(c => c.url)).toEqual([ancestryUrl('sub-1')])
     expect(fetchedTheFile(f.calls)).toBe(false)
 
@@ -1331,7 +1331,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     const e = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(g.fn, dir))
     expect(e.results.length).toBe(1)
     expect(e.results[0].kind).toBe('skipped')
-    expect(e.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(e.annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_IN_FOLDER}]`])
     expect(ancestryCalls(g.calls)).toEqual([])
     expect(fetchedTheFile(g.calls)).toBe(false)
   })
@@ -1349,7 +1349,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
-    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_IN_FOLDER}]`])
     expect(fetchedTheFile(f.calls)).toBe(false)
   })
 
@@ -1368,7 +1368,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     )
     expect(results.length).toBe(1)
     expect(results[0].kind).toBe('skipped')
-    expect(annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_IN_FOLDER}]`])
     expect(ancestryCalls(f.calls).map(c => c.url)).toEqual([ancestryUrl('sub-1')])
     expect(fetchedTheFile(f.calls)).toBe(false)
 
@@ -1378,7 +1378,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     const o = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(other.fn, dir))
     expect(o.results.length).toBe(1)
     expect(o.results[0].kind).toBe('skipped')
-    expect(o.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_IN_FOLDER}]`])
+    expect(o.annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_IN_FOLDER}]`])
     expect(ancestryCalls(other.calls)).toEqual([])
     expect(fetchedTheFile(other.calls, OTHER_DRIVE)).toBe(false)
   })
@@ -1392,7 +1392,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
         expect(results.length).toBe(1)
         expect(results[0].kind).toBe('skipped')
         expect(annotations).toEqual([
-          `[Attachment skipped: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP ${status}); ` +
+          `[Attachment skipped: 1 shared file(s): could not read the message from Microsoft Graph (HTTP ${status}); ` +
             `the Teams app needs the ${consent}]`,
         ])
       }
@@ -1403,7 +1403,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
         expect(failed.results.length).toBe(1)
         expect(failed.results[0].kind).toBe('failed')
         expect(failed.annotations).toEqual([
-          `[Attachment failed: 1 shared file(s) — could not read the message from Microsoft Graph (HTTP ${status})]`,
+          `[Attachment failed: 1 shared file(s): could not read the message from Microsoft Graph (HTTP ${status})]`,
         ])
       }
     }
@@ -1429,7 +1429,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     expect(a.results[0].kind).toBe('skipped')
     expect(a.results[0].originalName).toBe('2 shared file(s)')
     expect(a.annotations).toEqual([
-      "[Attachment skipped: 2 shared file(s) — the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP 403)]",
+      "[Attachment skipped: 2 shared file(s): the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP 403)]",
     ])
     expect(cacheTwo.size).toBe(0)
     expect(fetchedTheFile(two.calls)).toBe(false)
@@ -1439,7 +1439,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     const unauth = fakeFetch(standardRoutes({ filesFolder: () => jsonResponse({ error: 'x' }, 401) }))
     const u = await fetchSharedFiles(channelLookup({ aadGroupId: GID }), SENDER, deps(unauth.fn, dir))
     expect(u.annotations).toEqual([
-      "[Attachment skipped: report.xlsx — the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP 401)]",
+      "[Attachment skipped: report.xlsx: the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP 401)]",
     ])
 
     // 500, one reference: a failure that keeps the file's own (shown) name
@@ -1454,7 +1454,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     expect(b.results[0].kind).toBe('failed')
     expect(b.results[0].originalName).toBe('a b.xlsx')
     expect(b.annotations).toEqual([
-      "[Attachment failed: a b.xlsx — could not read the channel's files folder (HTTP 500)]",
+      "[Attachment failed: a b.xlsx: could not read the channel's files folder (HTTP 500)]",
     ])
 
     // a 500 whose body still carries a usable folder is a failure, and is not cached or used
@@ -1470,7 +1470,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     expect(c.results.length).toBe(1)
     expect(c.results[0].kind).toBe('failed')
     expect(c.annotations).toEqual([
-      "[Attachment failed: report.xlsx — could not read the channel's files folder (HTTP 500)]",
+      "[Attachment failed: report.xlsx: could not read the channel's files folder (HTTP 500)]",
     ])
     expect(cache500.size).toBe(0)
     expect(fetchedTheFile(body500.calls)).toBe(false)
@@ -1494,8 +1494,8 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
       deps(mixed.fn, dir),
     )
     expect(d.annotations).toEqual([
-      '[Attachment skipped: a.xlsx — not a SharePoint file link]',
-      "[Attachment skipped: 2 shared file(s) — the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP 403)]",
+      '[Attachment skipped: a.xlsx: not a SharePoint file link]',
+      "[Attachment skipped: 2 shared file(s): the Teams app has no Microsoft Graph permission to read this channel's files folder (HTTP 403)]",
     ])
   })
 
@@ -1508,7 +1508,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     const g = await fetchSharedFiles(chatLookup(), SENDER, deps(group.fn, dir, { driveOwnerCache: cache }))
     expect(g.results.length).toBe(1)
     expect(g.results[0].kind).toBe('skipped')
-    expect(g.annotations).toEqual([`[Attachment skipped: report.xlsx — ${NOT_ONEDRIVE}]`])
+    expect(g.annotations).toEqual([`[Attachment skipped: report.xlsx: ${NOT_ONEDRIVE}]`])
     expect([...cache.entries()]).toEqual([['b!other', '00000000-0000-4000-8000-0000000000cc']])
     expect(fetchedTheFile(group.calls)).toBe(false)
 
@@ -1518,7 +1518,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
       const d = await fetchSharedFiles(chatLookup(), SENDER, deps(denied.fn, dir, { driveOwnerCache: cache }))
       expect(d.results[0].kind).toBe('skipped')
       expect(d.annotations).toEqual([
-        `[Attachment skipped: report.xlsx — the Teams app has no Microsoft Graph permission to read the file's drive owner (HTTP ${status})]`,
+        `[Attachment skipped: report.xlsx: the Teams app has no Microsoft Graph permission to read the file's drive owner (HTTP ${status})]`,
       ])
       expect(fetchedTheFile(denied.calls)).toBe(false)
     }
@@ -1531,7 +1531,7 @@ describe('sharedFiles: channel folder check, permission answers, review round 2'
     expect(b.results.length).toBe(1)
     expect(b.results[0].kind).toBe('failed')
     expect(b.annotations).toEqual([
-      "[Attachment failed: report.xlsx — could not read the file's drive owner (HTTP 500)]",
+      "[Attachment failed: report.xlsx: could not read the file's drive owner (HTTP 500)]",
     ])
     expect(fetchedTheFile(boom.calls)).toBe(false)
     expect([...cache.keys()]).toEqual(['b!other'])
@@ -1802,11 +1802,11 @@ describe('attachments: logAttachmentResult', () => {
     })
     expect(value).toBe('done')
     expect(lines).toEqual([
-      'teams channel: attachment saved — /x/a.xlsx (10 B)\n',
-      'teams channel: attachment skipped — a.xlsx: not a SharePoint file link\n',
-      'teams channel: attachment failed — a.xlsx: HTTP 500\n',
-      'teams channel: attachment ignored — a.xlsx: html repeats the message text\n',
-      'teams channel: attachment inlined — a.xlsx (HTML content, 2 chars)\n',
+      'teams channel: attachment saved: /x/a.xlsx (10 B)\n',
+      'teams channel: attachment skipped: a.xlsx: not a SharePoint file link\n',
+      'teams channel: attachment failed: a.xlsx: HTTP 500\n',
+      'teams channel: attachment ignored: a.xlsx: html repeats the message text\n',
+      'teams channel: attachment inlined: a.xlsx (HTML content, 2 chars)\n',
     ])
   })
 })

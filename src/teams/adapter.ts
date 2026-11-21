@@ -1289,8 +1289,8 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     }
 
     // Files shared in a channel or a group chat. Teams does not attach them to
-    // the activity there — only an <attachment id="…"> placeholder in an HTML
-    // part — so they have to be read back through Microsoft Graph. Same
+    // the activity there (only an <attachment id="…"> placeholder in an HTML
+    // part), so they have to be read back through Microsoft Graph. Same
     // composition rules as above; needsSharedFileLookup keeps the 1:1 path
     // (where Teams does attach the file) out of this branch entirely.
     if (

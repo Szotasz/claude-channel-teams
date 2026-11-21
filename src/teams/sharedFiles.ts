@@ -4,11 +4,11 @@
  * In a 1:1 chat Teams hands the bot the file directly: the activity carries an
  * attachment with contentType `application/vnd.microsoft.teams.file.download.info`
  * whose content holds a short-lived downloadUrl (see attachments.ts). In a
- * channel or a group chat it does NOT — the activity only carries a `text/html`
+ * channel or a group chat it does NOT: the activity only carries a `text/html`
  * part containing an empty `<attachment id="…"></attachment>` tag per shared
  * file. The file itself has to be fetched the long way round:
  *
- *   1. the Azure AD group id of the team (channels only — Graph addresses
+ *   1. the Azure AD group id of the team (channels only; Graph addresses
  *      channels by group, Bot Framework by thread id),
  *   2. the message through Microsoft Graph, whose `attachments` list has the
  *      real entries (contentType `reference`, with id / contentUrl / name),
@@ -23,7 +23,7 @@
  *
  *   - The bot's s2s token (getBotToken) only ever goes to the Bot Framework
  *     service URL the activity itself named, and only when that host is on the
- *     inline-image allowlist — otherwise it would leak to any host an attacker
+ *     inline-image allowlist; otherwise it would leak to any host an attacker
  *     puts in `serviceUrl`.
  *   - The Graph token (getGraphToken) only ever goes to graph.microsoft.com:
  *     every request that carries it is sent with `redirect: 'error'`, so no
@@ -31,7 +31,7 @@
  *   - A contentUrl that is not a *.sharepoint.com https link is never fetched.
  *   - Ownership: Files.Read.All reads the WHOLE tenant, so without a check a
  *     sender could make the bot fetch any tenant file by pasting a link. A file
- *     is only downloaded when the conversation already shares it — in a channel
+ *     is only downloaded when the conversation already shares it: in a channel
  *     the file must sit inside the channel's files folder (the one behind the
  *     Files tab, at any depth up to MAX_FOLDER_DEPTH levels), in a group chat the
  *     drive's owner must be the sender. Everything else gets a skip line.
@@ -76,7 +76,7 @@ export const MAX_FOLDER_DEPTH = 8
 
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 // The id is only ever COMPARED against the Graph message's own attachment ids
-// — it never goes into a URL — so anything without whitespace, quotes, angle
+// (it never goes into a URL), so anything without whitespace, quotes, angle
 // brackets or control characters is acceptable, bounded in length.
 const REF_ID_RE = /^[^\s"'<>\u0000-\u001f\u007f]{1,256}$/
 
@@ -132,7 +132,7 @@ export function encodeSharingUrl(url: string): string {
 
 /**
  * Host gate for shared-file content URLs. Only https, no userinfo, and a
- * *.sharepoint.com host — the Graph share link points there and nothing else is
+ * *.sharepoint.com host; the Graph share link points there and nothing else is
  * worth fetching.
  */
 export function isAllowedSharePointUrl(url: string): boolean {
@@ -163,7 +163,7 @@ export type SharedFileLookup =
       kind: 'chat'
       chatId: string
       messageId: string
-      /** The sender's AAD object id, lowercased — the OneDrive owner check. */
+      /** The sender's AAD object id, lowercased: the OneDrive owner check. */
       senderAadObjectId?: string
       refIds: string[]
     }
@@ -271,7 +271,7 @@ async function run(
     results,
   })
 
-  // One request, one timer — and the timer only stops once the body has been
+  // One request, one timer, and the timer only stops once the body has been
   // read, because `use` is awaited inside the try. Reading the body outside it
   // would let a slow body outlive the timeout.
   const call = async <T>(
@@ -292,7 +292,7 @@ async function run(
     Authorization: `Bearer ${await deps.getGraphToken()}`,
   })
 
-  // Step A — the team's Azure AD group id. Graph addresses a channel through
+  // Step A: the team's Azure AD group id. Graph addresses a channel through
   // its group, Bot Framework through the thread id, so this is a translation
   // rather than a permission check.
   let gid: string | undefined
@@ -304,7 +304,7 @@ async function run(
     if (gid === undefined) {
       const serviceUrl = lookup.serviceUrl
       // The s2s token below must never leave the Bot Framework service, so a
-      // missing or unknown service URL is a hard stop — before any token call.
+      // missing or unknown service URL is a hard stop, before any token call.
       if (!serviceUrl || !isAllowedInlineImageHost(serviceUrl)) {
         record({
           kind: 'failed',
@@ -340,7 +340,7 @@ async function run(
     }
   }
 
-  // Step B — the message itself, for the real attachment entries.
+  // Step B: the message itself, for the real attachment entries.
   let messageUrl: string
   if (lookup.kind === 'channel') {
     const base =
@@ -406,7 +406,7 @@ async function run(
   let channelFolder =
     lookup.kind === 'channel' ? deps.channelDriveCache?.get(`${gid}/${lookup.channelId}`) : undefined
 
-  // Step C5 — the bytes. Graph answers the content request with a redirect to a
+  // Step C5: the bytes. Graph answers the content request with a redirect to a
   // pre-authenticated SharePoint link, which is followed by hand: the hop is
   // fetched WITHOUT our bearer token (the link carries its own in the query
   // string), only to an allowed SharePoint address, and at most three times.
@@ -487,20 +487,20 @@ async function run(
     }
   }
 
-  // Step C — one reference at a time, in the order the message lists them.
+  // Step C: one reference at a time, in the order the message lists them.
   for (const [index, ref] of refs.entries()) {
     const name =
       typeof ref.name === 'string' && ref.name.trim() !== '' ? ref.name : nameFromUrl(ref.contentUrl)
     const label = shown(name)
     let tempPath: string | undefined
     try {
-      // C1 — a link that is not SharePoint is never fetched at all.
+      // C1: a link that is not SharePoint is never fetched at all.
       if (!isAllowedSharePointUrl(ref.contentUrl)) {
         record({ kind: 'skipped', originalName: label, reason: 'not a SharePoint file link' })
         continue
       }
 
-      // C2 — the drive item: which drive, which item, how big.
+      // C2: the drive item: which drive, which item, how big.
       const meta = await call(
         `${GRAPH_V1}/shares/${encodeSharingUrl(ref.contentUrl)}/driveItem?$select=id,name,size,parentReference`,
         { headers: await graphHeaders(), redirect: 'error' },
@@ -530,7 +530,7 @@ async function run(
         continue
       }
 
-      // C3 — ownership. Files.Read.All would let a sender pull any tenant file
+      // C3: ownership. Files.Read.All would let a sender pull any tenant file
       // through the bot, so a file is only taken when the conversation already
       // shares it: inside the channel's files folder (at any depth up to
       // MAX_FOLDER_DEPTH) in a channel, the sender's OneDrive in a group chat.
@@ -648,7 +648,7 @@ async function run(
         }
       }
 
-      // C4 — a size we already know is over the cap is not worth a download.
+      // C4: a size we already know is over the cap is not worth a download.
       if (meta.size !== undefined && meta.size > MAX_ATTACHMENT_BYTES) {
         record({
           kind: 'skipped',
@@ -658,7 +658,7 @@ async function run(
         continue
       }
 
-      // C5 — the bytes themselves (see `download` above for the redirect rules).
+      // C5: the bytes themselves (see `download` above for the redirect rules).
       const bytes = await download(meta.driveId, meta.id)
       if ('outcome' in bytes) {
         record({ kind: bytes.outcome.kind, originalName: label, reason: bytes.outcome.reason })
@@ -666,7 +666,7 @@ async function run(
       }
       tempPath = bytes.tempPath
 
-      // C6 — into the dated directory, under the sender's prefix.
+      // C6: into the dated directory, under the sender's prefix.
       const when = now()
       const dateDir = join(deps.baseDir, localDate(when, deps.timeZone))
       const prefix = `${localTime(when, deps.timeZone)}-${senderSlug(fromName)}`

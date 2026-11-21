@@ -400,9 +400,9 @@ describe('processAttachments — unsupported types and edge cases', () => {
     expect(formatAnnotation({ kind: 'saved', path: '/tmp/x.pdf', contentType: 'application/pdf', sizeBytes: 1024, originalName: 'x.pdf' }))
       .toBe('[Attached: /tmp/x.pdf (application/pdf, 1.0 KB)]')
     expect(formatAnnotation({ kind: 'skipped', reason: 'foo', originalName: 'y.bin' }))
-      .toBe('[Attachment skipped: y.bin — foo]')
+      .toBe('[Attachment skipped: y.bin: foo]')
     expect(formatAnnotation({ kind: 'failed', reason: 'bar', originalName: 'z.zip' }))
-      .toBe('[Attachment failed: z.zip — bar]')
+      .toBe('[Attachment failed: z.zip: bar]')
   })
 })
 
@@ -520,25 +520,25 @@ describe('formatAnnotation: shown names', () => {
 
   test('skipped names replace control characters and line separators with spaces', () => {
     expect(formatAnnotation({ kind: 'skipped', originalName, reason: 'r' }))
-      .toBe('[Attachment skipped: a b c d — r]')
+      .toBe('[Attachment skipped: a b c d: r]')
   })
 
   test('failed names replace control characters and line separators with spaces', () => {
     expect(formatAnnotation({ kind: 'failed', originalName, reason: 'r' }))
-      .toBe('[Attachment failed: a b c d — r]')
+      .toBe('[Attachment failed: a b c d: r]')
   })
 
   test('caps a 300-character name at 200 characters', () => {
     for (const kind of ['skipped', 'failed'] as const) {
       expect(formatAnnotation({ kind, originalName: 'a'.repeat(300), reason: 'r' }))
-        .toBe(`[Attachment ${kind}: ${'a'.repeat(200)} — r]`)
+        .toBe(`[Attachment ${kind}: ${'a'.repeat(200)}: r]`)
     }
   })
 
   test('replaces C1 control characters (NEL, CSI, U+0080) with spaces', () => {
     for (const kind of ['skipped', 'failed'] as const) {
       expect(formatAnnotation({ kind, originalName: 'a\u0085b\u009bc\u0080d', reason: 'r' }))
-        .toBe(`[Attachment ${kind}: a b c d — r]`)
+        .toBe(`[Attachment ${kind}: a b c d: r]`)
     }
   })
 
