@@ -39,7 +39,7 @@
  * same — no MCP schema changes — Hermes reads the path out of the text.
  */
 
-import { mkdirSync, renameSync, statSync, writeFileSync, existsSync, copyFileSync, constants, unlinkSync } from 'fs'
+import { mkdirSync, renameSync, statSync, existsSync, copyFileSync, constants, unlinkSync, openSync, closeSync, writeSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import type { Attachment } from 'botframework-schema'
@@ -220,11 +220,23 @@ export function pickPath(dateDir: string, prefix: string, originalName: string):
 }
 
 /** Format a byte count as "1.2 MB" / "523 KB" / "12 B" for the annotation. */
-function formatBytes(n: number): string {
+export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+/**
+ * A file name as the agent is allowed to see it: C0 and C1 control characters
+ * (U+0000-U+001F, DEL, U+0080-U+009F, which holds NEL), and the Unicode line /
+ * paragraph separators become spaces (a line break would
+ * let a name forge a line of its own after the annotation), and the name is
+ * capped. The raw name still goes to pickPath, which sanitises the file name
+ * on disk.
+ */
+export function shown(s: string): string {
+  return s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').slice(0, 200)
 }
 
 /**
@@ -248,20 +260,105 @@ export function formatAnnotation(result: AttachmentResult): string {
     return `[Attached: ${result.path} (${result.contentType}, ${formatBytes(result.sizeBytes)})]`
   }
   if (result.kind === 'skipped') {
-    return `[Attachment skipped: ${result.originalName} — ${result.reason}]`
+    return `[Attachment skipped: ${shown(result.originalName)} — ${result.reason}]`
   }
-  return `[Attachment failed: ${result.originalName} — ${result.reason}]`
+  return `[Attachment failed: ${shown(result.originalName)} — ${result.reason}]`
 }
 
 /**
- * Fetch with a timeout and a size cap. Streams into a temp file so memory
- * stays bounded — important if a sender pushes a near-50 MB binary. Returns
- * the temp path and the byte count; the caller decides where it goes next
- * (we don't pick the final name here because the final name depends on
- * collision detection in the dated directory, and we want to defer the
- * mkdir until we know the download succeeded).
+ * Write the whole buffer to fd. writeSync may write fewer bytes than asked for
+ * (a short write), so this loops on the rest instead of dropping it silently.
+ * A call that writes nothing would loop forever, so it throws instead.
  */
-async function downloadToTemp(
+export function writeAll(
+  fd: number,
+  buf: Uint8Array,
+  write: (fd: number, b: Uint8Array) => number = writeSync,
+): void {
+  let offset = 0
+  while (offset < buf.byteLength) {
+    const n = write(fd, buf.subarray(offset))
+    if (n <= 0) throw new Error('write made no progress')
+    offset += n
+  }
+}
+
+/**
+ * Write a fetched body out to a temp file, enforcing the size cap. Returns the
+ * temp path and the byte count; the caller decides where it goes next (we don't
+ * pick the final name here because the final name depends on collision
+ * detection in the dated directory, and we want to defer the mkdir until we
+ * know the download succeeded).
+ *
+ * The body is streamed chunk by chunk so memory stays bounded whatever the
+ * sender pushes at us, and the temp file is created 0600 — it is world-readable
+ * otherwise, and it holds a file that has not been through the filename checks
+ * yet. A declared Content-Length over the cap is refused without reading a
+ * single byte of the body.
+ */
+export async function saveResponseToTemp(
+  res: Response,
+  write: (fd: number, b: Uint8Array) => number = writeSync,
+): Promise<{ tempPath: string; sizeBytes: number }> {
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`)
+  }
+  const declared = Number(res.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > MAX_ATTACHMENT_BYTES) {
+    // Not reading a body we already know we are throwing away.
+    try {
+      await res.body?.cancel()
+    } catch {}
+    throw new Error(`exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`)
+  }
+  const tempPath = join(tmpdir(), `cct-attach-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  let fd: number | undefined
+  let total = 0
+  try {
+    fd = openSync(tempPath, 'wx', 0o600)
+    if (res.body !== null) {
+      const reader = res.body.getReader()
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.byteLength
+        if (total > MAX_ATTACHMENT_BYTES) {
+          // Some endpoints don't send Content-Length, so the cap can only fire
+          // here, before the chunk that crosses it is written.
+          try {
+            await reader.cancel()
+          } catch {}
+          throw new Error(`exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`)
+        }
+        writeAll(fd, value, write)
+      }
+    }
+  } catch (err) {
+    // Only a file this call created is ours to remove: when the 'wx' open
+    // itself failed, whatever sits at tempPath belongs to someone else.
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {}
+      try {
+        unlinkSync(tempPath)
+      } catch {}
+    }
+    throw err
+  }
+  if (fd !== undefined) {
+    try {
+      closeSync(fd)
+    } catch {}
+  }
+  return { tempPath, sizeBytes: total }
+}
+
+/**
+ * Fetch with a timeout, then hand the response to saveResponseToTemp so memory
+ * stays bounded — important if a sender pushes a near-50 MB binary.
+ */
+export async function downloadToTemp(
   url: string,
   headers: Record<string, string>,
   fetchImpl: typeof fetch,
@@ -270,18 +367,7 @@ async function downloadToTemp(
   const t = setTimeout(() => ctrl.abort(), DOWNLOAD_TIMEOUT_MS)
   try {
     const res = await fetchImpl(url, { headers, signal: ctrl.signal })
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`)
-    }
-    // Some Teams endpoints don't send Content-Length. We enforce the cap by
-    // counting bytes as we read.
-    const buf = await res.arrayBuffer()
-    if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`exceeds ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`)
-    }
-    const tempPath = join(tmpdir(), `cct-attach-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
-    writeFileSync(tempPath, Buffer.from(buf))
-    return { tempPath, sizeBytes: buf.byteLength }
+    return await saveResponseToTemp(res)
   } finally {
     clearTimeout(t)
   }
@@ -440,6 +526,31 @@ export async function processOne(
 }
 
 /**
+ * One stderr line per attachment outcome, whatever it was. Split out of
+ * processAttachments so the channel/group-chat shared-file path (see
+ * sharedFiles.ts) logs the same lines for its own results.
+ */
+export function logAttachmentResult(result: AttachmentResult): void {
+  if (result.kind === 'skipped' || result.kind === 'failed') {
+    process.stderr.write(
+      `teams channel: attachment ${result.kind} — ${result.originalName}: ${result.reason}\n`,
+    )
+  } else if (result.kind === 'inline') {
+    process.stderr.write(
+      `teams channel: attachment inlined — ${result.originalName} (${result.label}, ${result.text.length} chars)\n`,
+    )
+  } else if (result.kind === 'ignored') {
+    process.stderr.write(
+      `teams channel: attachment ignored — ${result.originalName}: ${result.reason}\n`,
+    )
+  } else {
+    process.stderr.write(
+      `teams channel: attachment saved — ${result.path} (${formatBytes(result.sizeBytes)})\n`,
+    )
+  }
+}
+
+/**
  * Top-level entry — processes every attachment on a message, returns the
  * annotation lines (one per attachment) and the per-attachment results.
  *
@@ -462,23 +573,7 @@ export async function processAttachments(
   const results: AttachmentResult[] = []
   for (const att of attachments) {
     const result = await processOne(att, prefix, dateDir, deps)
-    if (result.kind === 'skipped' || result.kind === 'failed') {
-      process.stderr.write(
-        `teams channel: attachment ${result.kind} — ${result.originalName}: ${result.reason}\n`,
-      )
-    } else if (result.kind === 'inline') {
-      process.stderr.write(
-        `teams channel: attachment inlined — ${result.originalName} (${result.label}, ${result.text.length} chars)\n`,
-      )
-    } else if (result.kind === 'ignored') {
-      process.stderr.write(
-        `teams channel: attachment ignored — ${result.originalName}: ${result.reason}\n`,
-      )
-    } else {
-      process.stderr.write(
-        `teams channel: attachment saved — ${result.path} (${formatBytes(result.sizeBytes)})\n`,
-      )
-    }
+    logAttachmentResult(result)
     results.push(result)
   }
   return { annotations: results.map(formatAnnotation).filter((a) => a.length > 0), results }
