@@ -396,6 +396,19 @@ describe('targeted reply', () => {
     expect(s.posts.length).toBe(0)
     expect(s.publicSends.length).toBe(0)
   })
+
+  test('targeted_message_id together with mentions throws: the private path would drop them', async () => {
+    const s = setup()
+    await s.run(makeActivity())
+    await expect(
+      s.replier.sendReply(CHAN, 'x', undefined, {
+        targetedMessageId: 'msg-1',
+        mentions: [{ type: 'user', aad_object_id: ALLOWED, name: 'Stranger' }],
+      }),
+    ).rejects.toThrow('targeted_message_id and mentions cannot be combined')
+    expect(s.posts.length).toBe(0)
+    expect(s.publicSends.length).toBe(0)
+  })
 })
 
 describe('targetedInbound memory', () => {
