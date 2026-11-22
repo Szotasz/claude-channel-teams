@@ -25,8 +25,9 @@ describe('server.ts mentions wiring', () => {
     )
   })
   test('branch condition and options spread', () => {
+    // The targeted-reply terms (PR #21) extend the same condition after the mentions terms.
     expect(reply).toContain(
-      "aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown' || quoteMessageId !== undefined || rawMentions !== undefined\n",
+      "aiGenerated || rawCitations !== undefined || rawUserCards !== undefined || format !== 'markdown' || quoteMessageId !== undefined || rawMentions !== undefined || targetedMessageId !== undefined || isPublic\n",
     )
     const first = block(reply, 'await replier.sendReply(conversationId, text, card, {')
     expect(first).toContain('...(rawMentions !== undefined ? { mentions: rawMentions } : {}),')
