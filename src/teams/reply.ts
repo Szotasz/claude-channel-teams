@@ -334,6 +334,10 @@ export function createReplySender(deps: ReplyDeps) {
     if (opts.targetedMessageId !== undefined && quoteMessageId !== undefined) {
       throw new Error('targeted_message_id and quote_message_id cannot be combined')
     }
+    // The targeted path returns before validateMentions: the mentions would be silently dropped.
+    if (opts.targetedMessageId !== undefined && opts.mentions !== undefined) {
+      throw new Error('targeted_message_id and mentions cannot be combined')
+    }
     if (card !== undefined) {
       const checked = validateAdaptiveCard(card)
       if (!checked.ok) throw new Error(`invalid card: ${checked.error}`)
