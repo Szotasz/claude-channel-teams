@@ -75,6 +75,8 @@ import { createFileSender, sendFileResultText } from './teams/sendFile.js'
 import { createDeliveredMessages } from './teams/deliveredMessages.js'
 import { createInboundIds } from './teams/inboundIds.js'
 import { createInboundDebouncer } from './teams/inboundDebounce.js'
+import { createBackfill } from './teams/backfill.js'
+import { createDecisionLog } from './teams/decisionLog.js'
 import { withInvisibleStripped } from './teams/invisibleChars.js'
 import { createSharePointUploader } from './teams/sharepoint.js'
 import { createCommandFilter, createHeldMessages, filterEnv } from './teams/unmentionedFilter.js'
@@ -1064,6 +1066,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
 const deliveredMessages = createDeliveredMessages()
 const inboundIds = createInboundIds()
+// TEAMS_BACKFILL (opt-in): the live path and the Graph poll must share ONE id store, and with the poll on that is
+// the persisted one, so a message delivered live before a restart is never delivered a second time afterwards
+// (and the other way round). With the poll off nothing is written: today's in-memory store, today's files.
+if (config.backfill) {
+  Object.assign(inboundIds, createInboundIds({ file: join(config.stateDir, 'inbound-ids.json') }))
+}
+
+// TEAMS_DECISION_LOG (opt-in): a text-free, size-bounded line per gate outcome, so a lost message can be traced
+// afterwards without keeping message content on disk.
+const decisions = config.decisionLog
+  ? createDecisionLog({ file: join(config.stateDir, 'decisions.log'), maxBytes: config.decisionLogMaxBytes })
+  : undefined
 
 const unmentionedFilter = config.unmentionedFilterCmd
   ? createCommandFilter(
@@ -1077,6 +1091,23 @@ if (unmentionedFilter) {
   process.stderr.write(
     `teams channel: unmentioned filter on (timeout ${config.unmentionedFilterTimeoutMs ?? 10000} ms, ${config.unmentionedHistoryLimit ?? 20} held per conversation)\n`,
   )
+}
+
+/** One decision line per message id a delivered event stands for (a debounced merge covers several). Only message
+ *  events: reactions, edits, card clicks, meeting and channel events are not message turns. */
+const noteNotified = (decision: 'notify_ok' | 'notify_failed', event: Parameters<ChannelEventSink>[0]): void => {
+  if (!decisions) return
+  if (event.messageEvent !== undefined || event.meetingEvent !== undefined || event.channelEvent !== undefined || event.feedback !== undefined || event.cardAction !== undefined || event.messageAction !== undefined) return
+  const ids = event.merged !== undefined && event.merged.messageIds.length > 0 ? event.merged.messageIds : event.messageId !== undefined ? [event.messageId] : []
+  for (const id of ids) {
+    decisions.record({
+      decision,
+      reason: decision === 'notify_ok' ? 'sent' : 'send_failed',
+      source: event.backfilled === true ? 'backfill' : 'live',
+      messageId: id,
+      conversationId: event.conversationId,
+    })
+  }
 }
 
 const onEvent: ChannelEventSink = event => {
@@ -1100,6 +1131,7 @@ const onEvent: ChannelEventSink = event => {
     })
     .then(() => {
       process.stderr.write('teams channel: notify ok\n')
+      noteNotified('notify_ok', event)
       // Only a message that reached Claude gets an acknowledgement; a meeting event, a feedback click, or a channel event is not one.
       if (acks && !event.messageEvent && !event.meetingEvent && !event.feedback && !event.channelEvent && event.mentioned !== false) acks.arm(event.conversationId)
     })
@@ -1108,6 +1140,7 @@ const onEvent: ChannelEventSink = event => {
       // the failure but don't retry — Claude Code drops events silently when
       // the session isn't registered with --channels.
       process.stderr.write(`teams channel: notify failed: ${err}\n`)
+      noteNotified('notify_failed', event)
     })
 }
 
@@ -1127,6 +1160,10 @@ if (config.targetedMessages) {
     'teams channel: targeted messages ON (permission prompt and pairing code in shared conversations)\n',
   )
 }
+
+// The backfill poll resolves a channel to its team through the same live map; with the tools off it is the only
+// reason to learn team ids on inbound messages, so it passes the map under its own key.
+const pollTeamGroups = config.backfill && !config.threadHistory && !config.activityFeed ? teamGroups : undefined
 
 const listener = startListener({
   config,
@@ -1153,6 +1190,7 @@ const listener = startListener({
   // The thread history and the activity feed tools need the team ids: with both off, no team details lookup
   // runs on inbound messages.
   ...(config.threadHistory || config.activityFeed ? { teamGroups } : {}),
+  ...(pollTeamGroups ? { backfillTeamGroups: pollTeamGroups } : {}),
   ...(unmentionedFilter && heldMessages ? { unmentionedFilter, heldMessages } : {}),
   feedback: config.feedback,
   sendPairingTargeted: sendTargeted,
@@ -1167,7 +1205,34 @@ const listener = startListener({
       getBearerToken: () => inlineImageCredentials.getToken(),
       messageText,
     }),
+  decisions,
 })
+
+// ── Graph backfill of undelivered channel messages (TEAMS_BACKFILL, opt-in) ────────────────────────────────
+// The poll reads channel threads over Graph and pushes what it finds through the listener's own turn handler,
+// so every gate — allowlist, tenant, @mention, dedup — decides exactly as it does for a live message.
+const backfill = config.backfill
+  ? createBackfill({
+      getToken: () => graphToken.getToken(),
+      refs,
+      teamGroupFor: id => teamGroups.get(id),
+      botAppId: config.appId,
+      tenantId: config.tenantId,
+      stateFile: join(config.stateDir, 'backfill-state.json'),
+      intervalMs: config.backfillIntervalMs,
+      graceMs: config.backfillGraceMs,
+      maxAgeMs: config.backfillMaxAgeMs,
+      submit: activity => listener.submitActivity(activity),
+      decisions,
+    })
+  : undefined
+if (backfill) {
+  const seconds = (ms: number) => Math.round(ms / 1000)
+  process.stderr.write(
+    `teams channel: backfill ON (every ${seconds(config.backfillIntervalMs)} s, grace ${seconds(config.backfillGraceMs)} s, max age ${seconds(config.backfillMaxAgeMs)} s)\n`,
+  )
+  backfill.start()
+}
 
 await mcp.connect(new StdioServerTransport())
 process.stderr.write('teams channel: MCP connected (Phase 3)\n')
@@ -1181,6 +1246,8 @@ async function shutdown(): Promise<void> {
   process.stderr.write('teams channel: shutting down\n')
   try {
     inboundDebouncer.stop()
+    // The poll stops before the listener: nothing new is submitted while the drain below runs.
+    backfill?.stop()
     permission.clear()
     typingPump.stopAll()
     acks?.stopAll()

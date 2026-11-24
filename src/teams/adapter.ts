@@ -63,6 +63,7 @@ import { withHeldContext, type FilterDecision, type HeldMessages, type Unmention
 import { messageActionFrom } from './messageAction.js'
 import type { ChannelTokenVerifier } from './channelToken.js'
 import { isApprovalCardInvoke, isApprovalCardSubmit, type ApprovalForwarder } from './approvalCard.js'
+import type { Decision, DecisionLog } from './decisionLog.js'
 
 /**
  * Optional pluggable attachment handler. The server wires the production
@@ -151,6 +152,8 @@ export type ChannelEventSink = (event: {
   feedback?: 'like' | 'dislike'
   /** Set when the event is a channel change in a team (not a message). */
   channelEvent?: { kind: 'created' | 'renamed' | 'deleted' | 'restored'; channelId: string; channelName?: string; teamId?: string }
+  /** True when the message was recovered by the Graph backfill, not delivered live by Teams. */
+  backfilled?: boolean
 }) => void
 
 // The most mention names one event carries.
@@ -231,6 +234,7 @@ export function channelEventMeta(event: Parameters<ChannelEventSink>[0]): Record
     ...(event.replyToId !== undefined ? { reply_to_id: event.replyToId } : {}),
     ...(event.mentions !== undefined ? { mentions: event.mentions.join(', ') } : {}),
     ...(event.merged ? mergedMeta(event.merged) : {}),
+    ...(event.backfilled ? { backfilled: 'true' } : {}),
     ...(event.invisible ? invisibleMeta(event.invisible) : {}),
     ...(event.meetingEvent
       ? {
@@ -333,6 +337,11 @@ export interface AdapterDeps {
   /** Where the messages the filter holds back wait for the next delivered message in the
    *  same conversation. */
   heldMessages?: HeldMessages
+  /** Optional text-free decision log (TEAMS_DECISION_LOG): one line per gate outcome of a message turn. */
+  decisions?: DecisionLog
+  /** The same live channel -> team map as `teamGroups`, passed by the server when only TEAMS_BACKFILL is on (the
+   *  Graph poll resolves a channel to its team through it, and no tool needs the lookup then). */
+  backfillTeamGroups?: { set(channelId: string, groupId: string): void; get(channelId: string): string | undefined }
 }
 
 /** Set of AAD IDs we've already logged a "rejected" line for. */
@@ -516,10 +525,26 @@ async function respondToTaskInvoke(ctx: TurnContext, body: unknown) {
  * tokens, impractical to produce in tests).
  */
 export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promise<void> {
+  // The team-id map the listener fills: `teamGroups` (thread history / activity feed) or, when only the backfill
+  // poll needs it, the same map the server passes as `backfillTeamGroups`.
+  const teamGroups = deps.teamGroups ?? deps.backfillTeamGroups
   // Per conversation: the filter decision still running for the latest unmentioned message.
   // A later message in that conversation waits for it, so a held message is always in the
   // context of the message that follows it.
   const filterTails = new Map<string, Promise<FilterDecision>>()
+  // The optional decision log (TEAMS_DECISION_LOG): one text-free line per gate outcome of a MESSAGE turn, so a
+  // lost message can be traced without keeping message content on disk. No-op when the operator did not opt in,
+  // and silent for everything that is not a message activity (reactions, card clicks, meeting / channel events).
+  const note = (decision: Decision, reason: string, a: Activity): void => {
+    if (!deps.decisions || a.type !== 'message') return
+    deps.decisions.record({
+      decision,
+      reason,
+      source: isPlainObject(a.channelData) && (a.channelData as { backfilled?: unknown }).backfilled === true ? 'backfill' : 'live',
+      messageId: typeof a.id === 'string' && a.id.length > 0 ? a.id : undefined,
+      conversationId: a.conversation?.id,
+    })
+  }
   // An Action.Execute invoke must always be answered (no answer = HTTP 501): every path of turn() that does not answer
   // it, the early drops and a throw included, gets 'Not allowed.' here.
   const handle = async function answeredTurn(ctx: InboundTurn) {
@@ -746,6 +771,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       // Activities without an AAD Object ID can't be authenticated against
       // the tenant allowlist. Drop. Could be a Web Chat test message.
       process.stderr.write('teams channel: drop — no aadObjectId on activity\n')
+      note('drop', 'no_aad_object_id', a)
       return
     }
     const aadObjectId = aadObjectIdRaw.toLowerCase()
@@ -760,6 +786,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       process.stderr.write(
         `teams channel: drop — tenant mismatch (got ${tenantId}, expected pinned tenant)\n`,
       )
+      note('drop', 'tenant_mismatch', a)
       return
     }
 
@@ -767,6 +794,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     if (!conversationId) {
       // Shouldn't happen for a message activity, but defend anyway.
       process.stderr.write('teams channel: drop — no conversation.id\n')
+      note('drop', 'no_conversation_id', a)
       return
     }
     const fromName = a.from?.name ?? ''
@@ -1009,6 +1037,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
           process.stderr.write(
             `teams channel: ignore: ${conversationType} message without bot @mention (convId=${conversationId.slice(0, 20)})\n`,
           )
+          note('ignore', 'not_mentioned', a)
           return
         }
         // Delivered without a mention: allowlisted senders only. A non-allowlisted
@@ -1018,6 +1047,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
           process.stderr.write(
             `teams channel: ignore: unmentioned ${conversationType ?? 'group'} message from a non-allowlisted sender (convId=${conversationId.slice(0, 20)})\n`,
           )
+          note('ignore', 'unmentioned_sender_not_allowed', a)
           return
         }
         if (deps.unmentionedFilter && deps.heldMessages) {
@@ -1048,6 +1078,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
             process.stderr.write(
               `teams channel: held: the filter judged an unmentioned message not for the bot (convId=${conversationId.slice(0, 20)})\n`,
             )
+            note('held', 'filter_held', a)
             return
           }
         }
@@ -1061,6 +1092,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     // A non-allowlisted sender enters the pairing path (Phase 3) if a
     // pending store is wired; otherwise it's dropped silently.
     if (!senderAllowed) {
+      note('drop', 'sender_not_allowed', a)
       if (deps.pending && deps.sendPairingDm) {
         const ref = TurnContext.getConversationReference(a)
         // Shared by the adapter's own detection, or by the relay's rule (isPersonalReference: an untyped
@@ -1172,8 +1204,8 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     // Learn the team's AAD group id for this channel (thread history tool).
     // Best effort and never awaited: a slow or failing lookup must not delay
     // or fail the delivery below.
-    if (deps.teamGroups && (conversationType === 'channel' || threadConv)) {
-      const groups = deps.teamGroups
+    if (teamGroups && (conversationType === 'channel' || threadConv)) {
+      const groups = teamGroups
       const channelKey = baseConversationId(conversationId)
       try {
         const team = (a.channelData as { team?: { aadGroupId?: unknown; id?: unknown } } | undefined)?.team
@@ -1299,6 +1331,8 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     }
 
     if (deps.heldMessages) text = withHeldContext(text, deps.heldMessages.take(conversationId, heldUpTo))
+    const backfilled = isPlainObject(a.channelData) && (a.channelData as { backfilled?: unknown }).backfilled === true
+    note('deliver', 'ok', a)
     deps.onEvent({
       text,
       conversationId,
@@ -1318,6 +1352,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       threadId: isGroupContext ? threadIdFromConversationId(conversationId) : undefined,
       replyToId: isGroupContext ? metaText(a.replyToId) : undefined,
       mentions: mentionNames.length > 0 ? mentionNames : undefined,
+      ...(backfilled ? { backfilled: true } : {}),
     })
   }
 
@@ -1331,6 +1366,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         : undefined
     if (seen && !seen.store.firstSeen(seen.key, seen.id)) {
       process.stderr.write(`teams channel: drop — repeated delivery of message id=${seen.id.slice(0, 24)} conv=${seen.key.slice(0, 20)}\n`)
+      note('drop', 'duplicate', a)
       return
     }
     try {
@@ -1416,6 +1452,12 @@ export interface RunningListener {
   port: number
   url: string
   stop(): Promise<void>
+  /**
+   * Runs the SAME turn handler the HTTP path uses on an activity-only turn (no CloudAdapter, no JWT: the caller
+   * built the activity from a source it trusts, i.e. Microsoft Graph). No gate is skipped — this is the entry
+   * point of the backfill poll, and it goes through dedupedTurn like a live message.
+   */
+  submitActivity(activity: Activity): Promise<void>
 }
 
 /**
@@ -1428,7 +1470,11 @@ export interface RunningListener {
  */
 export function startListener(deps: AdapterDeps & { inboundAuth: ChannelTokenVerifier; approvalCard: ApprovalForwarder }): RunningListener {
   const { config, adapter } = deps
-  const turn = makeEarlyAckTurn(makeTurnHandler(deps))
+  // One handler for both entry points: the HTTP path below (wrapped for the early ack) and submitActivity, which
+  // the Graph backfill uses. Every gate, the dedup store included, is in the handler, so a backfilled message is
+  // indistinguishable from a live one as far as the checks are concerned.
+  const handler = makeTurnHandler(deps)
+  const turn = makeEarlyAckTurn(handler)
 
   const server = Bun.serve({
     hostname: config.bindHost,
@@ -1479,6 +1525,9 @@ export function startListener(deps: AdapterDeps & { inboundAuth: ChannelTokenVer
     url,
     async stop() {
       await server.stop(true)
+    },
+    submitActivity(activity) {
+      return handler({ activity })
     },
   }
 }

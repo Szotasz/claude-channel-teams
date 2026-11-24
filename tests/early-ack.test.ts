@@ -192,6 +192,8 @@ describe('early ack', () => {
 
   test('adapter wires the early ack', () => {
     const src = readFileSync(new URL('../src/teams/adapter.ts', import.meta.url), 'utf8')
-    expect(src).toContain('const turn = makeEarlyAckTurn(makeTurnHandler(deps))')
+    // One handler instance, shared with submitActivity (the Graph backfill); the HTTP path gets it early-acked.
+    expect(src).toContain('const handler = makeTurnHandler(deps)')
+    expect(src).toContain('const turn = makeEarlyAckTurn(handler)')
   })
 })
