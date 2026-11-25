@@ -27,7 +27,7 @@ function decodeCodePoint(n: number): string {
   return String.fromCodePoint(n)
 }
 
-function decodeEntities(s: string): string {
+export function decodeEntities(s: string): string {
   return s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (m, e: string) => {
     const l = e.toLowerCase()
     if (l[0] === '#') {

@@ -63,6 +63,7 @@ import { withHeldContext, type FilterDecision, type HeldMessages, type Unmention
 import { messageActionFrom } from './messageAction.js'
 import type { ChannelTokenVerifier } from './channelToken.js'
 import { isApprovalCardInvoke, isApprovalCardSubmit, type ApprovalForwarder } from './approvalCard.js'
+import { attachmentSummary, emptyMessageNote } from './attachments.js'
 import type { Decision, DecisionLog } from './decisionLog.js'
 
 /**
@@ -586,6 +587,11 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     process.stderr.write(
       `teams channel: inbound type=${a.type} from=${a.from?.aadObjectId ?? '<none>'} convId=${a.conversation?.id?.slice(0, 20) ?? '<none>'} text=${JSON.stringify((a.text ?? '').slice(0, 60))}\n`,
     )
+    if (a.type === 'message') {
+      // Count and content types only: no URL, token or file name (TEAMSIMGEMPTY1120).
+      const { count, types } = attachmentSummary(a.attachments)
+      process.stderr.write(`teams channel: inbound attachments count=${count} types=${types.length > 0 ? types.join(',') : 'none'}\n`)
+    }
     const card = cardActionFrom(a)
     const dialog = dialogInvokeFrom(a)
     // We only care about message activities in v1. Conversation update,
@@ -1330,6 +1336,8 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       if (mentionNames.length >= MAX_MENTION_NAMES) break
     }
 
+    // Never a 0-character event: say what arrived, so the agent can tell the sender (TEAMSIMGEMPTY1120).
+    if (text.length === 0) text = emptyMessageNote(rawAttachments)
     if (deps.heldMessages) text = withHeldContext(text, deps.heldMessages.take(conversationId, heldUpTo))
     const backfilled = isPlainObject(a.channelData) && (a.channelData as { backfilled?: unknown }).backfilled === true
     note('deliver', 'ok', a)
