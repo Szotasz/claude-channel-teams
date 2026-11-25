@@ -750,6 +750,21 @@ describe('live and backfill share one dedup and one gate', () => {
     }
   })
 
+  test('a mention of another app is not a mention of this bot', async () => {
+    const msg = (appId: string) => backfilledActivity({
+      body: { contentType: 'text', content: '<at>Other</at> hi' },
+      mentions: [{ mentionText: 'Other', mentioned: { application: { id: appId } } }],
+    })
+    expect(msg('app-2').entities).toEqual([])
+    const other = turnSetup()
+    await other.run(msg('app-2'))
+    expect(other.events.length).toBe(0)
+    // Control: the same message naming this bot's app id passes the gate.
+    const own = turnSetup()
+    await own.run(msg('app-1'))
+    expect(own.events.length).toBe(1)
+  })
+
   test('a backfilled turn keeps the stored reference routable and learns nothing about the sender', async () => {
     const s = turnSetup()
     await s.run(backfilledActivity())
