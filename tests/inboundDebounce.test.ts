@@ -187,6 +187,8 @@ describe('inbound debounce', () => {
       { label: 'message action', event: fragment({ text: 'summarize this', messageAction: 'summarize' }) },
       { label: 'feedback click', event: fragment({ text: '[Feedback] like', messageId: 'bot-1', feedback: 'like' }) },
       { label: 'channel event', event: fragment({ text: '[Channel created] x', channelEvent: { kind: 'created', channelId: 'c-1' } }) },
+      // A private message is never merged into a public one.
+      { label: 'private (targeted) message', event: fragment({ text: 'only for you', targeted: true }) },
     ]
     for (const { label, event } of immediates) {
       const { clock, delivered, debouncer } = makeHarness({ windowMs: 1500 })
