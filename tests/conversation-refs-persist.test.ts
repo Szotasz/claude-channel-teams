@@ -5,7 +5,7 @@ import { join } from 'path'
 import { createConversationRefStore } from '../src/teams/conversationRefs.js'
 
 const mkRef = (id = 'conv-1', serviceUrl = 'https://smba.trafficmanager.net/emea/') =>
-  ({ conversation: { id }, serviceUrl, user: { id: 'u' }, bot: { id: 'b' } }) as any
+  ({ conversation: { id }, serviceUrl, user: { id: 'u' }, agent: { id: 'b' } }) as any
 
 let dir: string
 let file: string
@@ -26,6 +26,14 @@ const entry = (o: Record<string, unknown> = {}) => ({
 })
 
 describe('conversation refs persistence', () => {
+  // TEAMSSDK1126: a live install upgrading from the botbuilder version has refs written with 'bot'.
+  test('P0 a file written by the botbuilder version loads with the bot account as agent', () => {
+    const { agent: _a, ...old } = mkRef()
+    writeRefs([entry({ ref: { ...old, bot: { id: 'b', name: 'Bot' } } })])
+    const got = createConversationRefStore({ file }).get('conv-1')
+    expect(got?.ref).toEqual({ conversation: { id: 'conv-1' }, serviceUrl: 'https://smba.trafficmanager.net/emea/', user: { id: 'u' }, agent: { id: 'b' } })
+  })
+
   test('P1 round trip', () => {
     createConversationRefStore({ file }).put('conv-1', mkRef(), 'AAD-X')
     const got = createConversationRefStore({ file }).get('conv-1')

@@ -11,9 +11,10 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@azure/core-rest-pipeline": "^1.23.0",
+    "@microsoft/agents-activity": "1.10.2",
+    "@microsoft/agents-hosting": "1.10.2",
+    "@microsoft/agents-hosting-extensions-teams": "1.10.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "botbuilder": "^4.22.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

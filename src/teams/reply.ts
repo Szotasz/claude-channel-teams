@@ -14,7 +14,7 @@
  * AND the original sender must still be on the allowlist when the reply fires.
  */
 
-import { type CloudAdapter, type ConversationReference } from 'botbuilder'
+import { asActivity, asReference, connectorRequest, type CloudAdapter, type ConversationReference } from './sdk.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
 import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
@@ -32,7 +32,6 @@ import {
   validateMentions,
   type MemberLookup,
 } from './mentions.js'
-import { createPipelineRequest } from '@azure/core-rest-pipeline'
 import { USER_VIEW_VERB, usesReservedVerb, validateUserCards, type UserCard } from './userViews.js'
 import type { SeenMessages } from './seenMessages.js'
 
@@ -262,7 +261,7 @@ export function createReplySender(deps: ReplyDeps) {
     // "is typing…" forever after a failure is worse than the failure itself.
     deps.typingPump?.stop(conversationId)
     const ackId = await deps.acks?.take(conversationId)
-    // `continueConversationAsync` rehydrates the conversation context using
+    // `continueConversation` rehydrates the conversation context using
     // the stored reference and our pinned credentials. The SDK takes care of
     // grabbing a fresh service-to-service token (cached by app id).
     let sentId: string | undefined
@@ -272,9 +271,9 @@ export function createReplySender(deps: ReplyDeps) {
       const { ref: current } = assertAllowedConversation(conversationId)
       // The view is stored only after every check has passed, right before the send.
       if (storeViews) outCard = storeViews()
-      await deps.adapter.continueConversationAsync(
+      await deps.adapter.continueConversation(
         deps.config.appId,
-        current,
+        asReference(current),
         async turnContext => {
           const mentionEntities: ReturnType<typeof mentionEntity>[] = []
           const notMembers: string[] = []
@@ -333,7 +332,7 @@ export function createReplySender(deps: ReplyDeps) {
           // acknowledgement, which then stays as sent.
           if (ackId && !streamEntity) {
             try {
-              await withSendRetry('reply', () => turnContext.updateActivity({ ...activity, id: ackId }))
+              await withSendRetry('reply', () => turnContext.updateActivity(asActivity({ ...activity, id: ackId })))
               sentId = ackId
               return
             } catch (err) {
@@ -382,11 +381,11 @@ export function createReplySender(deps: ReplyDeps) {
     format: ReplyFormat = 'markdown',
   ): Promise<void> {
     const { ref } = assertAllowedConversation(conversationId)
-    await deps.adapter.continueConversationAsync(
+    await deps.adapter.continueConversation(
       deps.config.appId,
-      ref,
+      asReference(ref),
       async turnContext => {
-        await withSendRetry('edit', () => turnContext.updateActivity({ type: 'message', id: messageId, text, textFormat: format }))
+        await withSendRetry('edit', () => turnContext.updateActivity(asActivity({ type: 'message', id: messageId, text, textFormat: format })))
       },
     )
     process.stderr.write(
@@ -413,24 +412,18 @@ export function createReplySender(deps: ReplyDeps) {
       throw new Error('invalid message id')
     }
     const { ref } = assertAllowedConversation(conversationId)
-    await deps.adapter.continueConversationAsync(
+    await deps.adapter.continueConversation(
       deps.config.appId,
-      ref,
+      asReference(ref),
       async ctx => {
-        const client = ctx.turnState.get((ctx.adapter as any).ConnectorClientKey) as
-          | { sendRequest(req: unknown): Promise<{ status: number }> }
-          | undefined
-        if (!client) throw new Error('no connector client for this turn')
         const serviceUrl = String(ref.serviceUrl ?? '').replace(/\/+$/, '')
         if (!serviceUrl) throw new Error('no service URL')
         const url =
           `${serviceUrl}/v3/conversations/${encodeURIComponent(conversationId)}` +
           `/activities/${encodeURIComponent(messageId)}/reactions/${reaction}`
-        const res = await client.sendRequest(
-          createPipelineRequest({ url, method: remove ? 'DELETE' : 'PUT' }),
-        )
-        if (res.status < 200 || res.status >= 300) {
-          throw new Error(`react failed (HTTP ${res.status})`)
+        const status = await connectorRequest(ctx, { url, method: remove ? 'DELETE' : 'PUT' })
+        if (status < 200 || status >= 300) {
+          throw new Error(`react failed (HTTP ${status})`)
         }
       },
     )
@@ -450,7 +443,7 @@ export function createReplySender(deps: ReplyDeps) {
       // Teams shows no typing animation while a stream is open.
       deps.typingPump?.stop(conversationId)
       let id: string | undefined
-      await deps.adapter.continueConversationAsync(deps.config.appId, current, async turnContext => {
+      await deps.adapter.continueConversation(deps.config.appId, asReference(current), async turnContext => {
         const res = await turnContext.sendActivity(activity as any)
         id = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
       })
@@ -463,11 +456,11 @@ export function createReplySender(deps: ReplyDeps) {
   async function sendAck(conversationId: string, text: string): Promise<string | undefined> {
     const { ref } = assertAllowedConversation(conversationId)
     let id: string | undefined
-    await deps.adapter.continueConversationAsync(
+    await deps.adapter.continueConversation(
       deps.config.appId,
-      ref,
+      asReference(ref),
       async turnContext => {
-        const res = await withSendRetry('ack', () => turnContext.sendActivity({ type: 'message', text }))
+        const res = await withSendRetry('ack', () => turnContext.sendActivity(asActivity({ type: 'message', text })))
         id = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
       },
     )

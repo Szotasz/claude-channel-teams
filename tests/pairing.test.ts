@@ -15,7 +15,7 @@ import { afterAll, describe, expect, test, beforeEach } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TurnContext, type Activity } from './helpers/sdk'
 
 import {
   REMINDER_INTERVAL_MS,

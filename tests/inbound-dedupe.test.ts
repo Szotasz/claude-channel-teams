@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TurnContext, type Activity } from './helpers/sdk'
 
 import { makeTurnHandler } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'

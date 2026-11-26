@@ -242,7 +242,7 @@ describe('reply with acknowledgement', () => {
     const sent: any[] = []
     const updated: any[] = []
     const adapter = {
-      async continueConversationAsync(_a: string, _r: any, logic: any) {
+      async continueConversation(_a: string, _r: any, logic: any) {
         await logic({
           async sendActivity(act: any) {
             sent.push(act)
@@ -435,7 +435,7 @@ describe('reply with acknowledgement and a status stream', () => {
     const sent: any[] = []
     const updated: any[] = []
     const adapter = {
-      async continueConversationAsync(_a: string, _r: any, logic: any) {
+      async continueConversation(_a: string, _r: any, logic: any) {
         await logic({
           async sendActivity(act: any) {
             sent.push(act)

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { stripComments } from './strip-comments'
-import { BotAdapter, TeamsInfo, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TeamsInfo, TurnContext, type Activity } from './helpers/sdk'
 import {
   createTeamGroupStore,
   fetchThreadHistory,
@@ -338,7 +338,7 @@ describe('H13 team details lookup (channelData.team.id only)', () => {
     const turn = makeTurnHandler({
       config: { stateDir: dir, allowlistFile: join(dir, 'allow.json'), appId: 'a', appPassword: 'p', appType: 'SingleTenant', tenantId: TENANT, bindHost: '127.0.0.1', port: 0 } as any,
       // The lookup runs in a proactive context (a queued message turn has no context of its own).
-      adapter: { continueConversationAsync: async (_app: string, _ref: unknown, logic: (c: unknown) => Promise<void>) => logic(PROACTIVE) } as any,
+      adapter: { continueConversation: async (_app: string, _ref: unknown, logic: (c: unknown) => Promise<void>) => logic(PROACTIVE) } as any,
       allowlist,
       refs: createConversationRefStore(),
       onEvent: () => {

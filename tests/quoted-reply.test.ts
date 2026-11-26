@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TurnContext, type Activity } from './helpers/sdk'
 
 import { channelEventMeta, inboundQuote, makeTurnHandler, stripQuotePlaceholders } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'
@@ -107,7 +107,7 @@ function setup(opts: { store?: boolean; fakeId?: string } = {}) {
   refs.put('conv-abc', { conversation: { id: 'conv-abc' } } as any, ID)
   const sent: any[] = []
   const adapter = {
-    async continueConversationAsync(_a: string, _r: any, logic: any) {
+    async continueConversation(_a: string, _r: any, logic: any) {
       await logic({ async sendActivity(act: any) { sent.push(act); return opts.fakeId ? { id: opts.fakeId } : undefined } })
     },
   } as any

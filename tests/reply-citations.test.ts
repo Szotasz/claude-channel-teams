@@ -40,7 +40,7 @@ describe('reply citations / AI label', () => {
     refs.put('conv-abc', { conversation: { id: 'conv-abc' } } as any, FIXTURE_ID)
     const state = { calls: 0, sent: undefined as any }
     const adapter = {
-      async continueConversationAsync(_a: string, _r: any, logic: any) {
+      async continueConversation(_a: string, _r: any, logic: any) {
         state.calls++
         await logic({
           async sendActivity(act: any) {

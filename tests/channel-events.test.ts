@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TurnContext, type Activity } from './helpers/sdk'
 
 import { channelEventFrom, channelEventText, cleanEventName, MAX_EVENT_NAME } from '../src/teams/channelEvents'
 import { channelEventMeta, makeTurnHandler } from '../src/teams/adapter'

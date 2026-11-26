@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import type { ConversationReference } from 'botbuilder'
+import type { ConversationReference } from './helpers/sdk'
 
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore, isPersonalReference } from '../src/teams/conversationRefs'
@@ -159,7 +159,7 @@ describe('dm_member', () => {
     expect(calls[0].audience).toBeUndefined()
     expect(calls[0].conversationParameters).toEqual({
       isGroup: false,
-      bot: { id: 'app-id' },
+      agent: { id: 'app-id' },
       members: [{ id: USER_ID }],
       tenantId: TENANT_ID,
       channelData: { tenant: { id: TENANT_ID } },

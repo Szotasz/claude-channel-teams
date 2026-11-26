@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, renameSync, chmodSync } from 'fs'
-import type { ConversationReference } from 'botbuilder'
+import type { ConversationReference } from './sdk.js'
 
 export interface StoredChannelRef {
   ref: Partial<ConversationReference>

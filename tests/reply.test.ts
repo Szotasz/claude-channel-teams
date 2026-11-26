@@ -1,7 +1,7 @@
 /**
  * Reply tool tests — outbound gate + capture of adapter calls.
  *
- * We mock `adapter.continueConversationAsync` so the test never tries to talk
+ * We mock `adapter.continueConversation` so the test never tries to talk
  * to the Bot Connector. Captures the (appId, ref, logic) tuple the SDK would
  * have been handed, and lets the logic run against a fake TurnContext so
  * sendActivity is observable.
@@ -45,7 +45,7 @@ describe('reply tool', () => {
     allowlistFile = join(dir, 'allowlist.json')
   })
 
-  test('sends through continueConversationAsync with the captured reference', async () => {
+  test('sends through continueConversation with the captured reference', async () => {
     const allowlist = createAllowlist(allowlistFile)
     allowlist.addEntry(FIXTURE_ID)
     const refs = createConversationRefStore()
@@ -53,7 +53,7 @@ describe('reply tool', () => {
 
     let captured: { appId?: string; refConvId?: string; sentText?: string; sentTextFormat?: string } = {}
     const adapter = {
-      async continueConversationAsync(appId: string, ref: any, logic: any) {
+      async continueConversation(appId: string, ref: any, logic: any) {
         captured.appId = appId
         captured.refConvId = ref.conversation?.id
         // Fake TurnContext — just enough to observe sendActivity.
@@ -98,7 +98,7 @@ describe('reply tool', () => {
     }
 
     const adapter = {
-      async continueConversationAsync(_appId: string, _ref: any, logic: any) {
+      async continueConversation(_appId: string, _ref: any, logic: any) {
         await logic({ async sendActivity() {} })
       },
     } as any
@@ -132,7 +132,7 @@ describe('reply tool', () => {
     }
 
     const adapter = {
-      async continueConversationAsync() {
+      async continueConversation() {
         throw new Error('connector boom')
       },
     } as any
@@ -155,7 +155,7 @@ describe('reply tool', () => {
     allowlist.addEntry(FIXTURE_ID)
     const refs = createConversationRefStore()
     const adapter = {
-      async continueConversationAsync() {
+      async continueConversation() {
         throw new Error('should not have been called')
       },
     } as any
@@ -181,7 +181,7 @@ describe('reply tool', () => {
     allowlist.removeEntry(FIXTURE_ID)
 
     const adapter = {
-      async continueConversationAsync() {
+      async continueConversation() {
         throw new Error('outbound should have been refused at the gate')
       },
     } as any

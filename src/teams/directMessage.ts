@@ -20,7 +20,7 @@
  * into an error that tells Claude what to ask the user for instead.
  */
 
-import { type CloudAdapter, type ConversationParameters, type ConversationReference } from 'botbuilder'
+import { asActivity, type CloudAdapter, type ConversationParameters, type ConversationReference } from './sdk.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
@@ -126,7 +126,7 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
         undefined as unknown as string,
         {
           isGroup: false,
-          bot: { id: deps.config.appId },
+          agent: { id: deps.config.appId },
           // Teams accepts the Entra object id here, personal scope only
           members: [{ id }],
           tenantId: deps.config.tenantId,
@@ -145,7 +145,7 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
           const ref = {
             channelId: 'msteams',
             serviceUrl,
-            bot: { id: deps.config.appId },
+            agent: { id: deps.config.appId },
             conversation: {
               id: convId,
               conversationType: 'personal',
@@ -162,7 +162,7 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
           // normal, so a full store does not evict the chat it just opened.
           deps.refs.put(convId, ref, id, { botOpened: true })
           const res = await withSendRetry('dm', () =>
-            ctx.sendActivity({ type: 'message', text, textFormat: 'markdown' }),
+            ctx.sendActivity(asActivity({ type: 'message', text, textFormat: 'markdown' })),
           )
           messageId = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
         },

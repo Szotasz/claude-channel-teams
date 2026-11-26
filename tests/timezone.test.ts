@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, basename, dirname } from 'path'
-import type { Attachment } from 'botframework-schema'
+import type { Attachment } from './helpers/sdk'
 
 import { loadConfig, resolveTimeZone } from '../src/config'
 import { localDate, localTime, processAttachments } from '../src/teams/attachments'

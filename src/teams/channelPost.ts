@@ -1,4 +1,4 @@
-import { TeamsInfo, type CloudAdapter, type ConversationReference, type TurnContext, type Activity } from 'botbuilder'
+import { TeamsInfo, asReference, type CloudAdapter, type ConversationReference, type TurnContext, type Activity } from './sdk.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
@@ -28,7 +28,7 @@ export type ChannelSender = (
 
 export interface ChannelPostDeps {
   config: Config
-  adapter: Pick<CloudAdapter, 'continueConversationAsync'>
+  adapter: Pick<CloudAdapter, 'continueConversation'>
   allowlist: Allowlist
   refs: ConversationRefStore
   channelRefs: ChannelRefStore
@@ -50,7 +50,7 @@ export function createChannelPoster(deps: ChannelPostDeps) {
       deps.sendToChannel ??
       ((ctx, activity, id, appId) => TeamsInfo.sendMessageToTeamsChannel(ctx, activity as Activity, id, appId))
     let result: [Partial<ConversationReference>, string] | undefined
-    await deps.adapter.continueConversationAsync(deps.config.appId, stored.ref, async ctx => {
+    await deps.adapter.continueConversation(deps.config.appId, asReference(stored.ref), async ctx => {
       result = await send(ctx, { type: 'message', text, textFormat: 'markdown' }, channelId, deps.config.appId)
     })
 

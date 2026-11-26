@@ -1,14 +1,14 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-// Imported only to measure the SDK's own retries.
-import { ConnectorClient } from 'botframework-connector'
+// Imported only to measure what the SDK itself retries (TEAMSSDK1126: nothing).
+import { ConnectorClient, HttpClient } from '@microsoft/agents-hosting'
 
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { createReplySender } from '../src/teams/reply'
-import { isPluginRetryable, sdkRetriesThrottle, withSendRetry } from '../src/teams/sendRetry'
+import { errorStatus, isPluginRetryable, retryAfterMs, withSendRetry } from '../src/teams/sendRetry'
 
 function hdrs(rec: Record<string, string>) {
   return { get: (name: string) => rec[name.toLowerCase()] }
@@ -16,34 +16,38 @@ function hdrs(rec: Record<string, string>) {
 const err = (statusCode: unknown, headers?: Record<string, string>) =>
   Object.assign(new Error('x'), { statusCode, ...(headers ? { response: { headers: hdrs(headers) } } : {}) })
 
-describe('sdkRetriesThrottle', () => {
+describe('retryAfterMs', () => {
   test('cases', () => {
-    expect(sdkRetriesThrottle(hdrs({}))).toBe(false)
-    expect(sdkRetriesThrottle(hdrs({ 'retry-after': '0' }))).toBe(true)
-    expect(sdkRetriesThrottle(hdrs({ 'retry-after': '1' }))).toBe(true)
-    expect(sdkRetriesThrottle(hdrs({ 'retry-after-ms': '0' }))).toBe(true)
-    expect(sdkRetriesThrottle(hdrs({ 'x-ms-retry-after-ms': '1' }))).toBe(true)
-    expect(sdkRetriesThrottle(hdrs({ 'retry-after': 'soon' }))).toBe(false)
-    expect(sdkRetriesThrottle(hdrs({ 'retry-after': new Date(Date.now() + 1000).toUTCString() }))).toBe(true)
-    expect(sdkRetriesThrottle(hdrs({ 'retry-after': '' }))).toBe(false)
-    // Measured: the SDK does not retry a non-finite wait, and the first header that parses decides.
-    expect(sdkRetriesThrottle(hdrs({ 'retry-after': 'Infinity' }))).toBe(false)
-    expect(sdkRetriesThrottle(hdrs({ 'retry-after-ms': 'Infinity', 'retry-after': '0' }))).toBe(false)
-    expect(sdkRetriesThrottle(hdrs({ 'retry-after': '-1' }))).toBe(true)
-    expect(sdkRetriesThrottle(undefined)).toBe(false)
-    expect(sdkRetriesThrottle({ get: 5 })).toBe(false)
-    expect(sdkRetriesThrottle({ get: () => { throw new Error('boom') } })).toBe(false)
+    const now = () => 1_000_000
+    expect(retryAfterMs(hdrs({}), now)).toBeUndefined()
+    expect(retryAfterMs(hdrs({ 'retry-after': '0' }), now)).toBe(0)
+    expect(retryAfterMs(hdrs({ 'retry-after': '1' }), now)).toBe(1000)
+    expect(retryAfterMs(hdrs({ 'retry-after-ms': '250' }), now)).toBe(250)
+    expect(retryAfterMs(hdrs({ 'x-ms-retry-after-ms': '7' }), now)).toBe(7)
+    expect(retryAfterMs(hdrs({ 'retry-after-ms': '250', 'retry-after': '9' }), now)).toBe(250)
+    expect(retryAfterMs(hdrs({ 'retry-after': 'soon' }), now)).toBeUndefined()
+    expect(retryAfterMs(hdrs({ 'retry-after': new Date(1_003_000).toUTCString() }), now)).toBe(3000)
+    expect(retryAfterMs(hdrs({ 'retry-after': new Date(0).toUTCString() }), now)).toBe(0)
+    expect(retryAfterMs(hdrs({ 'retry-after': '' }), now)).toBeUndefined()
+    expect(retryAfterMs(hdrs({ 'retry-after': 'Infinity' }), now)).toBeUndefined()
+    expect(retryAfterMs(hdrs({ 'retry-after': '-1' }), now)).toBe(0)
+    expect(retryAfterMs(undefined, now)).toBeUndefined()
+    expect(retryAfterMs({ get: 5 }, now)).toBeUndefined()
+    expect(retryAfterMs({ get: () => { throw new Error('boom') } }, now)).toBeUndefined()
+    // The Agents SDK's HttpError carries a fetch Headers object.
+    expect(retryAfterMs(new Headers({ 'Retry-After': '2' }), now)).toBe(2000)
   })
 })
 
 describe('isPluginRetryable', () => {
   test('cases', () => {
-    expect(isPluginRetryable({ statusCode: 412 })).toBe(true)
-    expect(isPluginRetryable(err(412, { 'retry-after': '0' }))).toBe(true)
-    expect(isPluginRetryable({ statusCode: 429 })).toBe(true)
-    expect(isPluginRetryable(err(429, { 'retry-after': '1' }))).toBe(false)
-    expect(isPluginRetryable(err(429, { 'retry-after': 'soon' }))).toBe(true)
-    for (const s of [500, 503, 400, 404]) expect(isPluginRetryable({ statusCode: s })).toBe(false)
+    for (const s of [408, 412, 429, 500, 502, 503, 504]) expect(isPluginRetryable({ statusCode: s })).toBe(true)
+    for (const s of [400, 401, 403, 404, 409, 501, 505]) expect(isPluginRetryable({ statusCode: s })).toBe(false)
+    // botframework-connector's RestError had statusCode, the Agents SDK's HttpError has status
+    expect(isPluginRetryable({ status: 429 })).toBe(true)
+    expect(isPluginRetryable({ status: 400 })).toBe(false)
+    expect(errorStatus({ status: 503 })).toBe(503)
+    expect(isPluginRetryable(err(429, { 'retry-after': '1' }))).toBe(true)
     expect(isPluginRetryable({ statusCode: '429' })).toBe(false)
     expect(isPluginRetryable(null)).toBe(false)
     expect(isPluginRetryable('x')).toBe(false)
@@ -112,11 +116,33 @@ describe('withSendRetry', () => {
     expect(h.sleeps).toEqual([])
   })
 
-  test('429 with usable Retry-After is left to the SDK', async () => {
-    const e = err(429, { 'retry-after': '1' })
+  // TEAMSSDK1126: the Agents SDK does not retry a throttling answer itself; its wait is honoured here.
+  test('429 with a usable Retry-After waits at least that long', async () => {
+    const h = harness([err(429, { 'retry-after': '2' }), 'ok'])
+    expect(await withSendRetry('reply', h.fn, h.deps)).toBe('ok')
+    expect(h.calls()).toBe(2)
+    expect(h.sleeps).toEqual([2000])
+  })
+
+  test('a Retry-After past the budget is not waited for', async () => {
+    const e = err(429, { 'retry-after': '30' })
     const h = harness([e])
     await expect(withSendRetry('reply', h.fn, h.deps)).rejects.toBe(e)
     expect(h.calls()).toBe(1)
+    expect(h.sleeps).toEqual([])
+  })
+
+  test('5xx (not 501/505) and 408 are retried, an Agents SDK HttpError (status) too', async () => {
+    for (const status of [500, 502, 503, 504, 408]) {
+      const h = harness([Object.assign(new Error('x'), { status }), 'ok'])
+      expect(await withSendRetry('reply', h.fn, h.deps)).toBe('ok')
+      expect(h.calls()).toBe(2)
+    }
+    for (const status of [501, 505]) {
+      const h = harness([Object.assign(new Error('x'), { status })])
+      await expect(withSendRetry('reply', h.fn, h.deps)).rejects.toBeDefined()
+      expect(h.calls()).toBe(1)
+    }
   })
 
   test('budget exceeded at once', async () => {
@@ -154,72 +180,57 @@ describe('withSendRetry', () => {
   })
 })
 
-class H {
-  o: Record<string, string>
-  constructor(o: Record<string, string>) {
-    this.o = Object.fromEntries(Object.entries(o).map(([k, v]) => [k.toLowerCase(), v]))
-  }
-  get(n: string) { return this.o[n.toLowerCase()] }
-  contains(n: string) { return n.toLowerCase() in this.o }
-  set(n: string, v: unknown) { this.o[n.toLowerCase()] = String(v) }
-  remove(n: string) { const had = this.contains(n); delete this.o[n.toLowerCase()]; return had }
-  toJson() { return { ...this.o } }
-  rawHeaders() { return { ...this.o } }
-  headersArray() { return Object.entries(this.o).map(([name, value]) => ({ name, value })) }
-  headerNames() { return Object.keys(this.o) }
-  headerValues() { return Object.values(this.o) }
-  clone() { return new H({ ...this.o }) }
-}
-
+// The real Agents SDK connector client over a stubbed fetch: it retries nothing, so every attempt is the plugin's.
+const realFetch = globalThis.fetch
+let answers: Array<{ status: number; headers?: Record<string, string> }> = []
+let fetchCalls = 0
+beforeEach(() => { fetchCalls = 0 })
+afterEach(() => { globalThis.fetch = realFetch })
 function client(statuses: number[], headers: Record<string, string> = {}) {
-  let n = 0
-  const c = new ConnectorClient({ signRequest: async (r: any) => r } as any, {
-    baseUri: 'https://smba.example.test',
-    httpClient: {
-      async sendRequest(request: any) {
-        const status = statuses[Math.min(n, statuses.length - 1)]!
-        n++
-        const h = new H({ 'content-type': 'application/json', ...(status === 200 ? {} : headers) })
-        const bodyAsText = status === 200 ? '{"id":"m1"}' : '{"error":{"code":"x","message":"y"}}'
-        return { request, status, headers: h, bodyAsText }
-      },
-    },
-  } as any)
-  return { c, calls: () => n }
+  answers = statuses.map(status => ({ status, headers }))
+  globalThis.fetch = (async () => {
+    const a = answers[Math.min(fetchCalls, answers.length - 1)]!
+    fetchCalls++
+    const body = a.status === 200 ? '{"id":"m1"}' : '{"error":{"code":"x","message":"y"}}'
+    return new Response(body, { status: a.status, headers: { 'content-type': 'application/json', ...(a.status === 200 ? {} : a.headers) } })
+  }) as typeof fetch
+  const c = new ConnectorClient(new HttpClient({ baseURL: 'https://smba.example.test', headers: { Authorization: 'Bearer t' } }))
+  return { c, calls: () => fetchCalls }
 }
 
 describe('real SDK', () => {
   const deps = { sleep: async () => {}, log: () => {} }
   const msg = { type: 'message', text: 'hi' } as any
 
-  test('429 without headers: plugin retries', async () => {
+  test('429 without headers: the plugin retries, the SDK does not', async () => {
     const { c, calls } = client([429])
-    await expect(withSendRetry('t', () => c.conversations.sendToConversation('a:1', msg), deps)).rejects.toMatchObject({ statusCode: 429 })
+    await expect(withSendRetry('t', () => c.sendToConversation('a:1', msg), deps)).rejects.toMatchObject({ status: 429 })
     expect(calls()).toBe(3)
   })
 
-  test('429 with retry-after 0: only the SDK retries', async () => {
+  test('429 with retry-after 0: still three attempts in all (no SDK retries under them)', async () => {
     const { c, calls } = client([429], { 'retry-after': '0' })
-    await expect(withSendRetry('t', () => c.conversations.sendToConversation('a:1', msg), deps)).rejects.toMatchObject({ statusCode: 429 })
-    expect(calls()).toBe(4)
+    await expect(withSendRetry('t', () => c.sendToConversation('a:1', msg), deps)).rejects.toMatchObject({ status: 429 })
+    expect(calls()).toBe(3)
   })
 
-  test('429 with a non-finite Retry-After: the SDK does not retry, the plugin does', async () => {
-    const { c, calls } = client([429], { 'retry-after': 'Infinity' })
-    await expect(withSendRetry('t', () => c.conversations.sendToConversation('a:1', msg), deps)).rejects.toMatchObject({ statusCode: 429 })
-    expect(calls()).toBe(3)
+  test('503 then 200: retried by the plugin', async () => {
+    const { c, calls } = client([503, 200])
+    const r = await withSendRetry('t', () => c.sendToConversation('a:1', msg), deps)
+    expect((r as any).id).toBe('m1')
+    expect(calls()).toBe(2)
   })
 
   test('412 then 200', async () => {
     const { c, calls } = client([412, 200])
-    const r = await withSendRetry('t', () => c.conversations.sendToConversation('a:1', msg), deps)
+    const r = await withSendRetry('t', () => c.sendToConversation('a:1', msg), deps)
     expect((r as any).id).toBe('m1')
     expect(calls()).toBe(2)
   })
 
   test('400 is not retried', async () => {
     const { c, calls } = client([400])
-    await expect(withSendRetry('t', () => c.conversations.sendToConversation('a:1', msg), deps)).rejects.toBeDefined()
+    await expect(withSendRetry('t', () => c.sendToConversation('a:1', msg), deps)).rejects.toBeDefined()
     expect(calls()).toBe(1)
   })
 })
@@ -234,7 +245,7 @@ describe('reply.ts behaviour', () => {
     refs.put('conv-abc', { conversation: { id: 'conv-abc' } } as any, ID)
     let continues = 0
     const adapter = {
-      async continueConversationAsync(_a: string, _r: any, logic: any) {
+      async continueConversation(_a: string, _r: any, logic: any) {
         continues++
         await logic(ctx)
       },
@@ -243,7 +254,7 @@ describe('reply.ts behaviour', () => {
     return { sender: createReplySender({ config, adapter, allowlist, refs }), continues: () => continues, dir }
   }
 
-  test('sendReply retries a 429 inside one continueConversationAsync', async () => {
+  test('sendReply retries a 429 inside one continueConversation', async () => {
     let sends = 0
     const s = setup({
       async sendActivity() {
@@ -290,12 +301,12 @@ describe('wiring', () => {
     expect(reply).toContain("withSendRetry('reply', () => turnContext.sendActivity(")
     expect(reply).toContain("withSendRetry('edit', () => turnContext.updateActivity(")
     expect(sendFile).toContain("withSendRetry('send_file', () => turnContext.sendActivity(activity as any))")
-    const raw = "withSendRetry('send', () => turnContext.sendActivity({ type: 'message', text }))"
+    const raw = "withSendRetry('send', () => turnContext.sendActivity(asActivity({ type: 'message', text })))"
     expect(count(server, raw)).toBe(1)
-    expect(server).toContain("await turnContext.sendActivity({ type: 'typing' })")
+    expect(server).toContain("await turnContext.sendActivity(asActivity({ type: 'typing' }))")
     // The acknowledgement (see ack-placeholder) adds its own send and the reply's overwrite of it.
-    expect(reply).toContain("withSendRetry('reply', () => turnContext.updateActivity({ ...activity, id: ackId }))")
-    expect(reply).toContain("withSendRetry('ack', () => turnContext.sendActivity({ type: 'message', text }))")
+    expect(reply).toContain("withSendRetry('reply', () => turnContext.updateActivity(asActivity({ ...activity, id: ackId })))")
+    expect(reply).toContain("withSendRetry('ack', () => turnContext.sendActivity(asActivity({ type: 'message', text })))")
     expect(count(reply, 'withSendRetry(')).toBe(4)
     expect(count(sendFile, 'withSendRetry(')).toBe(1)
     expect(count(server, 'withSendRetry(')).toBe(1)

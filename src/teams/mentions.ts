@@ -3,7 +3,7 @@
  * listed in TEAMS_MENTION_TAGS and work only in a team channel. See docs/mentions.md.
  */
 
-import { TeamsInfo, type TurnContext } from 'botbuilder'
+import { TeamsInfo, type TurnContext } from './sdk.js'
 
 export const MAX_MENTIONS = 10
 

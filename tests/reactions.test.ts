@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TurnContext, type Activity } from './helpers/sdk'
 
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
@@ -38,9 +38,10 @@ function setup(status = 200, allowed = true) {
   )
   const requests: any[] = []
   let calls = 0
-  const client = { sendRequest: async (r: any) => { requests.push(r); return { status } } }
+  // The Agents SDK's HttpClient (TEAMSSDK1126): a non-2xx answer is thrown as an HttpError with `status`.
+  const client = { httpClient: { request: async (r: any) => { requests.push(r); if (status < 200 || status > 299) throw Object.assign(new Error(`Request failed with status ${status}`), { status }); return { status } } } }
   const adapter: any = {
-    continueConversationAsync: async (_a: string, _r: any, logic: any) => {
+    continueConversation: async (_a: string, _r: any, logic: any) => {
       calls++
       await logic({ adapter: { ConnectorClientKey: KEY }, turnState: new Map([[KEY, client]]) })
     },

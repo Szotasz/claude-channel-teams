@@ -125,7 +125,7 @@ describe('send_file outbound sender', () => {
 
     let sentActivity: any
     const adapter = {
-      async continueConversationAsync(_appId: string, _ref: any, logic: any) {
+      async continueConversation(_appId: string, _ref: any, logic: any) {
         await logic({
           async sendActivity(act: any) {
             sentActivity = act
@@ -176,7 +176,7 @@ describe('send_file outbound sender', () => {
 
     let adapterCalled = false
     const adapter = {
-      async continueConversationAsync() {
+      async continueConversation() {
         adapterCalled = true
       },
     } as any
@@ -211,7 +211,7 @@ describe('send_file outbound sender', () => {
     await outbox.initialise()
 
     const adapter = {
-      async continueConversationAsync() {
+      async continueConversation() {
         throw new Error('outbound should have been refused before adapter')
       },
     } as any
@@ -246,7 +246,7 @@ describe('send_file outbound sender', () => {
     await outbox.initialise()
 
     const adapter = {
-      async continueConversationAsync() {
+      async continueConversation() {
         throw new Error('outbound should have been refused before adapter')
       },
     } as any
@@ -281,7 +281,7 @@ describe('send_file outbound sender', () => {
     await outbox.initialise()
 
     const adapter = {
-      async continueConversationAsync() {
+      async continueConversation() {
         throw new Error('outbound should have been refused before adapter')
       },
     } as any
@@ -314,7 +314,7 @@ describe('send_file outbound sender', () => {
 
     let sentActivity: any
     const adapter = {
-      async continueConversationAsync(_appId: string, _ref: any, logic: any) {
+      async continueConversation(_appId: string, _ref: any, logic: any) {
         await logic({
           async sendActivity(act: any) {
             sentActivity = act

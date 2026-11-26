@@ -9,7 +9,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { type Activity } from 'botbuilder'
+import { type Activity } from './helpers/sdk'
 
 import { activityFromGraph, createBackfill, type GraphChatMessage } from '../src/teams/backfill'
 import { channelEventMeta, makeTurnHandler } from '../src/teams/adapter'
@@ -770,7 +770,7 @@ describe('live and backfill share one dedup and one gate', () => {
     await s.run(backfilledActivity())
     const stored = s.refs.get(THREAD)
     expect(stored?.ref.serviceUrl).toBe('https://smba.trafficmanager.net/emea/')
-    expect(stored?.ref.bot?.id).toBe('bot-mri')
+    expect(stored?.ref.agent?.id).toBe('bot-mri')
     expect(stored?.ref.conversation?.id).toBe(THREAD)
     expect(s.known).toEqual([])
   })
@@ -787,7 +787,7 @@ describe('ConversationRefStore.channelThreadRefs', () => {
     let t = 0
     const store = createConversationRefStore({ now: () => t })
     const mk = (id: string, extra: Record<string, unknown> = {}) =>
-      ({ conversation: { id }, serviceUrl: 'https://smba.trafficmanager.net/emea/', bot: { id: 'bot-mri' }, ...extra })
+      ({ conversation: { id }, serviceUrl: 'https://smba.trafficmanager.net/emea/', agent: { id: 'bot-mri' }, ...extra })
     t = 10
     store.put('19:a@thread.tacv2;messageid=1', mk('19:a@thread.tacv2;messageid=1') as any, 'aad-1')
     t = 20
@@ -795,7 +795,7 @@ describe('ConversationRefStore.channelThreadRefs', () => {
     t = 15
     store.put('19:b@thread.tacv2;messageid=1', mk('19:b@thread.tacv2;messageid=1', { serviceUrl: undefined }) as any, 'aad-1')
     t = 25
-    store.put('19:c@thread.tacv2;messageid=1', mk('19:c@thread.tacv2;messageid=1', { bot: {} }) as any, 'aad-1')
+    store.put('19:c@thread.tacv2;messageid=1', mk('19:c@thread.tacv2;messageid=1', { agent: {} }) as any, 'aad-1')
     t = 30
     store.put('19:g@thread.v2;messageid=1', mk('19:g@thread.v2;messageid=1') as any, 'aad-1')
     t = 35
@@ -817,7 +817,7 @@ describe('ConversationRefStore.channelThreadRefs', () => {
     let t = 0
     const store = createConversationRefStore({ now: () => t })
     const mk = (id: string, bot: Record<string, unknown>) =>
-      ({ conversation: { id }, serviceUrl: 'https://smba.trafficmanager.net/emea/', bot })
+      ({ conversation: { id }, serviceUrl: 'https://smba.trafficmanager.net/emea/', agent: bot })
     t = 10
     store.put('19:a@thread.tacv2;messageid=1', mk('19:a@thread.tacv2;messageid=1', { id: 'bot-mri', name: 'Bot' }) as any, 'aad-1')
     t = 20

@@ -60,7 +60,7 @@
 import { mkdirSync, renameSync, statSync, writeFileSync, existsSync, copyFileSync, constants, unlinkSync, openSync, readSync, closeSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { tmpdir } from 'os'
-import type { Attachment } from 'botframework-schema'
+import type { Attachment } from './sdk.js'
 import { CARD_CONTENT_TYPES, MAX_HTML_INPUT_CHARS, capInline, cardToText, comparableHtml, comparableMessage, decodeEntities, htmlToText, neutralizeMarkup } from './richContent.js'
 
 /** 50 MB cap per file. Anything larger is skipped with an annotation. */
