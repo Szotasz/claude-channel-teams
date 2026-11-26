@@ -75,6 +75,102 @@ export function proactiveChannelsFrom(raw: string | undefined): ReadonlySet<stri
 /** Ceiling for TEAMS_INBOUND_DEBOUNCE_MS — a typo must not swallow a minute of traffic. */
 export const MAX_INBOUND_DEBOUNCE_MS = 10000
 
+/** TEAMS_BACKFILL_* — the Graph poll that picks up channel messages Teams never delivered. All off by default. */
+export const BACKFILL_INTERVAL_DEFAULT_S = 180
+export const BACKFILL_INTERVAL_MIN_S = 60
+export const BACKFILL_INTERVAL_MAX_S = 3600
+export const BACKFILL_GRACE_DEFAULT_S = 90
+export const BACKFILL_GRACE_MIN_S = 30
+export const BACKFILL_GRACE_MAX_S = 900
+export const BACKFILL_MAX_AGE_DEFAULT_S = 7200
+export const BACKFILL_MAX_AGE_MIN_S = 600
+export const BACKFILL_MAX_AGE_MAX_S = 86400
+export const DECISION_LOG_MAX_BYTES_DEFAULT = 1048576
+export const DECISION_LOG_MAX_BYTES_MIN = 65536
+export const DECISION_LOG_MAX_BYTES_MAX = 16777216
+
+/** A whole number of seconds with a valid range; unset/empty is the default, anything else warns once and falls
+ *  back to it (the poll stays on, with sane timing, rather than guessing what was meant). */
+function parseSeconds(
+  raw: string | undefined,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+  warn: (m: string) => void,
+): number {
+  const value = raw?.trim() ?? ''
+  if (value.length === 0) return fallback
+  const n = Number(value)
+  if (!/^\d+$/.test(value) || !Number.isFinite(n) || n < min || n > max) {
+    warn(`teams channel: ${name} must be a whole number of seconds from ${min} to ${max}; using ${fallback}`)
+    return fallback
+  }
+  return n
+}
+
+/** TEAMS_BACKFILL_INTERVAL_S: seconds between two Graph polls (default 180, 60..3600). */
+export function parseBackfillIntervalMs(
+  raw: string | undefined,
+  warn: (m: string) => void = m => process.stderr.write(`${m}\n`),
+): number {
+  return parseSeconds(raw, 'TEAMS_BACKFILL_INTERVAL_S', BACKFILL_INTERVAL_DEFAULT_S, BACKFILL_INTERVAL_MIN_S, BACKFILL_INTERVAL_MAX_S, warn) * 1000
+}
+
+/** TEAMS_BACKFILL_GRACE_S: a Graph message younger than this is left to the live path (default 90, 30..900). */
+export function parseBackfillGraceMs(
+  raw: string | undefined,
+  warn: (m: string) => void = m => process.stderr.write(`${m}\n`),
+): number {
+  return parseSeconds(raw, 'TEAMS_BACKFILL_GRACE_S', BACKFILL_GRACE_DEFAULT_S, BACKFILL_GRACE_MIN_S, BACKFILL_GRACE_MAX_S, warn) * 1000
+}
+
+/** TEAMS_BACKFILL_MAX_AGE_S: a Graph message older than this is never delivered (default 7200, 600..86400). */
+export function parseBackfillMaxAgeMs(
+  raw: string | undefined,
+  warn: (m: string) => void = m => process.stderr.write(`${m}\n`),
+): number {
+  return parseSeconds(raw, 'TEAMS_BACKFILL_MAX_AGE_S', BACKFILL_MAX_AGE_DEFAULT_S, BACKFILL_MAX_AGE_MIN_S, BACKFILL_MAX_AGE_MAX_S, warn) * 1000
+}
+
+/**
+ * The three TEAMS_BACKFILL_* timings together. A cycle starts the interval after the previous one ENDED, so the max age
+ * must reach back at least twice the interval plus the grace, or the messages between two cycles are never looked at.
+ * A smaller max age is raised to that, with one warning.
+ */
+export function backfillTiming(
+  env: NodeJS.ProcessEnv,
+  warn: (m: string) => void = m => process.stderr.write(`${m}\n`),
+): { backfillIntervalMs: number; backfillGraceMs: number; backfillMaxAgeMs: number } {
+  const backfillIntervalMs = parseBackfillIntervalMs(env.TEAMS_BACKFILL_INTERVAL_S, warn)
+  const backfillGraceMs = parseBackfillGraceMs(env.TEAMS_BACKFILL_GRACE_S, warn)
+  const maxAgeMs = parseBackfillMaxAgeMs(env.TEAMS_BACKFILL_MAX_AGE_S, warn)
+  const floorMs = 2 * backfillIntervalMs + backfillGraceMs
+  if (maxAgeMs >= floorMs) return { backfillIntervalMs, backfillGraceMs, backfillMaxAgeMs: maxAgeMs }
+  warn(
+    `teams channel: TEAMS_BACKFILL_MAX_AGE_S must be at least twice TEAMS_BACKFILL_INTERVAL_S plus TEAMS_BACKFILL_GRACE_S ` +
+      `(${floorMs / 1000} here), or messages between two cycles are never looked at; using ${floorMs / 1000}`,
+  )
+  return { backfillIntervalMs, backfillGraceMs, backfillMaxAgeMs: floorMs }
+}
+
+/** TEAMS_DECISION_LOG_MAX_BYTES: size at which decisions.log is rotated (default 1 MiB, 65536..16777216). */
+export function parseDecisionLogMaxBytes(
+  raw: string | undefined,
+  warn: (m: string) => void = m => process.stderr.write(`${m}\n`),
+): number {
+  const value = raw?.trim() ?? ''
+  if (value.length === 0) return DECISION_LOG_MAX_BYTES_DEFAULT
+  const n = Number(value)
+  if (!/^\d+$/.test(value) || !Number.isFinite(n) || n < DECISION_LOG_MAX_BYTES_MIN || n > DECISION_LOG_MAX_BYTES_MAX) {
+    warn(
+      `teams channel: TEAMS_DECISION_LOG_MAX_BYTES must be a whole number of bytes from ${DECISION_LOG_MAX_BYTES_MIN} to ${DECISION_LOG_MAX_BYTES_MAX}; using ${DECISION_LOG_MAX_BYTES_DEFAULT}`,
+    )
+    return DECISION_LOG_MAX_BYTES_DEFAULT
+  }
+  return n
+}
+
 /**
  * TEAMS_INBOUND_DEBOUNCE_MS — how long the inbound debouncer
  * (src/teams/inboundDebounce.ts) holds a message while more fragments from the
@@ -322,6 +418,26 @@ export interface Config {
    * docs/mentions.md.
    */
   mentionTags: ReadonlyMap<string, string>
+  /**
+   * Opt-in periodic Graph poll that finds channel messages Teams never delivered to the bot and feeds them
+   * through the same inbound handler as a live message (needs the ChannelMessage.Read.Group RSC grant).
+   * From TEAMS_BACKFILL ('1' or 'true'); unset = off. See the README section on backfill.
+   */
+  backfill: boolean
+  /** Seconds between two backfill polls (TEAMS_BACKFILL_INTERVAL_S, default 180), in milliseconds. */
+  backfillIntervalMs: number
+  /** A Graph message younger than this is left to the live path (TEAMS_BACKFILL_GRACE_S, default 90), in ms. */
+  backfillGraceMs: number
+  /** A Graph message older than this is never backfilled (TEAMS_BACKFILL_MAX_AGE_S, default 7200, at least twice the interval plus the grace), in ms. */
+  backfillMaxAgeMs: number
+  /**
+   * Opt-in text-free decision log (`<stateDir>/decisions.log`, one JSON object per line, rotated by size): what
+   * happened to every inbound message, so a lost one can be traced without keeping message content.
+   * From TEAMS_DECISION_LOG ('1' or 'true'); unset = off.
+   */
+  decisionLog: boolean
+  /** Size in bytes at which decisions.log is rotated (TEAMS_DECISION_LOG_MAX_BYTES, default 1 MiB). */
+  decisionLogMaxBytes: number
 }
 
 /** The one startup warning about the meeting-event settings, or undefined when there is nothing to say. */
@@ -628,5 +744,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     channelEvents: parseFlag(env.TEAMS_CHANNEL_EVENTS),
     channelEventTeams: parseIdList(env.TEAMS_CHANNEL_EVENT_TEAMS),
     mentionTags,
+    backfill: parseFlag(env.TEAMS_BACKFILL),
+    ...backfillTiming(env),
+    decisionLog: parseFlag(env.TEAMS_DECISION_LOG),
+    decisionLogMaxBytes: parseDecisionLogMaxBytes(env.TEAMS_DECISION_LOG_MAX_BYTES),
   })
 }

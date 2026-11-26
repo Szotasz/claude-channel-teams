@@ -37,13 +37,26 @@ const ENTITIES: Record<string, string> = {
   '&nbsp;': ' ',
 }
 
-function htmlToText(html: string): string {
-  return html
+/** Graph channel-message HTML to plain text. `keepMentionTags` (the backfill) keeps `<at>Name</at>` tags in the
+ *  output, so the inbound mention handling sees the same tags a live message carries; threadHistory itself always
+ *  strips them. Exported for src/teams/backfill.ts — the conversion must not drift between the two readers. */
+export function htmlToText(html: string, opts: { keepMentionTags?: boolean } = {}): string {
+  // The sentinels survive the tag strip below; anything a user typed is left alone (private-use code points).
+  const AT = '\uE000'
+  const AT_END = '\uE001'
+  let s = html
+  if (opts.keepMentionTags) {
+    s = s.replace(/<at\b[^>]*>/gi, AT).replace(/<\/at\s*>/gi, AT_END)
+  }
+  s = s
     .replace(/<br\s*\/?>|<\/p\s*>|<\/div\s*>/gi, '\n')
     .replace(/<[^>]*>/g, '')
     .replace(/&(?:amp|lt|gt|quot|#39|nbsp);/g, m => ENTITIES[m]!)
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+  return opts.keepMentionTags
+    ? s.split(AT).join('<at>').split(AT_END).join('</at>')
+    : s
 }
 
 /** At most MAX_TEXT code points, the cut mark included. */
@@ -52,8 +65,9 @@ function truncate(s: string): string {
   return cps.length > MAX_TEXT ? cps.slice(0, MAX_TEXT - CUT_MARK.length).join('') + CUT_MARK : s
 }
 
-/** A next link may only point at Graph v1.0 (checked after URL normalisation, so '/v1.0/../beta' fails). */
-function isGraphV1Link(link: string): boolean {
+/** A next link may only point at Graph v1.0 (checked after URL normalisation, so '/v1.0/../beta' fails).
+ *  Exported for src/teams/backfill.ts, which pages the same endpoint. */
+export function isGraphV1Link(link: string): boolean {
   try {
     const u = new URL(link)
     return link.startsWith(GRAPH_PREFIX) && u.origin === 'https://graph.microsoft.com' && u.pathname.startsWith('/v1.0/')

@@ -118,6 +118,14 @@ export interface ConversationRefStore {
    * undefined when the store is empty — the connector then has no route.
    */
   serviceUrlHint(): string | undefined
+  /**
+   * One entry per distinct team channel this bot has a stored thread reference for: the channel id (the
+   * conversation id without ';messageid=...'), the most recently seen thread conversation id of that channel,
+   * and the serviceUrl / bot id needed to build a backfilled activity for it. Refs without a serviceUrl or a
+   * bot id, and non-channel conversations, are skipped. Pure read; used by the Graph backfill poll.
+   * The bot's display name from the same reference is included when it has one (the unmentioned filter gets it as botName, as on the live path).
+   */
+  channelThreadRefs(): Array<{ channelId: string; conversationId: string; serviceUrl: string; botId: string; botName?: string; lastSeen: number }>
 }
 
 export interface RefStoreOptions {
@@ -324,6 +332,31 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
       if (id === undefined) return undefined
       const url = store.get(id)?.ref.serviceUrl
       return typeof url === 'string' && url.length > 0 ? url : undefined
+    },
+    channelThreadRefs() {
+      const best = new Map<string, { channelId: string; conversationId: string; serviceUrl: string; botId: string; botName?: string; lastSeen: number }>()
+      for (const [conversationId, stored] of store) {
+        // Group chats ('@thread.v2') are not team channels: there is no Graph channel to poll.
+        if (!conversationId.includes('@thread.tacv2')) continue
+        const serviceUrl = stored.ref.serviceUrl
+        const botId = stored.ref.bot?.id
+        const botName = stored.ref.bot?.name
+        if (typeof serviceUrl !== 'string' || serviceUrl.length === 0) continue
+        if (typeof botId !== 'string' || botId.length === 0) continue
+        const semi = conversationId.indexOf(';')
+        const channelId = semi === -1 ? conversationId : conversationId.slice(0, semi)
+        const seen = best.get(channelId)
+        if (seen !== undefined && seen.lastSeen >= stored.lastSeen) continue
+        best.set(channelId, {
+          channelId,
+          conversationId,
+          serviceUrl,
+          botId,
+          ...(typeof botName === 'string' && botName.length > 0 ? { botName } : {}),
+          lastSeen: stored.lastSeen,
+        })
+      }
+      return [...best.values()].sort((a, b) => a.lastSeen - b.lastSeen)
     },
   }
 }
