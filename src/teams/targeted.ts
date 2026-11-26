@@ -1,5 +1,5 @@
-import type { ConversationReference, TurnContext } from 'botbuilder'
-import { createHttpHeaders, createPipelineRequest } from '@azure/core-rest-pipeline'
+import { connectorRequest, type ConversationReference, type TurnContext } from './sdk.js'
+import { withSendRetry } from './sendRetry.js'
 import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
 
 /** Bot Connector URL that creates a message only its recipient sees (Teams targeted message). */
@@ -24,7 +24,7 @@ export function buildTargetedActivity(
     text,
     channelId: ref.channelId,
     serviceUrl: ref.serviceUrl,
-    from: ref.bot,
+    from: ref.agent,
     conversation: ref.conversation,
     recipient: { ...ref.user, isTargeted: true },
   }
@@ -33,7 +33,7 @@ export function buildTargetedActivity(
 export type TargetedSender = (ref: Partial<ConversationReference>, text: string) => Promise<void>
 
 export interface ContinueAdapter {
-  continueConversationAsync(
+  continueConversation(
     appId: string,
     ref: Partial<ConversationReference>,
     logic: (ctx: TurnContext) => Promise<void>,
@@ -44,24 +44,18 @@ export interface ContinueAdapter {
 export function createTargetedSender(adapter: ContinueAdapter, appId: string): TargetedSender {
   return async (ref, text) => {
     const body = buildTargetedActivity(ref, text)
-    await adapter.continueConversationAsync(appId, ref, async ctx => {
-      const client = ctx.turnState.get((ctx.adapter as any).ConnectorClientKey) as
-        | { sendRequest(req: unknown): Promise<{ status: number }> }
-        | undefined
-      if (!client) throw new Error('no connector client for this turn')
+    await adapter.continueConversation(appId, ref, async ctx => {
       const serviceUrl = String(ref.serviceUrl ?? '')
       if (!serviceUrl) throw new Error('no service URL')
-      const res = await client.sendRequest(
-        createPipelineRequest({
+      // A failed status is thrown with `status`, so withSendRetry retries 408, 429 and 5xx like every send.
+      await withSendRetry('targeted', async () => {
+        const status = await connectorRequest(ctx, {
           url: targetedActivityUrl(serviceUrl, String(ref.conversation!.id)),
           method: 'POST',
-          headers: createHttpHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify(body),
-        }),
-      )
-      if (res.status < 200 || res.status > 299) {
-        throw new Error(`targeted send failed (HTTP ${res.status})`)
-      }
+          data: body,
+        })
+        if (status < 200 || status > 299) throw Object.assign(new Error(`targeted send failed (HTTP ${status})`), { status })
+      })
     })
   }
 }

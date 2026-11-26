@@ -3,7 +3,7 @@ import { stripComments } from './strip-comments'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TurnContext, type Activity } from './helpers/sdk'
 
 import { createPendingStore } from '../src/pairing/pair'
 import { createAllowlist } from '../src/pairing/allowlist'
@@ -83,7 +83,7 @@ function setup(rejectTargeted = false, sendTargetedOverride?: (ref: any, text: s
 const channelRef = {
   channelId: 'msteams',
   serviceUrl: 'https://smba.example.invalid/teams/',
-  bot: { id: '28:bot', name: 'Bot' },
+  agent: { id: '28:bot', name: 'Bot' },
   user: { id: '29:user-1', name: 'Op', aadObjectId: C(1) },
   conversation: { id: '19:abc@thread.tacv2', conversationType: 'channel' },
 } as any
@@ -102,7 +102,7 @@ test('T2 targetedActivityUrl', () => {
 test('T3 buildTargetedActivity', () => {
   const a = buildTargetedActivity(channelRef, 'yo') as any
   expect(a.recipient).toEqual({ id: '29:user-1', name: 'Op', aadObjectId: C(1), isTargeted: true })
-  expect(a.from).toEqual(channelRef.bot)
+  expect(a.from).toEqual(channelRef.agent)
   expect(a.conversation).toEqual(channelRef.conversation)
   expect(a.type).toBe('message')
   expect(a.text).toBe('yo')
@@ -112,12 +112,15 @@ test('T3 buildTargetedActivity', () => {
 
 describe('T4 createTargetedSender', () => {
   const KEY = Symbol('ConnectorClientKey')
-  function fake(status: number, withClient = true) {
+  function fake(status: number | number[], withClient = true) {
+    const seq = Array.isArray(status) ? status : [status]
+    let answered = 0
     const reqs: any[] = []
     const calls: string[] = []
-    const client = { sendRequest: async (r: any) => { reqs.push(r); return { status } } }
+    // The Agents SDK's HttpClient (TEAMSSDK1126): request(config), and a non-2xx answer is thrown as an HttpError with `status`.
+    const client = { httpClient: { baseURL: 'https://smba.example.invalid/teams/', request: async (r: any) => { reqs.push(r); const st = seq[Math.min(answered++, seq.length - 1)]!; if (st < 200 || st > 299) throw Object.assign(new Error(`Request failed with status ${st}`), { status: st }); return { status: st } } } }
     const adapter = {
-      continueConversationAsync: async (appId: string, _ref: any, logic: any) => {
+      continueConversation: async (appId: string, _ref: any, logic: any) => {
         calls.push(appId)
         await logic({ adapter: { ConnectorClientKey: KEY }, turnState: new Map(withClient ? [[KEY, client]] : []) } as any)
       },
@@ -131,11 +134,20 @@ describe('T4 createTargetedSender', () => {
     const req = f.reqs[0]
     expect(req.method).toBe('POST')
     expect(req.url).toBe('https://smba.example.invalid/teams/v3/conversations/19%3Aabc%40thread.tacv2/activities?isTargetedActivity=true')
-    const body = JSON.parse(req.body)
+    const body = req.data
     expect(body.recipient.isTargeted).toBe(true)
     expect(body.recipient.id).toBe('29:user-1')
-    expect(req.headers.get('content-type')).toBe('application/json')
+    expect(req.headers['Content-Type']).toBe('application/json')
     expect(f.calls).toEqual(['app-1'])
+  })
+  // TEAMSSDK1126: retried like a send (Samu's review on #60).
+  test('a 503 is retried, a 403 is not', async () => {
+    const ok = fake([503, 201])
+    await createTargetedSender(ok.adapter, 'a')(channelRef, 'x')
+    expect(ok.reqs.length).toBe(2)
+    const no = fake(403)
+    await expect(createTargetedSender(no.adapter, 'a')(channelRef, 'x')).rejects.toThrow('targeted send failed (HTTP 403)')
+    expect(no.reqs.length).toBe(1)
   })
   test('failures', async () => {
     await expect(createTargetedSender(fake(403).adapter, 'a')(channelRef, 'x')).rejects.toThrow('targeted send failed (HTTP 403)')

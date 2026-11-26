@@ -23,7 +23,7 @@ function setup() {
   const sent: any[] = []
   const updated: any[] = []
   const adapter = {
-    async continueConversationAsync(_appId: string, _ref: any, logic: any) {
+    async continueConversation(_appId: string, _ref: any, logic: any) {
       await logic({
         async sendActivity(act: any) {
           sent.push(act)

@@ -43,7 +43,7 @@ import { z } from 'zod'
 import { join } from 'path'
 
 import { channelEventsWarning, loadConfig, meetingEventsWarning } from './config.js'
-import { createCloudAdapter } from './teams/auth.js'
+import { agentsAuthConfig, createCloudAdapter } from './teams/auth.js'
 import { createChannelTokenVerifier } from './teams/channelToken.js'
 import { createApprovalForwarder, parseApprovalUrl } from './teams/approvalCard.js'
 import { createKnownUsers, createUserViewStore } from './teams/userViews.js'
@@ -92,7 +92,8 @@ import {
 } from './teams/planner.js'
 import { createMeetingStore, fetchTranscript, resolveTranscriptRequest, transcriptResultText, transcriptTools } from './teams/meetingTranscripts.js'
 import { channelTools, createChannel, validateCreateChannelArgs } from './teams/channels.js'
-import { MicrosoftAppCredentials } from 'botframework-connector'
+import { MsalTokenProvider } from '@microsoft/agents-hosting'
+import { asActivity, asReference, type ConversationReference } from './teams/sdk.js'
 
 // Crash safety — without these the process can die silently on any
 // unhandled rejection / exception. Matches the Telegram plugin.
@@ -167,12 +168,11 @@ try {
 // Credentials for s2s bearer tokens — used to download inline images from
 // smba.trafficmanager.net. SharePoint file attachments use a short-lived
 // downloadUrl that doesn't need auth. We construct the credentials object
-// here so the token is cached across messages.
-const inlineImageCredentials = new MicrosoftAppCredentials(
-  config.appId,
-  config.appPassword,
-  config.tenantId,
-)
+// here so the token is cached across messages (MsalTokenProvider caches per scope). TEAMSSDK1126: the Agents SDK's
+// client-credentials provider, the same app, secret and tenant authority botframework-connector's
+// MicrosoftAppCredentials used, and the same Bot Framework scope.
+const BOT_FRAMEWORK_SCOPE = 'https://api.botframework.com/.default'
+const inlineImageTokens = new MsalTokenProvider(agentsAuthConfig(config))
 
 // ── MCP server ──────────────────────────────────────────────────────────────
 
@@ -260,11 +260,11 @@ const mcp = new Server(
 // expires — for crashed or never-replying turns).
 const typingPump = createTypingPump({
   sendTyping: async ref => {
-    await adapter.continueConversationAsync(
+    await adapter.continueConversation(
       config.appId,
-      ref,
+      asReference(ref),
       async turnContext => {
-        await turnContext.sendActivity({ type: 'typing' })
+        await turnContext.sendActivity(asActivity({ type: 'typing' }))
       },
     )
   },
@@ -333,14 +333,14 @@ const sendFile = createFileSender({
  *   2. Permission-relay prompts (operator-bound, already gate-approved).
  */
 async function sendActivityRaw(
-  ref: Parameters<typeof adapter.continueConversationAsync>[1],
+  ref: Partial<ConversationReference>,
   text: string,
 ): Promise<void> {
-  await adapter.continueConversationAsync(
+  await adapter.continueConversation(
     config.appId,
-    ref,
+    asReference(ref),
     async turnContext => {
-      await withSendRetry('send', () => turnContext.sendActivity({ type: 'message', text }))
+      await withSendRetry('send', () => turnContext.sendActivity(asActivity({ type: 'message', text })))
     },
   )
 }
@@ -955,7 +955,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         } else if (stored) {
           try {
             await sendActivityRaw(
-              stored.ref,
+              asReference(stored.ref),
               'Paired. Say hi to Claude.',
             )
           } catch (err) {
@@ -1202,7 +1202,7 @@ const listener = startListener({
     processAttachments(atts, fromName, {
       baseDir: config.receivedFilesDir,
       timeZone: config.timeZone,
-      getBearerToken: () => inlineImageCredentials.getToken(),
+      getBearerToken: () => inlineImageTokens.getAccessToken(BOT_FRAMEWORK_SCOPE),
       messageText,
     }),
   decisions,

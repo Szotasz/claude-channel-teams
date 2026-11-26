@@ -57,9 +57,11 @@ Teams user
   │
   ▼ JSON parse + activity.type sanity check   ──fail──→ 400 (info-log)
   │
-  ▼ CloudAdapter.process(req, res, turnHandler)
+  ▼ channel-token verifier (channelToken.ts)  ──fail──→ 401 → bot connector
+  │
+  ▼ CloudAdapter.process({ ...req, user: claims }, res, turnHandler)   [@microsoft/agents-hosting]
     │
-    ▼ JWT validation       ──fail──→ 401 → bot connector
+    ▼ activity shape + serviceurl claim   ──fail──→ 400
     │
     ▼ ok
 [turnHandler(ctx)]
@@ -157,7 +159,8 @@ claude-channel-teams/
 │   ├── types.ts            # shared types
 │   ├── teams/
 │   │   ├── adapter.ts      # HTTP listener + turn handler + intercepts
-│   │   ├── auth.ts         # CloudAdapter wiring
+│   │   ├── auth.ts         # CloudAdapter wiring (Microsoft 365 Agents SDK)
+│   │   ├── sdk.ts          # the SDK types and helpers, one import point
 │   │   ├── conversationRefs.ts # in-memory ConversationReference cache
 │   │   └── reply.ts        # `reply` tool, outbound gate
 │   ├── pairing/
@@ -222,7 +225,7 @@ Useful for first-bring-up. Don't leave a dev tunnel running long-term.
 | Event | Behaviour |
 | --- | --- |
 | Claude Code spawns the plugin | Bun runs `start` script → `bun install` → `bun src/server.ts`. Plugin connects MCP over stdio, binds local listener, prints startup line. |
-| First inbound activity | CloudAdapter validates the JWT, turn handler runs, gate evaluates, notification or drop. |
+| First inbound activity | The channel-token verifier checks the JWT, CloudAdapter (Agents SDK) checks the activity, turn handler runs, gate evaluates, notification or drop. |
 | Operator approves pairing | `/teams:access pair <pair_id> <code>` calls `approve_pair` over MCP. Server transfers the entry from `pending.json` to `allowlist.json` and sends the "Paired" confirm via the live ConversationReference, all in one tool call. |
 | Operator runs `/reload-plugins` | Claude Code restarts MCP subprocesses. Plugin re-reads `.env`, `allowlist.json`, and `pending.json`. In-memory ConversationReferences are lost — users may need to send a fresh DM to re-seed. |
 | Operator quits Claude Code | stdio closes. Plugin's shutdown handler fires. Listener unbinds, process exits. |

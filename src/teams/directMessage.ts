@@ -20,12 +20,17 @@
  * into an error that tells Claude what to ask the user for instead.
  */
 
-import { type CloudAdapter, type ConversationParameters, type ConversationReference } from 'botbuilder'
+import { asActivity, type CloudAdapter, type ConversationParameters, type ConversationReference } from './sdk.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
 import type { createReplySender } from './reply.js'
-import { withSendRetry } from './sendRetry.js'
+import { errorStatus, withSendRetry } from './sendRetry.js'
+
+/** An error from inside the createConversation callback: never retried as an opening failure. */
+class CallbackFailed {
+  constructor(readonly cause: unknown) {}
+}
 
 export class RecipientNotAllowedError extends Error {
   constructor(id: string) {
@@ -72,7 +77,9 @@ export class BotBlockedError extends Error {
  */
 function mentionsMessageWritesBlocked(err: any): boolean {
   const parts: string[] = [String(err?.message ?? '')]
-  for (const carrier of [err?.details, err?.body, err?.response?.bodyAsText]) {
+  // botframework-connector carried the body in details / body / response.bodyAsText, the Agents SDK's HttpError
+  // (TEAMSSDK1126) in response.data.
+  for (const carrier of [err?.details, err?.body, err?.response?.bodyAsText, err?.response?.data]) {
     if (carrier === undefined || carrier === null) continue
     try {
       parts.push(JSON.stringify(carrier))
@@ -113,11 +120,33 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
 
     const serviceUrl = deps.refs.serviceUrlHint()
     if (serviceUrl === undefined) throw new NoServiceUrlError()
+    const url: string = serviceUrl
 
     let newId: string | undefined
     let messageId: string | undefined
     let callbackStarted = false
     try {
+      // Opening the chat is retried like a send (TEAMSSDK1126: the Agents SDK retries nothing itself), but only until
+      // the callback starts: from there the first send has its own retry, and a retry of the whole would open and send
+      // again.
+      await withSendRetry('dm_open', async () => {
+        try {
+          await openChat(url)
+        } catch (err) {
+          throw callbackStarted ? new CallbackFailed(err) : err
+        }
+      }).catch(err => { throw err instanceof CallbackFailed ? err.cause : err })
+    } catch (err) {
+      // Only a 403 from OPENING the chat is translated: Teams refused the chat itself, and user-side state
+      // (blocked bot, missing install) does not clear on a retry. The callback runs only after createConversation
+      // succeeded, so an error from inside it (the first send) passes through unchanged.
+      if (!callbackStarted && errorStatus(err) === 403) {
+        if (mentionsMessageWritesBlocked(err)) throw new BotBlockedError(err)
+        throw new PersonalInstallMissingError(err)
+      }
+      throw err
+    }
+    async function openChat(serviceUrl: string): Promise<void> {
       await deps.adapter.createConversationAsync(
         deps.config.appId,
         'msteams',
@@ -126,7 +155,7 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
         undefined as unknown as string,
         {
           isGroup: false,
-          bot: { id: deps.config.appId },
+          agent: { id: deps.config.appId },
           // Teams accepts the Entra object id here, personal scope only
           members: [{ id }],
           tenantId: deps.config.tenantId,
@@ -145,7 +174,7 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
           const ref = {
             channelId: 'msteams',
             serviceUrl,
-            bot: { id: deps.config.appId },
+            agent: { id: deps.config.appId },
             conversation: {
               id: convId,
               conversationType: 'personal',
@@ -162,20 +191,11 @@ export function createDirectMessenger(deps: DirectMessageDeps) {
           // normal, so a full store does not evict the chat it just opened.
           deps.refs.put(convId, ref, id, { botOpened: true })
           const res = await withSendRetry('dm', () =>
-            ctx.sendActivity({ type: 'message', text, textFormat: 'markdown' }),
+            ctx.sendActivity(asActivity({ type: 'message', text, textFormat: 'markdown' })),
           )
           messageId = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
         },
       )
-    } catch (err) {
-      // Only a 403 from OPENING the chat is translated: Teams refused the chat itself, and user-side state
-      // (blocked bot, missing install) does not clear on a retry. botbuilder runs the callback only after
-      // createConversation succeeded, so an error from inside it (the first send) passes through unchanged.
-      if (!callbackStarted && (err as { statusCode?: unknown })?.statusCode === 403) {
-        if (mentionsMessageWritesBlocked(err)) throw new BotBlockedError(err)
-        throw new PersonalInstallMissingError(err)
-      }
-      throw err
     }
     if (newId === undefined) {
       // Unreachable when the callback above ran to completion; guards the type

@@ -19,7 +19,7 @@ function setup(opts: { feedback?: boolean; streams?: boolean; failFinal?: unknow
   refs.put('dm', { conversation: { id: 'a:1', conversationType: 'personal' } } as any, FIXTURE_ID)
   const sent: any[] = []
   const adapter = {
-    async continueConversationAsync(_a: string, _r: any, logic: any) {
+    async continueConversation(_a: string, _r: any, logic: any) {
       await logic({
         async sendActivity(act: any) {
           sent.push(act)

@@ -12,7 +12,7 @@
 
 import { readFileSync, statSync } from 'fs'
 import { basename, resolve } from 'path'
-import { type CloudAdapter, type ConversationReference } from 'botbuilder'
+import { asReference, type CloudAdapter, type ConversationReference } from './sdk.js'
 
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { ConversationRefStore } from './conversationRefs.js'
@@ -216,11 +216,11 @@ export function createFileSender(deps: FileSenderDeps) {
           downloadUrl: uploaded.webUrl,
           caption: input.caption,
         })
-        await deps.adapter.continueConversationAsync(
+        await deps.adapter.continueConversation(
           deps.config.appId,
-          ref,
+          asReference(ref),
           async turnContext => {
-            await turnContext.sendActivity(spActivity as any)
+            await withSendRetry('send_file', () => turnContext.sendActivity(spActivity as any))
           },
         )
         process.stderr.write(
@@ -247,9 +247,9 @@ export function createFileSender(deps: FileSenderDeps) {
       caption: input.caption,
     })
 
-    await deps.adapter.continueConversationAsync(
+    await deps.adapter.continueConversation(
       deps.config.appId,
-      ref,
+      asReference(ref),
       async turnContext => {
         await withSendRetry('send_file', () => turnContext.sendActivity(activity as any))
       },

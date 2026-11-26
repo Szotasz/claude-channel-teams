@@ -32,11 +32,20 @@ import {
   CloudAdapter,
   TeamsInfo,
   TurnContext,
+  asActivity,
+  getConversationReference,
+  removeRecipientMention,
   type Activity,
+  type Attachment,
   type ConversationReference,
-} from 'botbuilder'
-import type { Attachment } from 'botframework-schema'
+} from './sdk.js'
 import { isFeedbackInvoke, parseFeedback, feedbackEventText } from './feedback.js'
+import { createSendTracker, withSendRetry } from './sendRetry.js'
+
+// The team-details lookup below runs in the background and is never awaited. It keeps the retry, but on its own
+// tracker: the module-level one counts the sends that shutdown waits for, and a lookup is not one (a lookup that
+// never answers held that count up, and with it shutdown, for its full wait).
+const backgroundLookups = createSendTracker()
 import type { Config } from '../config.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { PendingStore } from '../pairing/pair.js'
@@ -431,14 +440,18 @@ function makeResponseSink(): {
     socket: unknown
     status: (code: number) => unknown
     header: (name: string, value: unknown) => unknown
+    setHeader: (name: string, value: unknown) => unknown
     send: (...args: unknown[]) => unknown
     end: (...args: unknown[]) => unknown
+    readonly headersSent: boolean
+    readonly writableEnded: boolean
   }
   done: Promise<Response>
 } {
   let statusCode = 200
   const headers = new Headers()
   let body: BodyInit | undefined
+  let ended = false
   let resolve!: (r: Response) => void
   const done = new Promise<Response>(r => (resolve = r))
   const res = {
@@ -452,6 +465,17 @@ function makeResponseSink(): {
     header(name: string, value: unknown) {
       headers.set(name, String(value))
       return res
+    },
+    // The Agents SDK (TEAMSSDK1126) writes through setHeader and checks headersSent / writableEnded before writing.
+    setHeader(name: string, value: unknown) {
+      headers.set(name, String(value))
+      return res
+    },
+    get headersSent() {
+      return ended
+    },
+    get writableEnded() {
+      return ended
     },
     send(...args: unknown[]) {
       if (args.length === 0) return res
@@ -472,6 +496,7 @@ function makeResponseSink(): {
       if (args.length > 0 && args[0] !== undefined && body === undefined) {
         res.send(...args)
       }
+      ended = true
       resolve(new Response(body ?? null, { status: statusCode, headers }))
       return res
     },
@@ -501,21 +526,21 @@ function invokeContext(ctx: InboundTurn): TurnContext | undefined {
 }
 
 async function respondToCardInvoke(ctx: TurnContext, message: string) {
-  await ctx.sendActivity({
+  await ctx.sendActivity(asActivity({
     type: 'invokeResponse',
     value: { status: 200, body: { statusCode: 200, type: 'application/vnd.microsoft.activity.message', value: message } },
-  } as Partial<Activity>)
+  }))
 }
 
 async function respondWithCard(ctx: TurnContext, card: Record<string, unknown>) {
-  await ctx.sendActivity({
+  await ctx.sendActivity(asActivity({
     type: 'invokeResponse',
     value: { status: 200, body: { statusCode: 200, type: ADAPTIVE_CARD_CONTENT_TYPE, value: card } },
-  } as Partial<Activity>)
+  }))
 }
 
 async function respondToTaskInvoke(ctx: TurnContext, body: unknown) {
-  await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200, body } } as Partial<Activity>)
+  await ctx.sendActivity(asActivity({ type: 'invokeResponse', value: { status: 200, body } }))
 }
 
 /**
@@ -575,7 +600,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
 
   async function respondEmptyInvoke(ctx: TurnContext) {
     try {
-      await ctx.sendActivity({ type: 'invokeResponse', value: { status: 200 } } as Partial<Activity>)
+      await ctx.sendActivity(asActivity({ type: 'invokeResponse', value: { status: 200 } }))
     } catch (err) {
       process.stderr.write(`teams channel: invoke response failed: ${err}\n`)
     }
@@ -695,7 +720,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     if (isFeedbackInvoke(a)) {
       // Teams waits for an answer to every feedback click, also one we do not deliver.
       const reply = invokeContext(ctx)
-      if (reply) await reply.sendActivity({ type: 'invokeResponse', value: { status: 200 } } as Partial<Activity>)
+      if (reply) await reply.sendActivity(asActivity({ type: 'invokeResponse', value: { status: 200 } }))
       else process.stderr.write('teams channel: feedback click without an invoke context, not answered\n')
       if (!deps.feedback) return
       const fbAad = a.from?.aadObjectId?.toLowerCase()
@@ -848,7 +873,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         )
         return
       }
-      const ref = TurnContext.getConversationReference(a)
+      const ref = getConversationReference(a)
       deps.refs.put(conversationId, ref, aadObjectId)
       deps.onEvent({
         text: dialogSubmitText(dialog.dataJson),
@@ -891,7 +916,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         if (card.kind === 'execute') await answerInvoke('Not allowed.')
         return
       }
-      const ref = TurnContext.getConversationReference(a)
+      const ref = getConversationReference(a)
       deps.refs.put(conversationId, ref, aadObjectId)
       if (typeof a.from?.id === 'string' && a.from.id) deps.knownUsers?.set(aadObjectId, a.from.id)
       deps.onEvent({
@@ -919,7 +944,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
       // invoke is already answered.
       await answer(invoke, respondEmptyInvoke)
       try {
-        deps.refs.put(conversationId, TurnContext.getConversationReference(a), aadObjectId)
+        deps.refs.put(conversationId, getConversationReference(a), aadObjectId)
         const payloadId = (a.value as { messagePayload?: { id?: unknown } } | undefined)?.messagePayload?.id
         deps.onEvent({
           text: action.text,
@@ -994,7 +1019,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
         eventText = '[Message deleted]'
       } else {
         const body = isGroupContext
-          ? (TurnContext.removeRecipientMention(a) ?? '').trim()
+          ? (removeRecipientMention(a) ?? '').trim()
           : (typeof a.text === 'string' ? a.text.trim() : '')
         const label = messageEvent === 'edited' ? '[Message edited]' : '[Message restored]'
         eventText = `${label} ${body.length > 0 ? body : '(the new text was not included)'}`
@@ -1100,7 +1125,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     if (!senderAllowed) {
       note('drop', 'sender_not_allowed', a)
       if (deps.pending && deps.sendPairingDm) {
-        const ref = TurnContext.getConversationReference(a)
+        const ref = getConversationReference(a)
         // Shared by the adapter's own detection, or by the relay's rule (isPersonalReference: an untyped
         // '@thread.' id is a group chat). An explicit 'personal' type stays 1:1. The @mention gate is not changed.
         if (isGroupContext || !isPersonalReference(ref)) {
@@ -1197,7 +1222,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
 
     // Capture the conversation reference for the outbound side. We do this
     // before pushing to Claude so a fast reply can always find its way back.
-    const ref = TurnContext.getConversationReference(a)
+    const ref = getConversationReference(a)
     deps.refs.put(conversationId, ref, aadObjectId)
     // Remember one reference per proactive-enabled channel (persisted), so the
     // post_to_channel tool can open a new post there later, even after a restart.
@@ -1223,7 +1248,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
           const teamId = team.id
           const lookup = new Promise<Awaited<ReturnType<typeof TeamsInfo.getTeamDetails>>>((resolve, reject) => {
             deps.adapter
-              .continueConversationAsync(deps.config.appId, ref, async c => resolve(await TeamsInfo.getTeamDetails(c, teamId)))
+              .continueConversation(deps.config.appId, ref, async c => resolve(await withSendRetry('team_details', () => TeamsInfo.getTeamDetails(c, teamId), { tracker: backgroundLookups })))
               .catch(reject)
           })
           lookup.then(
@@ -1252,7 +1277,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
     // the actual instruction ("@Bot summarize this" -> "summarize this"). For
     // personal chats there is no recipient mention, so use the text verbatim.
     const rawText = isGroupContext
-      ? (TurnContext.removeRecipientMention(a) ?? '').trim()
+      ? (removeRecipientMention(a) ?? '').trim()
       : (typeof a.text === 'string' ? a.text : '')
     const messageId = a.id
     const ts = a.timestamp ? new Date(a.timestamp).toISOString() : undefined
@@ -1438,14 +1463,22 @@ export async function handleMessagesPost(
     return new Response(null, { status: 200 })
   }
   const { res, done } = makeResponseSink()
-  // Hand the request to CloudAdapter. The SDK validates the JWT, parses
-  // the activity, calls our turn handler. If the turn handler throws,
-  // it's surfaced as a 500. If JWT validation fails, 401.
+  // Hand the request to CloudAdapter. The JWT was checked above (the channel-token verifier, TEAMSSDK1126: the SDK's
+  // own middleware is not used); the SDK validates the activity's shape and the serviceurl claim, and calls our turn
+  // handler. A malformed activity is a 400 below; if the turn handler throws, it's surfaced as a 500.
   try {
     // The SDK's Request type is structurally compatible with botReq.
     // Cast at the boundary so the type-check stays honest elsewhere.
-    await adapter.process(botReq as never, res as never, turn)
+    // TEAMSSDK1126: the Agents SDK takes the caller's identity from request.user (its own authorizeJWT would set it).
+    // The claims are the ones the channel-token verifier above checked; without them the SDK runs the turn as anonymous.
+    await adapter.process({ ...botReq, user: auth.claims } as never, res as never, turn)
   } catch (err) {
+    // TEAMSSDK1126: the Agents SDK validates the activity's shape (Activity.fromObject, zod) inside process. A
+    // malformed activity is a 400, like the ones refused at the door above: a 500 would make the connector retry it.
+    if ((err as { name?: unknown } | null)?.name === 'ZodError') {
+      process.stderr.write('teams channel: 400 an activity the SDK refused as malformed\n')
+      return new Response('malformed activity', { status: 400, headers: { 'content-type': 'text/plain' } })
+    }
     process.stderr.write(`teams channel: adapter.process threw: ${err}\n`)
     // adapter.process already wrote its own response on most errors;
     // if not, give the connector a 500 so it retries.

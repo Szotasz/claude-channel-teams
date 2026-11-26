@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, spyOn } from 'bun:test'
-import { TeamsInfo } from 'botbuilder'
+import { TeamsInfo } from './helpers/sdk'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -36,7 +36,7 @@ describe('reply with mentions', () => {
     refs.put('conv', { conversation } as any, FIXTURE_ID)
     const state = { calls: 0, sends: 0, sent: undefined as any }
     const adapter = {
-      async continueConversationAsync(_a: string, _r: any, logic: any) {
+      async continueConversation(_a: string, _r: any, logic: any) {
         state.calls++
         await logic({
           async sendActivity(act: any) {
@@ -242,7 +242,7 @@ describe('reply with mentions that closes a status stream', () => {
     refs.put('dm', { conversation: { id: 'a:1', conversationType: 'personal' } } as any, FIXTURE_ID)
     const sent: any[] = []
     const adapter = {
-      async continueConversationAsync(_a: string, _r: any, logic: any) {
+      async continueConversation(_a: string, _r: any, logic: any) {
         await logic({
           async sendActivity(act: any) {
             sent.push(act)

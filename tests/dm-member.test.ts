@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import type { ConversationReference } from 'botbuilder'
+import type { ConversationReference } from './helpers/sdk'
 
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore, isPersonalReference } from '../src/teams/conversationRefs'
@@ -159,7 +159,7 @@ describe('dm_member', () => {
     expect(calls[0].audience).toBeUndefined()
     expect(calls[0].conversationParameters).toEqual({
       isGroup: false,
-      bot: { id: 'app-id' },
+      agent: { id: 'app-id' },
       members: [{ id: USER_ID }],
       tenantId: TENANT_ID,
       channelData: { tenant: { id: TENANT_ID } },
@@ -275,12 +275,54 @@ describe('dm_member', () => {
     expect(calls.length).toBe(1)
   })
 
+  // TEAMSSDK1126: a 500 is retried by the plugin now (the Agents SDK retries nothing); a 400 is the error nobody retries.
   test('any other error from createConversationAsync is rethrown unchanged', async () => {
-    const boom = Object.assign(new Error('boom'), { statusCode: 500 })
+    const boom = Object.assign(new Error('boom'), { statusCode: 400 })
     const { dm, refs, calls } = setup({ failWith: boom })
     refs.put('c:seed', channelRef('c:seed', USER_ID), USER_ID)
     expect(await errOf(dm.dmMember(USER_ID, 'hi'))).toBe(boom)
     expect(calls.length).toBe(1)
+  })
+
+  test('opening the chat is retried on a 503 (an Agents SDK HttpError), the message goes out once', async () => {
+    const refs = createConversationRefStore()
+    refs.put('c:seed', channelRef('c:seed', USER_ID), USER_ID)
+    const allowlist = createAllowlist(join(dir, 'allowlist.json'))
+    allowlist.addEntry(USER_ID)
+    let opens = 0
+    const sends: unknown[] = []
+    const adapter = {
+      async createConversationAsync(_app: unknown, _ch: unknown, _url: unknown, _aud: unknown, _params: unknown, logic: (ctx: unknown) => Promise<void>) {
+        if (opens++ === 0) throw Object.assign(new Error('Request failed with status 503'), { status: 503 })
+        await logic({ activity: { conversation: { id: 'a:new-1' } }, sendActivity: async (x: unknown) => { sends.push(x); return { id: 'm-1' } } })
+      },
+    }
+    const dm = createDirectMessenger({ config: { appId: 'app-id', tenantId: TENANT_ID }, adapter: adapter as any, allowlist, refs, replier: { sendReply: async () => 'm-old' } })
+    const r = await dm.dmMember(USER_ID, 'hi')
+    expect(r.created).toBe(true)
+    expect(opens).toBe(2)
+    expect(sends.length).toBe(1)
+  })
+
+  test('a send that fails inside the callback does not open the chat again', async () => {
+    const { dm, refs, calls, sends } = setup({ sendFailsWith: Object.assign(new Error('x'), { status: 400 }) })
+    refs.put('c:seed', channelRef('c:seed', USER_ID), USER_ID)
+    await expect(dm.dmMember(USER_ID, 'hi')).rejects.toBeDefined()
+    expect(calls.length).toBe(1)
+    expect(sends.length).toBe(1)
+  })
+
+  test('403 as an Agents SDK HttpError (status, response.data): the same translations', async () => {
+    const blocked = Object.assign(new Error('Request failed with status 403'), { status: 403, response: { data: { error: { code: 'BotDisabledByAdmin', message: '{"subCode":"MessageWritesBlocked"}' } } } })
+    const a = setup({ failWith: blocked })
+    a.refs.put('c:seed', channelRef('c:seed', USER_ID), USER_ID)
+    expect(await errOf(a.dm.dmMember(USER_ID, 'hi'))).toBeInstanceOf(BotBlockedError)
+    expect(a.calls.length).toBe(1)
+    const missing = Object.assign(new Error('Request failed with status 403'), { status: 403, response: { data: { error: { code: 'Forbidden' } } } })
+    const b = setup({ failWith: missing })
+    b.refs.put('c:seed', channelRef('c:seed', USER_ID), USER_ID)
+    expect(await errOf(b.dm.dmMember(USER_ID, 'hi'))).toBeInstanceOf(PersonalInstallMissingError)
+    expect(b.calls.length).toBe(1)
   })
 
   test('serviceUrlHint picks the most recently seen ref, not the first', () => {

@@ -216,7 +216,7 @@ describe('sendFile with SharePoint', () => {
     let sent: any
     let minted = 0
     const adapter = {
-      async continueConversationAsync(_a: string, _r: any, logic: any) {
+      async continueConversation(_a: string, _r: any, logic: any) {
         await logic({ async sendActivity(a: any) { sent = a } })
       },
     } as any
@@ -275,7 +275,7 @@ describe('sendFile with SharePoint', () => {
     const h = harness('c4', { id: '19:c@thread.tacv2', conversationType: 'channel' }, sp, 'https://bot.test/files')
     ;(h as any).sendFile = createFileSender({
       config: { appId: 'x' },
-      adapter: { async continueConversationAsync() { throw new Error('connector down') } } as any,
+      adapter: { async continueConversation() { throw new Error('connector down') } } as any,
       allowlist: (() => { const d = mkdtempSync(join(tmpdir(), 'cct-sp-')); const a = createAllowlist(join(d, 'a.json')); a.addEntry(ID); return a })(),
       refs: (() => { const r = createConversationRefStore(); r.put('c4', { conversation: { id: '19:c@thread.tacv2', conversationType: 'channel' } } as any, ID); return r })(),
       outbox: { isPathAllowed: () => true, async mint() { throw new Error('mint must not run') } } as any,

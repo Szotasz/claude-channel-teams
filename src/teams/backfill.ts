@@ -19,7 +19,7 @@
  * reconstructed (a note is appended instead).
  */
 
-import type { Activity } from 'botbuilder'
+import type { Activity } from './sdk.js'
 import {
   closeSync,
   constants,

@@ -20,7 +20,7 @@
  * a conversation_id captured from elsewhere.
  */
 
-import type { ConversationReference } from 'botbuilder'
+import type { ConversationReference } from './sdk.js'
 import {
   closeSync,
   constants,
@@ -75,8 +75,9 @@ export function storedReference(ref: Partial<ConversationReference>): Partial<Co
     if (typeof conv.isGroup === 'boolean') c.isGroup = conv.isGroup
     out.conversation = c
   }
-  const bot = r.bot
-  if (bot && typeof bot === 'object' && typeof bot.id === 'string') out.bot = { id: bot.id }
+  // TEAMSSDK1126: the Agents SDK names the bot's account 'agent'; a reference stored by the botbuilder version says 'bot'.
+  const agent = r.agent ?? r.bot
+  if (agent && typeof agent === 'object' && typeof agent.id === 'string') out.agent = { id: agent.id }
   const user = r.user
   if (user && typeof user === 'object' && typeof user.id === 'string') {
     const u: Record<string, unknown> = { id: user.id }
@@ -339,8 +340,8 @@ export function createConversationRefStore(opts: RefStoreOptions = {}): Conversa
         // Group chats ('@thread.v2') are not team channels: there is no Graph channel to poll.
         if (!conversationId.includes('@thread.tacv2')) continue
         const serviceUrl = stored.ref.serviceUrl
-        const botId = stored.ref.bot?.id
-        const botName = stored.ref.bot?.name
+        const botId = stored.ref.agent?.id
+        const botName = stored.ref.agent?.name
         if (typeof serviceUrl !== 'string' || serviceUrl.length === 0) continue
         if (typeof botId !== 'string' || botId.length === 0) continue
         const semi = conversationId.indexOf(';')

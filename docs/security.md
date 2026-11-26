@@ -39,8 +39,20 @@ Each inbound POST passes five checks before any tool runs:
    token whose `appid`/`azp` is the bot's own app id. Anyone who can read
    `TEAMS_BOT_APP_PASSWORD` can request one, so on a shared host that
    would let a local process post activities in a paired user's name.
-3. **Bot Framework JWT validation** in the plugin's CloudAdapter, proves
-   the request came from Microsoft, signed against their JWKS.
+3. **The SDK's own request checks** (Microsoft 365 Agents SDK, `@microsoft/agents-hosting`):
+   the verified claims of step 2 are handed to `CloudAdapter.process` as the
+   request's identity. The SDK's own `serviceurl` comparison (host only) is
+   switched on as a second layer: by default it only logs a mismatch. The SDK's
+   outbound host validator is off (its host list is not measured against the
+   regional smba hosts). A raw connector request (a reaction, a targeted
+   message) goes only to the origin of the turn's service URL, so the bot's
+   token never reaches another host. The SDK's `authorizeJWT`
+   middleware is deliberately not used: it admits an anonymous request when no
+   client id is configured outside production, and it accepts Entra issuers
+   that step 2 refuses. The adapter refuses to start without the app id,
+   password and tenant id. An activity the SDK rejects as malformed is a 400.
+   (Until TEAMSSDK1126 this step was botbuilder's own JWT validation; botbuilder-js
+   is archived and no longer supported.)
 4. **Tenant pinning**: when `TEAMS_BOT_APP_TYPE=SingleTenant`, the gate
    refuses any activity whose `conversation.tenantId` differs from
    `TEAMS_BOT_TENANT_ID`. Belt-and-braces on top of the framework's check.

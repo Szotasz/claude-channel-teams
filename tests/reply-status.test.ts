@@ -48,7 +48,7 @@ describe('status updates in replies', () => {
     refs.put('chan', { conversation: { id: '19:x@thread.tacv2', conversationType: 'channel' } } as any, FIXTURE_ID)
     const state = { sent: [] as any[], stops: [] as string[], failFinal: opts.failFinal }
     const adapter = {
-      async continueConversationAsync(_a: string, _r: any, logic: any) {
+      async continueConversation(_a: string, _r: any, logic: any) {
         await logic({
           async sendActivity(act: any) {
             state.sent.push(act)
@@ -177,10 +177,11 @@ describe('status updates in replies', () => {
     expect(s.state.sent[2].entities?.some((e: any) => e.type === 'streaminfo') ?? false).toBe(false)
   })
 
+  // TEAMSSDK1126: a 500 is retried by the plugin now (the Agents SDK retries nothing); a 400 is the error nobody retries.
   test('other errors reject after one send', async () => {
-    const s = setup({ failFinal: { statusCode: 500 } })
+    const s = setup({ failFinal: { statusCode: 400 } })
     await s.sendStatus('dm', 'Working')
-    await expect(s.sendReply('dm', 'Done')).rejects.toEqual({ statusCode: 500 })
+    await expect(s.sendReply('dm', 'Done')).rejects.toEqual({ statusCode: 400 })
     expect(s.state.sent).toHaveLength(2)
   })
 

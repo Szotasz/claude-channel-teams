@@ -6,7 +6,7 @@
  * Everything from the quoted message and the form is untrusted data.
  */
 
-import type { Activity } from 'botbuilder'
+import type { Activity } from './sdk.js'
 
 export type MessageAction = { command: string; text: string }
 

@@ -13,7 +13,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import type { Attachment } from 'botframework-schema'
+import type { Attachment } from './helpers/sdk'
 
 import {
   composeMessageWithAnnotations,

@@ -7,12 +7,12 @@
  * timer until `stop` is called or a safety cap expires.
  *
  * Tests inject a `sendTyping` callback. In production the server passes a
- * closure that uses `CloudAdapter.continueConversationAsync` to send a
+ * closure that uses `CloudAdapter.continueConversation` to send a
  * `{ type: 'typing' }` activity through the stored conversation reference —
  * the same path `reply.ts` uses for outbound messages.
  */
 
-import type { ConversationReference } from 'botbuilder'
+import type { ConversationReference } from './sdk.js'
 
 export interface TypingPumpDeps {
   sendTyping: (ref: Partial<ConversationReference>) => Promise<void>

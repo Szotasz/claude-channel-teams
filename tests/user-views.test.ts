@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TurnContext, type Activity } from './helpers/sdk'
 
 import { makeTurnHandler } from '../src/teams/adapter'
 import { createReplySender } from '../src/teams/reply'
@@ -361,7 +361,7 @@ describe('reply: user_cards', () => {
     refs.put('conv-abc', { conversation: { id: 'conv-abc' } } as any, SENDER)
     const state = { calls: 0, sent: undefined as any }
     const adapter = {
-      async continueConversationAsync(_a: string, _r: any, logic: any) {
+      async continueConversation(_a: string, _r: any, logic: any) {
         state.calls++
         await logic({
           async sendActivity(act: any) {

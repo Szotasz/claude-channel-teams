@@ -1,53 +1,46 @@
 /**
- * Bot Framework authentication wiring.
- *
- * Builds the `CloudAdapter` we expose to the listener.
+ * The adapter the listener hands requests to (Microsoft 365 Agents SDK, TEAMSSDK1126).
  *
  * Security shape:
- *   - `ConfigurationServiceClientCredentialFactory` reads app id / password /
- *     tenant from a config bag we supply. For `MicrosoftAppType=SingleTenant`
- *     the bot connector's JWT must be issued by the pinned tenant — tokens
- *     from other tenants fail validation. The plugin only ships SingleTenant
- *     in v1 (design decision F.1).
- *   - `createBotFrameworkAuthenticationFromConfiguration` plugs the
- *     factory into the framework's token validator. The validator fetches
- *     Microsoft's JWKS, verifies signature, audience, issuer, and tenant.
- *     A forged or replayed activity (e.g. from a random internet attacker
- *     hitting the public endpoint) fails at this layer and the framework
- *     returns 401 to the bot connector.
+ *   - Inbound tokens are NOT checked here. The plugin's own channel-token verifier (channelToken.ts, TEAMSEMUTOKEN1118)
+ *     runs in handleMessagesPost before the adapter sees anything, and admits only what the Bot Framework channel
+ *     service signs for this bot. The SDK's own `authorizeJWT` middleware is deliberately not used: it admits an
+ *     anonymous request when no client id is configured outside production, and it accepts Entra issuers the verifier
+ *     refuses on purpose. The verified claims are handed to `process` as `request.user` (adapter.ts).
+ *   - The verifier requires the token's `serviceurl` claim to equal the activity's serviceUrl. The SDK's own
+ *     comparison (CloudAdapter.validateServiceUrl, host only) only logs a mismatch by default; it is switched on here
+ *     (`validateServiceUrl: true`) as a second layer (Dani's review on #60, measured in the 1.10.2 dist). The SDK's
+ *     outbound host validator stays off: its default host list is not measured against the regional smba hosts.
+ *   - Outbound tokens: client credentials of the bot's Entra app in the pinned tenant (SingleTenant only, design F.1).
  *
- * We deliberately do NOT add custom token handling here. Every defensive
- * trick on top of the SDK risks weakening the validator — the SDK already
- * implements the audience/issuer/JWKS rotation. We trust it and add gate
- * logic at the application layer (allowlist) on top.
+ * The configuration uses the SDK's names (clientId, clientSecret, tenantId); the mapping from the plugin's config is
+ * here so the rest of the code keeps its own names.
  */
 
-import { CloudAdapter, ConfigurationServiceClientCredentialFactory, createBotFrameworkAuthenticationFromConfiguration } from 'botbuilder'
+import { AuthType, CloudAdapter, type AuthConfiguration } from '@microsoft/agents-hosting'
 import type { Config } from '../config.js'
 
-/**
- * Build a `CloudAdapter` configured for SingleTenant operation.
- *
- * The configuration object passed to the SDK uses the historical names the
- * framework expects (`MicrosoftAppId`, `MicrosoftAppPassword`, etc.). We
- * isolate that mapping here so the rest of the code can use cleaner names.
- */
+export function agentsAuthConfig(config: Config): AuthConfiguration {
+  if (!config.appId || !config.appPassword || !config.tenantId) {
+    // The SDK would fall back to an anonymous identity without a client id; never start that way.
+    throw new Error('teams channel: the bot app id, password and tenant id are all required')
+  }
+  return {
+    clientId: config.appId,
+    clientSecret: config.appPassword,
+    tenantId: config.tenantId,
+    authType: AuthType.ClientSecret,
+  }
+}
+
+/** Build the `CloudAdapter` for SingleTenant operation. */
 export function createCloudAdapter(config: Config): CloudAdapter {
-  const factory = new ConfigurationServiceClientCredentialFactory({
-    MicrosoftAppId: config.appId,
-    MicrosoftAppPassword: config.appPassword,
-    MicrosoftAppType: config.appType,
-    MicrosoftAppTenantId: config.tenantId,
-  })
-  // `null` here means "use the default 'get' lookup against the supplied
-  // ConfigurationProvider"; we pass our own `ServiceClientCredentialsFactory`
-  // explicitly so the SDK can resolve credentials without a separate config
-  // bag. The signature is positional and the SDK accepts a partial
-  // ConfigurationBotFrameworkAuthenticationOptions; we pass {}.
-  const auth = createBotFrameworkAuthenticationFromConfiguration(
-    // No ConfigurationProvider — we passed every value via the factory above.
-    null,
-    factory,
-  )
-  return new CloudAdapter(auth)
+  const adapter = new CloudAdapter(agentsAuthConfig(config), undefined, undefined, { validateServiceUrl: true })
+  // The SDK's default onTurnError posts "The agent encountered an error or bug." into the user's chat. botbuilder had
+  // no default: the error went back to the caller (adapter.process -> handleMessagesPost logs it and answers 500).
+  // Keep that: nothing the plugin did not write ever appears in a chat.
+  adapter.onTurnError = async (_context, error) => {
+    throw error
+  }
+  return adapter
 }

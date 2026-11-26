@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TurnContext, type Activity } from './helpers/sdk'
 
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
@@ -26,7 +26,9 @@ const KEY = Symbol('connector')
 const CONV = '19:abc@thread.tacv2;messageid=1'
 const config: any = { appId: 'app', appPassword: 'pw', appType: 'SingleTenant', tenantId: TENANT, bindHost: '127.0.0.1', port: 0 }
 
-function setup(status = 200, allowed = true) {
+function setup(status: number | number[] = 200, allowed = true) {
+  const seq = Array.isArray(status) ? status : [status]
+  let answered = 0
   const dir = tempDir('cct-react-')
   const allowlist = createAllowlist(join(dir, 'a.json'))
   allowlist.addEntry(ID)
@@ -38,9 +40,10 @@ function setup(status = 200, allowed = true) {
   )
   const requests: any[] = []
   let calls = 0
-  const client = { sendRequest: async (r: any) => { requests.push(r); return { status } } }
+  // The Agents SDK's HttpClient (TEAMSSDK1126): a non-2xx answer is thrown as an HttpError with `status`.
+  const client = { httpClient: { baseURL: 'https://smba.trafficmanager.net/emea/', request: async (r: any) => { requests.push(r); const st = seq[Math.min(answered++, seq.length - 1)]!; if (st < 200 || st > 299) throw Object.assign(new Error(`Request failed with status ${st}`), { status: st }); return { status: st } } } }
   const adapter: any = {
-    continueConversationAsync: async (_a: string, _r: any, logic: any) => {
+    continueConversation: async (_a: string, _r: any, logic: any) => {
       calls++
       await logic({ adapter: { ConnectorClientKey: KEY }, turnState: new Map([[KEY, client]]) })
     },
@@ -72,6 +75,16 @@ describe('react', () => {
     expect(s.calls()).toBe(0)
     await expect(setup(200, false).r.react(CONV, 'm:1', 'like')).rejects.toBeInstanceOf(ConversationNotAllowedError)
     await expect(setup(404).r.react(CONV, 'm:1', 'like')).rejects.toThrow('react failed (HTTP 404)')
+  })
+
+  // TEAMSSDK1126: the Agents SDK retries nothing; the reaction is retried like a send (Samu's review on #60).
+  test('R3 a 503 is retried, a 404 is not', async () => {
+    const ok = setup([503, 200])
+    await ok.r.react(CONV, 'm:1', 'like')
+    expect(ok.requests.length).toBe(2)
+    const no = setup(404)
+    await expect(no.r.react(CONV, 'm:1', 'like')).rejects.toThrow('react failed (HTTP 404)')
+    expect(no.requests.length).toBe(1)
   })
 })
 

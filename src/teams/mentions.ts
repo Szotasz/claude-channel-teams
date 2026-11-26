@@ -3,7 +3,8 @@
  * listed in TEAMS_MENTION_TAGS and work only in a team channel. See docs/mentions.md.
  */
 
-import { TeamsInfo, type TurnContext } from 'botbuilder'
+import { TeamsInfo, type TurnContext } from './sdk.js'
+import { withSendRetry } from './sendRetry.js'
 
 export const MAX_MENTIONS = 10
 
@@ -135,11 +136,15 @@ export function isUsableDisplayName(name: unknown): name is string {
 
 export function isNotMemberError(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false
-  const e = err as { statusCode?: unknown; code?: unknown; body?: { error?: { code?: unknown } } }
+  // botframework-connector's RestError had statusCode and body; the Agents SDK's HttpError (TEAMSSDK1126) has status
+  // and response.data.
+  const e = err as { statusCode?: unknown; status?: unknown; code?: unknown; body?: { error?: { code?: unknown } }; response?: { data?: { error?: { code?: unknown } } } }
   return (
     e.statusCode === 404 ||
+    e.status === 404 ||
     e.code === 'MemberNotFoundInConversation' ||
-    e.body?.error?.code === 'MemberNotFoundInConversation'
+    e.body?.error?.code === 'MemberNotFoundInConversation' ||
+    e.response?.data?.error?.code === 'MemberNotFoundInConversation'
   )
 }
 
@@ -159,4 +164,5 @@ export function createMemberLookup(
   }
 }
 
-export const teamsMemberLookup: MemberLookup = createMemberLookup((ctx, id) => TeamsInfo.getMember(ctx, id))
+// A read, retried like the sends (TEAMSSDK1126: the Agents SDK retries nothing itself); a 404 is not retried.
+export const teamsMemberLookup: MemberLookup = createMemberLookup((ctx, id) => withSendRetry('member_lookup', () => TeamsInfo.getMember(ctx, id)))

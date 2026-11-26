@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test, beforeEach } from 'bun:test'
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { BotAdapter, TurnContext, type Activity } from 'botbuilder'
+import { BotAdapter, TurnContext, type Activity } from './helpers/sdk'
 
 import { makeTurnHandler } from '../src/teams/adapter'
 import { createAllowlist } from '../src/pairing/allowlist'
@@ -65,7 +65,7 @@ describe('post_to_channel', () => {
     const calls: any[] = []
     const sends: any[] = []
     const adapter = {
-      continueConversationAsync: async (appId: string, ref: any, cb: any) => {
+      continueConversation: async (appId: string, ref: any, cb: any) => {
         calls.push({ appId, ref })
         await cb({} as any)
       },

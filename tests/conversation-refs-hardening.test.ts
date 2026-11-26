@@ -60,7 +60,7 @@ describe('conversation refs hardening', () => {
       locale: 'en-US',
       serviceUrl: SERVICE_URL,
       conversation: { id: 'conv-1', conversationType: 'personal', tenantId: 't', isGroup: false },
-      bot: { id: 'b' },
+      agent: { id: 'b' },
       user: { id: 'u', aadObjectId: 'aad' },
     })
     const bad = storedReference({
@@ -72,6 +72,18 @@ describe('conversation refs hardening', () => {
     expect(bad).toEqual({ conversation: { id: 'c' } })
     expect('user' in bad).toBe(false)
     expect('bot' in bad).toBe(false)
+    expect('agent' in bad).toBe(false)
+  })
+
+  // TEAMSSDK1126: the Agents SDK names the bot's account 'agent'. A reference a botbuilder version stored says 'bot':
+  // it is read as 'agent' (the file at a live install), one that already says 'agent' is kept, and 'agent' wins.
+  test('a2) a stored botbuilder reference (bot) becomes the Agents SDK shape (agent)', () => {
+    const old = storedReference({ ...fullRef() } as any)
+    expect((old as any).agent).toEqual({ id: 'b' })
+    expect('bot' in old).toBe(false)
+    const { bot: _b, ...rest } = fullRef()
+    expect((storedReference({ ...rest, agent: { id: 'n', name: 'x' } } as any) as any).agent).toEqual({ id: 'n' })
+    expect((storedReference({ ...fullRef(), agent: { id: 'n' } } as any) as any).agent).toEqual({ id: 'n' })
   })
 
   test('b) the file holds no display names; memory keeps the full ref', () => {
@@ -197,7 +209,7 @@ describe('conversation refs hardening', () => {
     let handed: any[]
     const adapter = () =>
       ({
-        async continueConversationAsync(_appId: string, ref: any, logic: any) {
+        async continueConversation(_appId: string, ref: any, logic: any) {
           handed.push(ref)
           await logic({ sendActivity: async () => ({ id: 'm1' }) })
         },

@@ -2,7 +2,7 @@
 // background (so Teams does not retry it); messages of one conversation run one after another in
 // arrival order; the turn gets only the activity, because it may run after botbuilder revoked
 // the context.
-import type { TurnContext } from 'botbuilder'
+import type { TurnContext } from './sdk.js'
 
 export const ACK_AFTER_MS = 5_000
 export type ActivityTurn = (ctx: Pick<TurnContext, 'activity'>) => Promise<void>
