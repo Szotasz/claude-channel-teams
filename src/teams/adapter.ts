@@ -40,7 +40,12 @@ import {
   type ConversationReference,
 } from './sdk.js'
 import { isFeedbackInvoke, parseFeedback, feedbackEventText } from './feedback.js'
-import { withSendRetry } from './sendRetry.js'
+import { createSendTracker, withSendRetry } from './sendRetry.js'
+
+// The team-details lookup below runs in the background and is never awaited. It keeps the retry, but on its own
+// tracker: the module-level one counts the sends that shutdown waits for, and a lookup is not one (a lookup that
+// never answers held that count up, and with it shutdown, for its full wait).
+const backgroundLookups = createSendTracker()
 import type { Config } from '../config.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { PendingStore } from '../pairing/pair.js'
@@ -1243,7 +1248,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
           const teamId = team.id
           const lookup = new Promise<Awaited<ReturnType<typeof TeamsInfo.getTeamDetails>>>((resolve, reject) => {
             deps.adapter
-              .continueConversation(deps.config.appId, ref, async c => resolve(await withSendRetry('team_details', () => TeamsInfo.getTeamDetails(c, teamId))))
+              .continueConversation(deps.config.appId, ref, async c => resolve(await withSendRetry('team_details', () => TeamsInfo.getTeamDetails(c, teamId), { tracker: backgroundLookups })))
               .catch(reject)
           })
           lookup.then(

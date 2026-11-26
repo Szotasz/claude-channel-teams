@@ -7,6 +7,7 @@ import {
   parseChannelThread,
 } from '../src/teams/threadHistory'
 import { baseConversationId, makeTurnHandler } from '../src/teams/adapter'
+import { sendTracker } from '../src/teams/sendRetry'
 import { createAllowlist } from '../src/pairing/allowlist'
 import { createConversationRefStore } from '../src/teams/conversationRefs'
 import { loadConfig } from '../src/config'
@@ -376,6 +377,19 @@ describe('H13 team details lookup (channelData.team.id only)', () => {
       expect(await s.run()).toBe('done')
       expect(s.events()).toBe(1)
       expect(s.store.get('19:abc@thread.tacv2')).toBeUndefined()
+    } finally {
+      TeamsInfo.getTeamDetails = original
+    }
+  })
+  // TEAMSSDK1126: the lookup is retried on its own tracker; shutdown waits only for real sends (sendTracker).
+  test('a lookup that never answers leaves no send open for shutdown to wait for', async () => {
+    const before = sendTracker.inFlight()
+    try {
+      const s = setup(() => new Promise(() => {}))
+      expect(await s.run()).toBe('done')
+      await settle()
+      expect(s.lookups()).toBe(1)
+      expect(sendTracker.inFlight()).toBe(before)
     } finally {
       TeamsInfo.getTeamDetails = original
     }

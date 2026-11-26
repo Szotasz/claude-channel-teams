@@ -320,6 +320,7 @@ describe('wiring', () => {
     expect(src('teams/directMessage.ts')).toContain("await withSendRetry('dm_open', async () => {")
     expect(src('teams/directMessage.ts')).toContain("withSendRetry('dm', () =>")
     expect(src('teams/mentions.ts')).toContain("withSendRetry('member_lookup', () => TeamsInfo.getMember(ctx, id))")
-    expect(src('teams/adapter.ts')).toContain("withSendRetry('team_details', () => TeamsInfo.getTeamDetails(c, teamId))")
+    // the background lookup retries on its own tracker, not the one shutdown waits for
+    expect(src('teams/adapter.ts')).toContain("withSendRetry('team_details', () => TeamsInfo.getTeamDetails(c, teamId), { tracker: backgroundLookups })")
   })
 })
