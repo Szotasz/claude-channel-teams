@@ -40,6 +40,7 @@ import {
   type ConversationReference,
 } from './sdk.js'
 import { isFeedbackInvoke, parseFeedback, feedbackEventText } from './feedback.js'
+import { withSendRetry } from './sendRetry.js'
 import type { Config } from '../config.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { PendingStore } from '../pairing/pair.js'
@@ -1242,7 +1243,7 @@ export function makeTurnHandler(deps: AdapterDeps): (ctx: InboundTurn) => Promis
           const teamId = team.id
           const lookup = new Promise<Awaited<ReturnType<typeof TeamsInfo.getTeamDetails>>>((resolve, reject) => {
             deps.adapter
-              .continueConversation(deps.config.appId, ref, async c => resolve(await TeamsInfo.getTeamDetails(c, teamId)))
+              .continueConversation(deps.config.appId, ref, async c => resolve(await withSendRetry('team_details', () => TeamsInfo.getTeamDetails(c, teamId))))
               .catch(reject)
           })
           lookup.then(
@@ -1457,9 +1458,9 @@ export async function handleMessagesPost(
     return new Response(null, { status: 200 })
   }
   const { res, done } = makeResponseSink()
-  // Hand the request to CloudAdapter. The SDK validates the JWT, parses
-  // the activity, calls our turn handler. If the turn handler throws,
-  // it's surfaced as a 500. If JWT validation fails, 401.
+  // Hand the request to CloudAdapter. The JWT was checked above (the channel-token verifier, TEAMSSDK1126: the SDK's
+  // own middleware is not used); the SDK validates the activity's shape and the serviceurl claim, and calls our turn
+  // handler. A malformed activity is a 400 below; if the turn handler throws, it's surfaced as a 500.
   try {
     // The SDK's Request type is structurally compatible with botReq.
     // Cast at the boundary so the type-check stays honest elsewhere.

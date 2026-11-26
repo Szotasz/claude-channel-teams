@@ -307,8 +307,19 @@ describe('wiring', () => {
     // The acknowledgement (see ack-placeholder) adds its own send and the reply's overwrite of it.
     expect(reply).toContain("withSendRetry('reply', () => turnContext.updateActivity(asActivity({ ...activity, id: ackId })))")
     expect(reply).toContain("withSendRetry('ack', () => turnContext.sendActivity(asActivity({ type: 'message', text })))")
-    expect(count(reply, 'withSendRetry(')).toBe(4)
-    expect(count(sendFile, 'withSendRetry(')).toBe(1)
+    // TEAMSSDK1126: the Agents SDK retries nothing, so every user-visible outbound call is wrapped here
+    // (Samu's review on #60): the status update and the reaction in reply.ts, the SharePoint card in send_file.
+    expect(reply).toContain("withSendRetry('status', () => turnContext.sendActivity(")
+    expect(reply).toContain("await withSendRetry('react', async () => {")
+    expect(sendFile).toContain("withSendRetry('send_file', () => turnContext.sendActivity(spActivity as any))")
+    expect(count(reply, 'withSendRetry(')).toBe(6)
+    expect(count(sendFile, 'withSendRetry(')).toBe(2)
     expect(count(server, 'withSendRetry(')).toBe(1)
+    expect(src('teams/targeted.ts')).toContain("await withSendRetry('targeted', async () => {")
+    expect(src('teams/channelPost.ts')).toContain("withSendRetry('channel_post', () => send(")
+    expect(src('teams/directMessage.ts')).toContain("await withSendRetry('dm_open', async () => {")
+    expect(src('teams/directMessage.ts')).toContain("withSendRetry('dm', () =>")
+    expect(src('teams/mentions.ts')).toContain("withSendRetry('member_lookup', () => TeamsInfo.getMember(ctx, id))")
+    expect(src('teams/adapter.ts')).toContain("withSendRetry('team_details', () => TeamsInfo.getTeamDetails(c, teamId))")
   })
 })

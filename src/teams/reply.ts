@@ -421,10 +421,11 @@ export function createReplySender(deps: ReplyDeps) {
         const url =
           `${serviceUrl}/v3/conversations/${encodeURIComponent(conversationId)}` +
           `/activities/${encodeURIComponent(messageId)}/reactions/${reaction}`
-        const status = await connectorRequest(ctx, { url, method: remove ? 'DELETE' : 'PUT' })
-        if (status < 200 || status >= 300) {
-          throw new Error(`react failed (HTTP ${status})`)
-        }
+        // A failed status is thrown with `status`, so withSendRetry retries 408, 429 and 5xx like every send.
+        await withSendRetry('react', async () => {
+          const status = await connectorRequest(ctx, { url, method: remove ? 'DELETE' : 'PUT' })
+          if (status < 200 || status >= 300) throw Object.assign(new Error(`react failed (HTTP ${status})`), { status })
+        })
       },
     )
     process.stderr.write(
@@ -444,7 +445,7 @@ export function createReplySender(deps: ReplyDeps) {
       deps.typingPump?.stop(conversationId)
       let id: string | undefined
       await deps.adapter.continueConversation(deps.config.appId, asReference(current), async turnContext => {
-        const res = await turnContext.sendActivity(activity as any)
+        const res = await withSendRetry('status', () => turnContext.sendActivity(activity as any))
         id = typeof res?.id === 'string' && res.id.length > 0 ? res.id : undefined
       })
       return id

@@ -220,7 +220,7 @@ export function createFileSender(deps: FileSenderDeps) {
           deps.config.appId,
           asReference(ref),
           async turnContext => {
-            await turnContext.sendActivity(spActivity as any)
+            await withSendRetry('send_file', () => turnContext.sendActivity(spActivity as any))
           },
         )
         process.stderr.write(

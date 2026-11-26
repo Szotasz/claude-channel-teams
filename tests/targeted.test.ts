@@ -112,11 +112,13 @@ test('T3 buildTargetedActivity', () => {
 
 describe('T4 createTargetedSender', () => {
   const KEY = Symbol('ConnectorClientKey')
-  function fake(status: number, withClient = true) {
+  function fake(status: number | number[], withClient = true) {
+    const seq = Array.isArray(status) ? status : [status]
+    let answered = 0
     const reqs: any[] = []
     const calls: string[] = []
     // The Agents SDK's HttpClient (TEAMSSDK1126): request(config), and a non-2xx answer is thrown as an HttpError with `status`.
-    const client = { httpClient: { request: async (r: any) => { reqs.push(r); if (status < 200 || status > 299) throw Object.assign(new Error(`Request failed with status ${status}`), { status }); return { status } } } }
+    const client = { httpClient: { request: async (r: any) => { reqs.push(r); const st = seq[Math.min(answered++, seq.length - 1)]!; if (st < 200 || st > 299) throw Object.assign(new Error(`Request failed with status ${st}`), { status: st }); return { status: st } } } }
     const adapter = {
       continueConversation: async (appId: string, _ref: any, logic: any) => {
         calls.push(appId)
@@ -137,6 +139,15 @@ describe('T4 createTargetedSender', () => {
     expect(body.recipient.id).toBe('29:user-1')
     expect(req.headers['Content-Type']).toBe('application/json')
     expect(f.calls).toEqual(['app-1'])
+  })
+  // TEAMSSDK1126: retried like a send (Samu's review on #60).
+  test('a 503 is retried, a 403 is not', async () => {
+    const ok = fake([503, 201])
+    await createTargetedSender(ok.adapter, 'a')(channelRef, 'x')
+    expect(ok.reqs.length).toBe(2)
+    const no = fake(403)
+    await expect(createTargetedSender(no.adapter, 'a')(channelRef, 'x')).rejects.toThrow('targeted send failed (HTTP 403)')
+    expect(no.reqs.length).toBe(1)
   })
   test('failures', async () => {
     await expect(createTargetedSender(fake(403).adapter, 'a')(channelRef, 'x')).rejects.toThrow('targeted send failed (HTTP 403)')

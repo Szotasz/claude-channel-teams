@@ -1,4 +1,5 @@
 import { TeamsInfo, asReference, type CloudAdapter, type ConversationReference, type TurnContext, type Activity } from './sdk.js'
+import { withSendRetry } from './sendRetry.js'
 import type { Allowlist } from '../pairing/allowlist.js'
 import type { Config } from '../config.js'
 import type { ConversationRefStore } from './conversationRefs.js'
@@ -51,7 +52,8 @@ export function createChannelPoster(deps: ChannelPostDeps) {
       ((ctx, activity, id, appId) => TeamsInfo.sendMessageToTeamsChannel(ctx, activity as Activity, id, appId))
     let result: [Partial<ConversationReference>, string] | undefined
     await deps.adapter.continueConversation(deps.config.appId, asReference(stored.ref), async ctx => {
-      result = await send(ctx, { type: 'message', text, textFormat: 'markdown' }, channelId, deps.config.appId)
+      // botframework-connector's pipeline retried this create (5xx, 408, 429); the Agents SDK does not (TEAMSSDK1126).
+      result = await withSendRetry('channel_post', () => send(ctx, { type: 'message', text, textFormat: 'markdown' }, channelId, deps.config.appId))
     })
 
     const newRef = result?.[0]

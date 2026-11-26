@@ -1,4 +1,5 @@
 import { connectorRequest, type ConversationReference, type TurnContext } from './sdk.js'
+import { withSendRetry } from './sendRetry.js'
 import { isPersonalReference, type ConversationRefStore } from './conversationRefs.js'
 
 /** Bot Connector URL that creates a message only its recipient sees (Teams targeted message). */
@@ -46,14 +47,15 @@ export function createTargetedSender(adapter: ContinueAdapter, appId: string): T
     await adapter.continueConversation(appId, ref, async ctx => {
       const serviceUrl = String(ref.serviceUrl ?? '')
       if (!serviceUrl) throw new Error('no service URL')
-      const status = await connectorRequest(ctx, {
-        url: targetedActivityUrl(serviceUrl, String(ref.conversation!.id)),
-        method: 'POST',
-        data: body,
+      // A failed status is thrown with `status`, so withSendRetry retries 408, 429 and 5xx like every send.
+      await withSendRetry('targeted', async () => {
+        const status = await connectorRequest(ctx, {
+          url: targetedActivityUrl(serviceUrl, String(ref.conversation!.id)),
+          method: 'POST',
+          data: body,
+        })
+        if (status < 200 || status > 299) throw Object.assign(new Error(`targeted send failed (HTTP ${status})`), { status })
       })
-      if (status < 200 || status > 299) {
-        throw new Error(`targeted send failed (HTTP ${status})`)
-      }
     })
   }
 }
