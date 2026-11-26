@@ -137,6 +137,14 @@ describe('loadConfig reads the switches', () => {
   const restore = () => {
     for (const [k, v] of Object.entries(saved)) set(k, v)
   }
+  // A test that writes files into the state dir, or checks that none appear, gets a fresh one: in one shared dir the
+  // "switches on" test left its files for the "switches off" test whenever it ran first (bun test --randomize).
+  const made: string[] = []
+  const freshStateDir = () => {
+    const d = mkdtempSync(join(tmpdir(), 'cct-backfill-cfg-'))
+    made.push(d)
+    return d
+  }
   const withVars = (extra: Record<string, string | undefined>, run: () => void) => {
     for (const [k, v] of Object.entries({ ...vars, ...extra })) set(k, v)
     try {
@@ -179,7 +187,7 @@ describe('loadConfig reads the switches', () => {
   })
 
   test('with both switches off the server wiring writes no new file', () => {
-    withVars({ TEAMS_BACKFILL: undefined, TEAMS_DECISION_LOG: undefined }, () => {
+    withVars({ TEAMS_BACKFILL: undefined, TEAMS_DECISION_LOG: undefined, TEAMS_STATE_DIR: freshStateDir() }, () => {
       const config = loadConfig()
       // Exactly what src/server.ts does (it cannot be imported here: it boots the listener).
       const inboundIds = createInboundIds()
@@ -212,7 +220,7 @@ describe('loadConfig reads the switches', () => {
   })
 
   test('with the switches on the files appear', () => {
-    withVars({ TEAMS_BACKFILL: '1', TEAMS_DECISION_LOG: '1' }, () => {
+    withVars({ TEAMS_BACKFILL: '1', TEAMS_DECISION_LOG: '1', TEAMS_STATE_DIR: freshStateDir() }, () => {
       const config = loadConfig()
       const inboundIds = createInboundIds()
       if (config.backfill) {
@@ -238,5 +246,7 @@ describe('loadConfig reads the switches', () => {
     expect(src).toContain('      submit: activity => listener.submitActivity(activity),')
   })
 
-  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+  afterAll(() => {
+    for (const d of [dir, ...made]) rmSync(d, { recursive: true, force: true })
+  })
 })
