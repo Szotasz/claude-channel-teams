@@ -118,7 +118,7 @@ describe('T4 createTargetedSender', () => {
     const reqs: any[] = []
     const calls: string[] = []
     // The Agents SDK's HttpClient (TEAMSSDK1126): request(config), and a non-2xx answer is thrown as an HttpError with `status`.
-    const client = { httpClient: { request: async (r: any) => { reqs.push(r); const st = seq[Math.min(answered++, seq.length - 1)]!; if (st < 200 || st > 299) throw Object.assign(new Error(`Request failed with status ${st}`), { status: st }); return { status: st } } } }
+    const client = { httpClient: { baseURL: 'https://smba.example.invalid/teams/', request: async (r: any) => { reqs.push(r); const st = seq[Math.min(answered++, seq.length - 1)]!; if (st < 200 || st > 299) throw Object.assign(new Error(`Request failed with status ${st}`), { status: st }); return { status: st } } } }
     const adapter = {
       continueConversation: async (appId: string, _ref: any, logic: any) => {
         calls.push(appId)

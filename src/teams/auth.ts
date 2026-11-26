@@ -7,8 +7,10 @@
  *     service signs for this bot. The SDK's own `authorizeJWT` middleware is deliberately not used: it admits an
  *     anonymous request when no client id is configured outside production, and it accepts Entra issuers the verifier
  *     refuses on purpose. The verified claims are handed to `process` as `request.user` (adapter.ts).
- *   - The adapter still checks the token's `serviceurl` claim against the activity, and the outbound service URL host
- *     (CloudAdapter.validateServiceUrl / ensureOutboundServiceUrlAllowed).
+ *   - The verifier requires the token's `serviceurl` claim to equal the activity's serviceUrl. The SDK's own
+ *     comparison (CloudAdapter.validateServiceUrl, host only) only logs a mismatch by default; it is switched on here
+ *     (`validateServiceUrl: true`) as a second layer (Dani's review on #60, measured in the 1.10.2 dist). The SDK's
+ *     outbound host validator stays off: its default host list is not measured against the regional smba hosts.
  *   - Outbound tokens: client credentials of the bot's Entra app in the pinned tenant (SingleTenant only, design F.1).
  *
  * The configuration uses the SDK's names (clientId, clientSecret, tenantId); the mapping from the plugin's config is
@@ -33,7 +35,7 @@ export function agentsAuthConfig(config: Config): AuthConfiguration {
 
 /** Build the `CloudAdapter` for SingleTenant operation. */
 export function createCloudAdapter(config: Config): CloudAdapter {
-  const adapter = new CloudAdapter(agentsAuthConfig(config))
+  const adapter = new CloudAdapter(agentsAuthConfig(config), undefined, undefined, { validateServiceUrl: true })
   // The SDK's default onTurnError posts "The agent encountered an error or bug." into the user's chat. botbuilder had
   // no default: the error went back to the caller (adapter.process -> handleMessagesPost logs it and answers 500).
   // Keep that: nothing the plugin did not write ever appears in a chat.

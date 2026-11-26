@@ -41,7 +41,7 @@ function setup(status: number | number[] = 200, allowed = true) {
   const requests: any[] = []
   let calls = 0
   // The Agents SDK's HttpClient (TEAMSSDK1126): a non-2xx answer is thrown as an HttpError with `status`.
-  const client = { httpClient: { request: async (r: any) => { requests.push(r); const st = seq[Math.min(answered++, seq.length - 1)]!; if (st < 200 || st > 299) throw Object.assign(new Error(`Request failed with status ${st}`), { status: st }); return { status: st } } } }
+  const client = { httpClient: { baseURL: 'https://smba.trafficmanager.net/emea/', request: async (r: any) => { requests.push(r); const st = seq[Math.min(answered++, seq.length - 1)]!; if (st < 200 || st > 299) throw Object.assign(new Error(`Request failed with status ${st}`), { status: st }); return { status: st } } } }
   const adapter: any = {
     continueConversation: async (_a: string, _r: any, logic: any) => {
       calls++

@@ -157,6 +157,14 @@ describe('inbound auth end to end on the Agents SDK (TEAMSSDK1126)', () => {
     expect(sent).toEqual([])
   })
 
+  // Dani's review on #60: by default the SDK only logs a serviceurl claim of another host; it is switched on as a
+  // second layer behind the verifier.
+  test('the SDK serviceurl comparison is on: another host is refused, the same host passes', () => {
+    const adapter = createCloudAdapter({ appId: APP, appPassword: 'pw', tenantId: TENANT, appType: 'SingleTenant' } as any) as any
+    expect(adapter.validateServiceUrl({ serviceurl: SURL }, { serviceUrl: 'https://evil.example/' })).toBe(false)
+    expect(adapter.validateServiceUrl({ serviceurl: SURL }, { serviceUrl: SURL })).toBe(true)
+  })
+
   test('no adapter without the app id, password and tenant (the SDK would run anonymous without a client id)', () => {
     for (const miss of ['appId', 'appPassword', 'tenantId']) {
       const config = { appId: APP, appPassword: 'pw', tenantId: TENANT, appType: 'SingleTenant', [miss]: '' } as any

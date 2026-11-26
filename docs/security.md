@@ -41,8 +41,12 @@ Each inbound POST passes five checks before any tool runs:
    would let a local process post activities in a paired user's name.
 3. **The SDK's own request checks** (Microsoft 365 Agents SDK, `@microsoft/agents-hosting`):
    the verified claims of step 2 are handed to `CloudAdapter.process` as the
-   request's identity, and the adapter checks the `serviceurl` claim against the
-   activity and the outbound service URL host again. The SDK's `authorizeJWT`
+   request's identity. The SDK's own `serviceurl` comparison (host only) is
+   switched on as a second layer: by default it only logs a mismatch. The SDK's
+   outbound host validator is off (its host list is not measured against the
+   regional smba hosts). A raw connector request (a reaction, a targeted
+   message) goes only to the origin of the turn's service URL, so the bot's
+   token never reaches another host. The SDK's `authorizeJWT`
    middleware is deliberately not used: it admits an anonymous request when no
    client id is configured outside production, and it accepts Entra issuers
    that step 2 refuses. The adapter refuses to start without the app id,

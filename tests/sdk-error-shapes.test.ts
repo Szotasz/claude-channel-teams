@@ -24,7 +24,7 @@ describe('isNotMemberError', () => {
 
 describe('connectorRequest', () => {
   const KEY = Symbol('k')
-  const ctx = (request: (c: any) => Promise<{ status: number }>) => ({ adapter: { ConnectorClientKey: KEY }, turnState: new Map([[KEY, { httpClient: { request } }]]) })
+  const ctx = (request: (c: any) => Promise<{ status: number }>, baseURL = 'https://x') => ({ adapter: { ConnectorClientKey: KEY }, turnState: new Map([[KEY, { httpClient: { baseURL, request } }]]) })
 
   test('the status of a success and of an HttpError; another error passes through', async () => {
     expect(await connectorRequest(ctx(async () => ({ status: 201 })), { method: 'PUT', url: 'https://x/y' })).toBe(201)
@@ -39,6 +39,21 @@ describe('connectorRequest', () => {
     await connectorRequest(ctx(async c => { seen.push(c); return { status: 200 } }), { method: 'DELETE', url: 'https://x/z' })
     expect(seen[0]).toEqual({ method: 'POST', url: 'https://x/y', data: { a: 1 }, headers: { 'Content-Type': 'application/json' } })
     expect(seen[1]).toEqual({ method: 'DELETE', url: 'https://x/z' })
+  })
+
+  // Dani's review on #60, S1: the SDK's HttpClient puts the bot token on any absolute URL; only the turn's origin gets it.
+  test('another origin than the turn service URL is refused before any request', async () => {
+    const seen: any[] = []
+    const c = ctx(async r => { seen.push(r); return { status: 200 } }, 'https://smba.trafficmanager.net/emea/')
+    for (const url of ['https://evil.example/v3/x', 'http://smba.trafficmanager.net/emea/v3/x', 'https://smba.trafficmanager.net:8443/v3/x', 'https://smba.trafficmanager.net.evil.example/v3/x', 'not a url']) {
+      await expect(connectorRequest(c, { method: 'PUT', url })).rejects.toThrow('connector request refused')
+    }
+    // a client without a base URL: nothing to compare with, refused
+    const noBase = { adapter: { ConnectorClientKey: KEY }, turnState: new Map([[KEY, { httpClient: { request: async (r: any) => { seen.push(r); return { status: 200 } } } }]]) }
+    await expect(connectorRequest(noBase, { method: 'PUT', url: 'https://x/y' })).rejects.toThrow('connector request refused')
+    expect(seen).toEqual([])
+    expect(await connectorRequest(c, { method: 'PUT', url: 'https://smba.trafficmanager.net/emea/v3/conversations/a/activities/b/reactions/like' })).toBe(200)
+    expect(seen.length).toBe(1)
   })
 
   test('no connector client on the turn: a plain error', async () => {

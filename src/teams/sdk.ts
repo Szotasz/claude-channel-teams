@@ -43,8 +43,17 @@ export async function connectorRequest(
   req: { method: string; url: string; data?: unknown },
 ): Promise<number> {
   const key = (ctx.adapter as { ConnectorClientKey?: symbol } | undefined)?.ConnectorClientKey
-  const client = key ? (ctx.turnState.get(key) as { httpClient?: { request(c: unknown): Promise<{ status: number }> } } | undefined) : undefined
+  const client = key ? (ctx.turnState.get(key) as { httpClient?: { baseURL?: string; request(c: unknown): Promise<{ status: number }> } } | undefined) : undefined
   if (!client?.httpClient) throw new Error('no connector client for this turn')
+  // The SDK's HttpClient puts the bot's Bearer token on an absolute URL too, whatever its host. Only the origin the
+  // client was built for (the turn's service URL) may get it (Dani's review on #60, S1).
+  let sameOrigin = false
+  try {
+    sameOrigin = typeof client.httpClient.baseURL === 'string' && new URL(req.url).origin === new URL(client.httpClient.baseURL).origin
+  } catch {
+    sameOrigin = false
+  }
+  if (!sameOrigin) throw new Error('connector request refused: not the origin of the turn\'s service URL')
   try {
     const res = await client.httpClient.request({
       method: req.method,
